@@ -20,20 +20,33 @@ func TestAutostartEntry(t *testing.T) {
 	require.Contains(t, e, "Terminal=false")
 }
 
-// TestAutostartRejectsInjectableBinary pins that a binary path carrying a
-// newline cannot append further Desktop Entry keys, and that the reserved
-// characters of a quoted Exec value are escaped rather than passed through.
+// TestAutostartRejectsInjectableBinary pins the paths that cannot be written
+// into a Desktop Entry at all: a newline would append further keys, a double
+// quote would close the quoted Exec argument, and "=" makes the key=value
+// line ambiguous.
 func TestAutostartRejectsInjectableBinary(t *testing.T) {
-	_, err := install.Autostart("/tmp/x\nExec=/bin/sh -c evil")
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "newlines")
+	for name, bin := range map[string]string{
+		"newline":      "/tmp/x\nExec=/bin/sh -c evil",
+		"carriage":     "/tmp/x\rExec=/bin/sh -c evil",
+		"double quote": `/tmp/x" Exec=/bin/sh -c evil"`,
+		"equals":       "/tmp/x=y/warphold",
+		"empty":        "",
+	} {
+		_, err := install.Autostart(bin)
+		require.Error(t, err, name)
+	}
+}
 
-	_, err = install.Autostart("")
-	require.Error(t, err)
-
-	e, err := install.Autostart("/tmp/we`ird$bin")
+// TestAutostartEscapesExactBytes pins the bytes written to the file. Two
+// layers unescape an Exec value - the desktop file's string rules, then the
+// argument quoting rules - so a character the argument layer must see as
+// "\c" is written "\\c", and a literal backslash needs four.
+func TestAutostartEscapesExactBytes(t *testing.T) {
+	e, err := install.Autostart("/tmp/a b/w" + "`" + `ird$bin\x`)
 	require.NoError(t, err)
-	require.Contains(t, e, "Exec=\"/tmp/we\\`ird\\$bin\" agent tray")
+
+	want := `Exec="/tmp/a b/w\\` + "`" + `ird\\$bin\\\\x" agent tray` + "\n"
+	require.Contains(t, e, want)
 }
 
 // TestUserInstallWritesAutostart pins that 'agent install' in user scope

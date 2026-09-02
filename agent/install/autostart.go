@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
-
-	"github.com/pkg/errors"
 )
 
 // autostartName is the XDG autostart entry that starts the tray at login.
@@ -35,22 +33,24 @@ func Autostart(binary string) (string, error) {
 	return fmt.Sprintf(autostartTmpl, exec), nil
 }
 
-// execArg quotes the binary for a desktop-entry Exec key. The value is
-// written into a file the session autostarts, so a path carrying a newline
-// (which would add further Desktop Entry keys) is refused rather than
-// escaped; inside the quoted value, the reserved characters the spec lists
-// are backslash-escaped, and a literal "%" is doubled so it is not read as a
-// field code (%f, %U, ...).
+// execArg quotes the binary for a desktop-entry Exec key. Two layers unescape
+// this value: the desktop file's own string rules first, then the argument
+// quoting rules. A character that must reach the argument layer as "\c" has
+// to be written "\\c" in the file, and a literal backslash - which both
+// layers consume - needs four. "%" is doubled so it is not read as a field
+// code (%f, %U, ...). A double quote, a newline and an "=" never get here:
+// checkBinary refuses them.
 func execArg(binary string) (string, error) {
-	if binary == "" {
-		return "", errors.New("empty binary path")
+	if err := checkBinary(binary); err != nil {
+		return "", err
 	}
 
-	if strings.ContainsAny(binary, "\n\r") {
-		return "", errors.Errorf("binary path %q must not contain newlines", binary)
-	}
-
-	r := strings.NewReplacer(`\`, `\\\\`, `"`, `\"`, "`", "\\`", "$", `\$`, "%", "%%")
+	r := strings.NewReplacer(
+		`\`, `\\\\`,
+		"$", `\\$`,
+		"`", "\\\\`",
+		"%", "%%",
+	)
 
 	return `"` + r.Replace(binary) + `"`, nil
 }

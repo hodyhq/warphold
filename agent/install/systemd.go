@@ -148,6 +148,10 @@ func planUnder(root string, files map[string]string, commands [][]string) (Plan,
 // without it the installed service would look for agent.json in the default
 // directory and report itself unenrolled.
 func unit(binary, scope, wantedBy string) (string, error) {
+	if err := checkBinary(binary); err != nil {
+		return "", err
+	}
+
 	env := ""
 
 	if d := os.Getenv("WARPHOLD_STATE_DIR"); d != "" {
@@ -163,7 +167,41 @@ func unit(binary, scope, wantedBy string) (string, error) {
 		env = fmt.Sprintf("Environment=\"WARPHOLD_STATE_DIR=%s\"\n", strings.ReplaceAll(d, "%", "%%"))
 	}
 
-	return strings.TrimSpace(fmt.Sprintf(unitTmpl, env, binary, scope, wantedBy)) + "\n", nil
+	return strings.TrimSpace(fmt.Sprintf(unitTmpl, env, systemdArg(binary), scope, wantedBy)) + "\n", nil
+}
+
+// systemdArg escapes a path for the inside of a double-quoted systemd
+// argument. systemd unescapes C-style sequences there, so a literal backslash
+// must be doubled, and "%" is doubled because systemd expands "%x"
+// specifiers. A quote or newline never reaches this - checkBinary refuses
+// those outright.
+func systemdArg(s string) string {
+	return strings.NewReplacer(`\`, `\\`, "%", "%%").Replace(s)
+}
+
+// checkBinary refuses binary paths that cannot be embedded safely in the
+// quoted argument of a systemd unit or of a Desktop Entry. Escaping some of
+// them would be possible, but both callers embed os.Executable() - an
+// installed program's own path - so a path carrying a quote, a newline or an
+// "=" is an injection attempt far more likely than a real install location.
+func checkBinary(binary string) error {
+	if binary == "" {
+		return errors.New("empty binary path")
+	}
+
+	// A double quote closes the quoted argument and everything after it is
+	// read as further arguments, or past a newline as further directives:
+	//   ExecStart="/tmp/warphold" ExecStartPre=/bin/false"
+	if strings.ContainsAny(binary, "\"\n\r") {
+		return errors.Errorf("binary path %q must not contain quotes or newlines", binary)
+	}
+
+	// Desktop Entry and systemd unit lines are both key=value.
+	if strings.Contains(binary, "=") {
+		return errors.Errorf("binary path %q must not contain \"=\"", binary)
+	}
+
+	return nil
 }
 
 // Apply writes the files then runs the commands.

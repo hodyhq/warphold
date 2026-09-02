@@ -157,3 +157,35 @@ func requireAllUnder(t *testing.T, root string, p install.Plan) {
 		require.False(t, strings.HasPrefix(rel, ".."+string(filepath.Separator)), "%q escapes %q", path, root)
 	}
 }
+
+// TestSystemdRejectsHostileBinaryPath pins that a binary path cannot break
+// out of the quoted ExecStart argument and inject a directive - the
+// reviewer's example was /tmp/warphold" ExecStartPre=/bin/false".
+func TestSystemdRejectsHostileBinaryPath(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	for name, bin := range map[string]string{
+		"double quote": `/tmp/warphold" ExecStartPre=/bin/false"`,
+		"newline":      "/tmp/warphold\nExecStartPre=/bin/false",
+		"carriage":     "/tmp/warphold\rExecStartPre=/bin/false",
+		"equals":       "/tmp/warp=hold",
+		"empty":        "",
+	} {
+		_, err := install.Systemd("user", bin)
+		require.Error(t, err, name)
+
+		_, err = install.Systemd("system", bin)
+		require.Error(t, err, name)
+	}
+}
+
+// TestSystemdEscapesSpecifiersAndBackslashes pins the bytes written into the
+// quoted ExecStart argument: systemd expands "%x" specifiers and unescapes
+// C-style sequences there.
+func TestSystemdEscapesSpecifiersAndBackslashes(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	p, err := install.Systemd("user", `/opt/100%/w\h/warphold`)
+	require.NoError(t, err)
+	require.Contains(t, unitOf(t, p), `ExecStart="/opt/100%%/w\\h/warphold" agent run --scope user`)
+}

@@ -4,6 +4,7 @@ package tray
 
 import (
 	"context"
+	"log"
 	"os/exec"
 	"time"
 
@@ -208,7 +209,10 @@ func (t *tray) loop(ctx context.Context) {
 		}
 
 		if err != nil {
-			_ = notify("WarpHold", err.Error())
+			// Action errors can carry source paths; the desktop (and lock screen)
+			// gets a fixed message and the detail stays in the log.
+			log.Printf("tray: action failed: %v", err)
+			_ = notify("WarpHold", "The action failed. Open Details for the log.")
 		}
 
 		// An action changes what the next menu should say, so poll now

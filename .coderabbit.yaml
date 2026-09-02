@@ -24,7 +24,8 @@ reviews:
     - path: "agent/**"
       instructions: >-
         Runs unattended on end-user machines. Flag writes outside the agent state and
-        cache directories, secrets in logs, and anything that could leave the systemd
+        cache directories (the systemd user unit and the XDG autostart entry written by
+        `agent install` are the sanctioned exceptions), secrets in logs, and anything that could leave the systemd
         unit in a restart loop or report a backup as successful when it was not.
     - path: "cli/**"
       instructions: >-
