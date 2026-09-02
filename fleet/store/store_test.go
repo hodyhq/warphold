@@ -333,7 +333,7 @@ func TestReportsSince(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	got, err := s.ReportsSince(ctx, cutoff)
+	got, err := s.ReportsBetween(ctx, cutoff, time.Now().Add(time.Hour))
 	require.NoError(t, err)
 	ids := make([]string, 0, len(got))
 	for _, r := range got {

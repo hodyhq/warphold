@@ -13,8 +13,9 @@ const (
 	// overviewDays is the width of the per-device heartbeat strip and
 	// overviewHours the width of the snapshot timeline, both in the payload's
 	// oldest-first order.
-	overviewDays  = 30
-	overviewHours = 24
+	overviewClockSkew = 5 * time.Minute
+	overviewDays      = 30
+	overviewHours     = 24
 
 	// fleetNameSetting is the display name shown in the header; it is written
 	// by the settings endpoint and is empty until an admin sets one.
@@ -141,7 +142,9 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	if hourStart.Before(since) {
 		since = hourStart
 	}
-	reports, err := st.ReportsSince(ctx, since)
+	// Agents report with their own clocks; allow a little skew but keep
+	// clearly future-dated reports out of the timeline.
+	reports, err := st.ReportsBetween(ctx, since, now.Add(overviewClockSkew))
 	if err != nil {
 		adminFailed(w, "read reports", err)
 		return
@@ -200,7 +203,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if rep.Status != "ok" {
-			// ReportsSince is oldest first, so the last error wins.
+			// ReportsBetween is oldest first, so the last error wins.
 			latestFailure = &overviewFailure{AgentID: rep.AgentID, Name: agent.Name, FinishedAt: finished, Stderr: rep.Stderr}
 		}
 	}

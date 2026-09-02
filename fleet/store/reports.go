@@ -119,7 +119,9 @@ func (s *Store) LastOKReports(ctx context.Context) (map[string]time.Time, error)
 	return out, rows.Err()
 }
 
-// ReportsSince returns every report that finished at or after since, oldest
+// ReportsBetween returns every report that finished at or after since and no
+// later than until (future-dated reports from a skewed agent clock stay out
+// of the dashboard window), oldest
 // first. The overview endpoint reads one window (30 days) and derives the
 // per-day strips, the 24 h buckets and the latest failure from it in Go,
 // rather than issuing a query per agent or per day.
@@ -127,8 +129,8 @@ func (s *Store) LastOKReports(ctx context.Context) (map[string]time.Time, error)
 // Timestamps are stored as fixed-width RFC3339 in UTC (see store.ts), so the
 // string comparison below is a chronological one and uses the same ordering
 // as every other report query.
-func (s *Store) ReportsSince(ctx context.Context, since time.Time) ([]Report, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+reportCols+` FROM reports WHERE finished_at>=? ORDER BY finished_at, id`, ts(since))
+func (s *Store) ReportsBetween(ctx context.Context, since, until time.Time) ([]Report, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+reportCols+` FROM reports WHERE finished_at>=? AND finished_at<=? ORDER BY finished_at, id`, ts(since), ts(until))
 	if err != nil {
 		return nil, err
 	}

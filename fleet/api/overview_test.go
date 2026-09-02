@@ -67,6 +67,11 @@ func TestOverviewCountsBucketsAndDays(t *testing.T) {
 	_, quietBearer := enrollInto(t, h, gid, "never-ran")
 
 	now := time.Now().UTC()
+	// Pin the server clock so hour/day bucket boundaries cannot drift between
+	// the fixtures and the request.
+	h.s.SetNowForTesting(func() time.Time { return now })
+	// A future-dated report (skewed agent clock) must stay out of the window.
+	report(t, h, greenBearer, "future", "snapshot", now.Add(2*time.Hour), "ok", "")
 	report(t, h, greenBearer, "g1", "snapshot", now.Add(-30*time.Minute), "ok", "")
 	report(t, h, greenBearer, "g2", "snapshot", now.Add(-3*time.Hour), "ok", "")
 	report(t, h, greenBearer, "g3", "snapshot", now.Add(-3*24*time.Hour), "ok", "")
