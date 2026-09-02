@@ -1,0 +1,84 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@600;800&family=Space+Grotesk:wght@400;500;600&family=Space+Mono&display=swap">
+  <style>
+    body { margin: 0; background: #16181D; color: #F2F3F5; font-family: "Space Grotesk", system-ui, sans-serif; font-size: 14px; }
+    a { color: #FF8A4C; text-decoration: none; } a:hover { color: #FFB089; }
+    .disp { font-family: "Unbounded", "Space Grotesk", sans-serif; }
+    .mono { font-family: "Space Mono", ui-monospace, monospace; font-size: 12px; }
+    .eyebrow { font-family: "Space Mono", ui-monospace, monospace; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: #9AA0AD; }
+    .btn { border: 1px solid #3A3F49; background: transparent; color: #F2F3F5; border-radius: 4px; padding: 9px 14px; font: inherit; font-weight: 600; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; cursor: pointer; }
+    .btn.primary { background: #FF6A1A; border-color: #FF6A1A; color: #16181D; }
+    .kpi { font-family: "Unbounded", sans-serif; font-weight: 800; font-size: 28px; line-height: 1; }
+    .strip { display: flex; gap: 2px; height: 18px; }
+    .strip span { flex-grow: 1; border-radius: 1px; }
+    .hist { display: grid; grid-template-columns: 1fr 1.2fr 0.7fr 0.7fr 0.8fr; gap: 14px; padding: 11px 0; border-bottom: 1px solid #2A2E36; }
+  </style>
+</helmet>
+<div style="width: 1100px; height: 700px; background: #16181D; display: flex; flex-direction: column; overflow: hidden; position: relative;">
+  <div style="position: absolute; left: -120px; top: 0; width: 520px; height: 700px; background: #1D2027; transform: skewX(-12deg); pointer-events: none;"></div>
+  <header style="position: relative; display: flex; align-items: center; gap: 16px; padding: 22px 44px;">
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#FF6A1A" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h13"></path><path d="M3 12h18"></path><path d="M3 17h10"></path><path d="M19 4l2 3-2 3"></path></svg>
+    <span class="disp" style="font-weight: 800; font-size: 15px;">WARPHOLD</span>
+    <span class="mono" style="color: #6D7381;">agent · localhost:51515</span>
+    <div style="flex-grow: 1;"></div>
+    <span class="mono" style="color: #9AA0AD;">Laptops · hody-fw13</span>
+  </header>
+
+  <div style="position: relative; display: grid; grid-template-columns: 1fr 1.4fr; gap: 44px; padding: 10px 44px 0 44px; flex-grow: 1; min-height: 0;">
+    <section style="display: flex; flex-direction: column; gap: 22px;">
+      <div>
+        <div class="eyebrow">This machine</div>
+        <h1 class="disp" style="margin: 8px 0 0 0; font-size: 52px; font-weight: 800; line-height: 0.98; letter-spacing: -0.02em;">OK<br><span style="font-size: 24px; font-weight: 600; color: #C7CBD4;">last good backup 1 h ago</span></h1>
+      </div>
+      <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; background: #2A2E36; border: 1px solid #2A2E36;">
+        <div style="background: #16181D; padding: 14px 16px;"><div class="eyebrow">Protected</div><div class="kpi" style="margin-top: 8px;">412<span style="font-size: 14px; color: #9AA0AD; margin-left: 4px;">GB</span></div></div>
+        <div style="background: #16181D; padding: 14px 16px;"><div class="eyebrow">Next</div><div class="kpi" style="color: #FF6A1A; margin-top: 8px;">21:00</div></div>
+      </div>
+      <div>
+        <div class="eyebrow">Last 30 days</div>
+        <div class="strip" style="margin-top: 10px;">
+          <sc-for list="{{ days }}" as="d" hint-placeholder-count="30"><span style="background: {{ d.c }};"></span></sc-for>
+        </div>
+        <div class="mono" style="color: #6D7381; margin-top: 6px;">29 of 30 days with a good backup</div>
+      </div>
+      <div style="display: flex; gap: 8px;"><button class="btn primary">Back up now</button><button class="btn">Pause for 1 h</button></div>
+      <div class="mono" style="color: #6D7381;">Policy and destination are set by your fleet admin.</div>
+    </section>
+
+    <section>
+      <div class="eyebrow" style="padding-bottom: 6px; border-bottom: 1px solid #3A3F49;">Sources</div>
+      <div style="display: flex; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid #2A2E36;"><span class="mono">/home/hody</span><span class="mono" style="color: #9AA0AD;">hourly on AC · 9 folders skipped</span></div>
+      <div style="display: flex; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid #2A2E36;"><span class="mono">/etc</span><span class="mono" style="color: #9AA0AD;">daily 03:00</span></div>
+
+      <div class="eyebrow" style="padding: 22px 0 6px 0; border-bottom: 1px solid #3A3F49;">Recent runs</div>
+      <div class="hist"><span class="mono">today 19:00</span><span class="mono">/home/hody</span><span class="mono" style="color: #2FBF83;">ok</span><span class="mono" style="color: #9AA0AD;">2 min</span><span class="mono" style="color: #9AA0AD;">38 MB</span></div>
+      <div class="hist"><span class="mono">today 18:00</span><span class="mono">/home/hody</span><span class="mono" style="color: #2FBF83;">ok</span><span class="mono" style="color: #9AA0AD;">3 min</span><span class="mono" style="color: #9AA0AD;">241 MB</span></div>
+      <div class="hist"><span class="mono">today 03:00</span><span class="mono">/etc</span><span class="mono" style="color: #2FBF83;">ok</span><span class="mono" style="color: #9AA0AD;">4 s</span><span class="mono" style="color: #9AA0AD;">18 KB</span></div>
+      <div class="hist" style="cursor: pointer;" onClick="{{ toggle }}"><span class="mono">Aug 29 22:00</span><span class="mono">/home/hody</span><span class="mono" style="color: #F5B942;">3 skipped</span><span class="mono" style="color: #9AA0AD;">2 min</span><a>show</a></div>
+      <sc-if value="{{ open }}" hint-placeholder-val="{{ false }}">
+        <pre class="mono" style="margin: 10px 0 0 0; padding: 10px 12px; background: #1F1B1D; border-left: 3px solid #F5B942; color: #C9B48F; white-space: pre-wrap;">skipped ~/.local/share/flatpak/repo/objects/…: permission denied (3 files)
+snapshot completed with warnings</pre>
+      </sc-if>
+    </section>
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{}'>
+class Component extends DCLogic {
+  constructor(props) { super(props); this.state = { open: false }; }
+  renderVals() {
+    const days = Array.from({ length: 30 }, (_, i) => ({ c: i === 27 ? '#F5B942' : '#2FBF83' }));
+    return { days, open: this.state.open, toggle: () => this.setState({ open: !this.state.open }) };
+  }
+}
+</script>
+</body>
+</html>

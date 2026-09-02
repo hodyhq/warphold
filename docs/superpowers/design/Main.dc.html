@@ -1,0 +1,353 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@600;800&family=Space+Grotesk:wght@400;500;600&family=Space+Mono&display=swap">
+  <style>
+    body { margin: 0; background: #16181D; color: #F2F3F5; font-family: "Space Grotesk", system-ui, sans-serif; font-size: 14px; }
+    a { color: #FF8A4C; text-decoration: none; } a:hover { color: #FFB089; }
+    .disp { font-family: "Unbounded", "Space Grotesk", sans-serif; }
+    .mono { font-family: "Space Mono", ui-monospace, monospace; font-size: 12px; }
+    .eyebrow { font-family: "Space Mono", ui-monospace, monospace; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: #9AA0AD; }
+    .nav a { color: #9AA0AD; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; font-size: 12px; padding-bottom: 4px; border-bottom: 2px solid transparent; cursor: pointer; }
+    .nav a.on { color: #F2F3F5; border-bottom-color: #FF6A1A; }
+    .btn { border: 1px solid #3A3F49; background: transparent; color: #F2F3F5; border-radius: 4px; padding: 9px 14px; font: inherit; font-weight: 600; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; cursor: pointer; }
+    .btn.primary { background: #FF6A1A; border-color: #FF6A1A; color: #16181D; }
+    .btn.danger { border-color: #7A3030; color: #FF8A8A; }
+    .row { display: grid; grid-template-columns: 8px 1.3fr 0.8fr 2fr 1fr 0.7fr 0.7fr; gap: 16px; align-items: center; padding: 13px 0; border-bottom: 1px solid #2A2E36; cursor: pointer; }
+    .row:hover { background: #1D2027; }
+    .bar { width: 8px; height: 28px; border-radius: 1px; }
+    .strip { display: flex; gap: 2px; height: 14px; }
+    .strip span { flex-grow: 1; border-radius: 1px; }
+    .tick { width: 3px; border-radius: 1px; background: #F2F3F5; opacity: 0.85; }
+    .card { background: #1D2027; border: 1px solid #2A2E36; padding: 20px 22px; display: flex; flex-direction: column; gap: 12px; }
+    .kpi { font-family: "Unbounded", sans-serif; font-weight: 800; font-size: 28px; line-height: 1; }
+    .field { display: flex; flex-direction: column; gap: 6px; }
+    .input { background: #16181D; border: 1px solid #3A3F49; color: #F2F3F5; padding: 10px 12px; font: inherit; border-radius: 4px; }
+    .chip { border: 1px solid #3A3F49; color: #9AA0AD; padding: 5px 10px; border-radius: 999px; font-size: 12px; cursor: pointer; }
+    .chip.on { border-color: #FF6A1A; color: #FF6A1A; }
+    .pill { display: inline-flex; align-items: center; gap: 8px; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; border: 1px solid #3A3F49; }
+    .hist { display: grid; grid-template-columns: 1fr 1.2fr 0.8fr 0.8fr 0.8fr; gap: 14px; padding: 11px 0; border-bottom: 1px solid #2A2E36; }
+    .overlay { position: absolute; inset: 0; background: rgba(22, 24, 29, 0.78); display: flex; align-items: center; justify-content: center; }
+  </style>
+</helmet>
+<div style="width: 1280px; height: 860px; background: #16181D; display: flex; flex-direction: column; overflow: hidden; position: relative;">
+  <div style="position: absolute; left: -120px; top: 0; width: 620px; height: 860px; background: #1D2027; transform: skewX(-12deg); pointer-events: none;"></div>
+
+  <header style="position: relative; display: flex; align-items: center; gap: 36px; padding: 22px 48px;">
+    <div style="display: flex; align-items: center; gap: 10px; cursor: pointer;" onClick="{{ goOverview }}">
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#FF6A1A" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h13"></path><path d="M3 12h18"></path><path d="M3 17h10"></path><path d="M19 4l2 3-2 3"></path></svg>
+      <span class="disp" style="font-weight: 800; font-size: 16px; letter-spacing: 0.02em;">WARPHOLD</span>
+    </div>
+    <nav class="nav" style="display: flex; gap: 22px;">
+      <sc-for list="{{ nav }}" as="n" hint-placeholder-count="6">
+        <a class="{{ n.cls }}" onClick="{{ n.pick }}">{{ n.label }}</a>
+      </sc-for>
+    </nav>
+    <div style="flex-grow: 1;"></div>
+    <span class="mono" style="color: #6D7381;">moinzadeh-home</span>
+    <button class="btn primary" onClick="{{ openAdd }}">Add device</button>
+  </header>
+
+  <!-- ============ OVERVIEW ============ -->
+  <sc-if value="{{ isOverview }}" hint-placeholder-val="{{ true }}">
+  <div style="position: relative; display: grid; grid-template-columns: 1.15fr 1fr; gap: 56px; padding: 22px 48px 0 48px; flex-grow: 1; min-height: 0;">
+    <section style="display: flex; flex-direction: column; gap: 22px;">
+      <div>
+        <div class="eyebrow">Fleet · 7 devices · 2 targets</div>
+        <h1 class="disp" style="margin: 8px 0 0 0; font-size: 64px; font-weight: 800; line-height: 0.98; letter-spacing: -0.02em;">5<span style="color: #FF6A1A;">/</span>7<br><span style="font-size: 28px; font-weight: 600; color: #C7CBD4;">protected right now</span></h1>
+      </div>
+
+      <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; background: #2A2E36; border: 1px solid #2A2E36;">
+        <div style="background: #16181D; padding: 14px 16px;"><div class="eyebrow">Protected</div><div class="kpi" style="color: #2FBF83; margin-top: 8px;">5</div></div>
+        <div style="background: #16181D; padding: 14px 16px;"><div class="eyebrow">Stale</div><div class="kpi" style="color: #F5B942; margin-top: 8px;">1</div></div>
+        <div style="background: #16181D; padding: 14px 16px;"><div class="eyebrow">Failing</div><div class="kpi" style="color: #FF5D5D; margin-top: 8px;">1</div></div>
+        <div style="background: #16181D; padding: 14px 16px;"><div class="eyebrow">Stored</div><div class="kpi" style="margin-top: 8px;">1.84<span style="font-size: 14px; color: #9AA0AD; margin-left: 4px;">TB</span></div><div class="mono" style="color: #6D7381; margin-top: 4px;">3.1× dedup</div></div>
+      </div>
+
+      <div>
+        <div style="display: flex; justify-content: space-between; align-items: baseline;"><span class="eyebrow">Snapshots · last 24 h</span><span class="mono" style="color: #9AA0AD;">41 completed · 1 failed</span></div>
+        <div style="display: flex; align-items: flex-end; gap: 6px; height: 64px; margin-top: 10px; border-bottom: 1px solid #3A3F49; padding-bottom: 6px;">
+          <sc-for list="{{ ticks }}" as="t" hint-placeholder-count="30">
+            <div class="tick" style="height: {{ t.h }}; background: {{ t.c }}; opacity: {{ t.o }};"></div>
+          </sc-for>
+        </div>
+        <div style="display: flex; justify-content: space-between; margin-top: 6px;"><span class="mono" style="color: #6D7381;">00:00</span><span class="mono" style="color: #6D7381;">12:00</span><span class="mono" style="color: #FF6A1A;">now · pve1 uploading 2.1 GB</span></div>
+      </div>
+
+      <div style="border-left: 3px solid #FF5D5D; padding: 12px 16px; background: #1F1B1D; cursor: pointer;" onClick="{{ openMediaNuc }}">
+        <div style="display: flex; justify-content: space-between;"><span style="font-weight: 600;">media-nuc failed at 04:12</span><a>Open</a></div>
+        <div class="mono" style="color: #C9A0A0; margin-top: 6px;">kopia: error: unable to write blob: b2: 503 service_unavailable (attempt 5/5)</div>
+      </div>
+    </section>
+
+    <section style="display: flex; flex-direction: column;">
+      <div style="display: flex; justify-content: space-between; padding-bottom: 6px; border-bottom: 1px solid #3A3F49;"><span class="eyebrow">Devices</span><span class="eyebrow">last 30 days</span></div>
+      <sc-for list="{{ devices }}" as="d" hint-placeholder-count="7">
+        <div style="display: flex; align-items: center; gap: 14px; padding: 12px 0; border-bottom: 1px solid #2A2E36; cursor: pointer;" onClick="{{ d.pick }}">
+          <span class="bar" style="background: {{ d.color }};"></span>
+          <div style="flex-grow: 1; display: flex; flex-direction: column; gap: 6px; min-width: 0;">
+            <div style="display: flex; justify-content: space-between;"><span style="font-weight: 600;">{{ d.name }}</span><span class="mono" style="color: {{ d.color }};">{{ d.meta }}</span></div>
+            <div class="strip">
+              <sc-for list="{{ d.days }}" as="day" hint-placeholder-count="30"><span style="background: {{ day.c }};"></span></sc-for>
+            </div>
+          </div>
+        </div>
+      </sc-for>
+    </section>
+  </div>
+  </sc-if>
+
+  <!-- ============ DEVICES ============ -->
+  <sc-if value="{{ isDevices }}" hint-placeholder-val="{{ false }}">
+  <div style="position: relative; padding: 22px 48px 0 48px; display: flex; flex-direction: column; gap: 18px; flex-grow: 1; min-height: 0;">
+    <div style="display: flex; align-items: flex-end; justify-content: space-between;">
+      <div><div class="eyebrow">Devices</div><h1 class="disp" style="margin: 8px 0 0 0; font-size: 36px; font-weight: 800; letter-spacing: -0.02em;">7 enrolled</h1></div>
+      <div style="display: flex; gap: 8px;"><span class="chip on">All</span><span class="chip">Failing 1</span><span class="chip">Stale 1</span><span class="chip">Laptops</span><span class="chip">Family</span><span class="chip">Servers</span></div>
+    </div>
+    <div>
+      <div class="row eyebrow" style="border-bottom: 1px solid #3A3F49; cursor: default;"><span></span><span>Device</span><span>Group</span><span>Last 30 days</span><span>Last snapshot</span><span>Size</span><span>Agent</span></div>
+      <sc-for list="{{ devices }}" as="d" hint-placeholder-count="7">
+        <div class="row" onClick="{{ d.pick }}">
+          <span class="bar" style="background: {{ d.color }};"></span>
+          <span style="font-weight: 600;">{{ d.name }}</span>
+          <span style="color: #9AA0AD;">{{ d.group }}</span>
+          <div class="strip"><sc-for list="{{ d.days }}" as="day" hint-placeholder-count="30"><span style="background: {{ day.c }};"></span></sc-for></div>
+          <span class="mono" style="color: {{ d.color }};">{{ d.last }}</span>
+          <span class="mono">{{ d.size }}</span>
+          <span class="mono" style="color: #6D7381;">{{ d.ver }}</span>
+        </div>
+      </sc-for>
+    </div>
+  </div>
+  </sc-if>
+
+  <!-- ============ DEVICE DETAIL ============ -->
+  <sc-if value="{{ isDetail }}" hint-placeholder-val="{{ false }}">
+  <div style="position: relative; padding: 16px 48px 0 48px; display: flex; flex-direction: column; gap: 18px; flex-grow: 1; min-height: 0; overflow: hidden;">
+    <a onClick="{{ goDevices }}" class="mono" style="color: #9AA0AD;">← Devices</a>
+    <div style="display: flex; align-items: flex-end; justify-content: space-between;">
+      <div>
+        <div class="eyebrow">{{ sel.group }} · agent {{ sel.ver }} · Arch Linux · user scope</div>
+        <h1 class="disp" style="margin: 8px 0 0 0; font-size: 40px; font-weight: 800; letter-spacing: -0.02em; display: flex; align-items: center; gap: 16px;"><span class="bar" style="height: 36px; background: {{ sel.color }};"></span>{{ sel.name }}</h1>
+      </div>
+      <div style="display: flex; gap: 8px;">
+        <button class="btn primary">Snapshot now</button><button class="btn">Pause</button><button class="btn">Verify</button><button class="btn">Recovery kit</button><button class="btn danger">Revoke</button>
+      </div>
+    </div>
+
+    <sc-if value="{{ sel.kitPending }}" hint-placeholder-val="{{ false }}">
+      <div style="border-left: 3px solid #F5B942; background: #1F1D18; padding: 12px 16px; display: flex; justify-content: space-between; align-items: center;">
+        <span><b>Recovery kit not yet stored.</b> Print it and put it somewhere this machine isn't.</span>
+        <div style="display: flex; gap: 14px; align-items: center;"><a>Open kit</a><button class="btn" style="padding: 7px 12px;">Mark as stored</button></div>
+      </div>
+    </sc-if>
+
+    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 18px;">
+      <div class="card"><div class="eyebrow">Last snapshot</div><div class="kpi" style="color: {{ sel.color }};">{{ sel.last }}</div><div class="mono" style="color: #6D7381;">next 22:00 · hourly while on AC</div></div>
+      <div class="card"><div class="eyebrow">Stored</div><div class="kpi">{{ sel.size }}</div><div class="mono" style="color: #6D7381;">184 snapshots · 24h / 7d / 4w / 6m</div></div>
+      <div class="card"><div class="eyebrow">Last 30 days</div><div class="strip" style="height: 22px; margin-top: 4px;"><sc-for list="{{ sel.days }}" as="day" hint-placeholder-count="30"><span style="background: {{ day.c }};"></span></sc-for></div><div class="mono" style="color: #6D7381;">{{ sel.okDays }} of 30 days with a good snapshot</div></div>
+    </div>
+
+    <div style="display: grid; grid-template-columns: 0.9fr 1.6fr; gap: 24px; min-height: 0;">
+      <div>
+        <div class="eyebrow" style="padding-bottom: 6px; border-bottom: 1px solid #3A3F49;">Sources</div>
+        <sc-for list="{{ sel.sources }}" as="src" hint-placeholder-count="2">
+          <div style="padding: 12px 0; border-bottom: 1px solid #2A2E36;"><div class="mono">{{ src.path }}</div><div style="color: #9AA0AD; margin-top: 4px;">{{ src.desc }}</div></div>
+        </sc-for>
+      </div>
+      <div>
+        <div class="hist eyebrow" style="border-bottom: 1px solid #3A3F49;"><span>Started</span><span>Source</span><span>Result</span><span>Duration</span><span>Uploaded</span></div>
+        <sc-for list="{{ sel.history }}" as="h" hint-placeholder-count="5">
+          <div class="hist" style="cursor: pointer;" onClick="{{ toggleErr }}"><span class="mono">{{ h.t }}</span><span class="mono">{{ h.src }}</span><span class="mono" style="color: {{ h.c }};">{{ h.r }}</span><span class="mono" style="color: #9AA0AD;">{{ h.d }}</span><span class="mono" style="color: #9AA0AD;">{{ h.up }}</span></div>
+        </sc-for>
+        <sc-if value="{{ errOpen }}" hint-placeholder-val="{{ false }}">
+          <pre class="mono" style="margin: 12px 0 0 0; padding: 12px 14px; background: #1F1B1D; border-left: 3px solid #FF5D5D; color: #C9A0A0; white-space: pre-wrap;">kopia: error: unable to write blob: b2: 503 service_unavailable (attempt 5/5)
+  retrying in 30s… retrying in 60s… giving up
+snapshot of /srv/media failed: error uploading directory: unable to write blob</pre>
+        </sc-if>
+      </div>
+    </div>
+  </div>
+  </sc-if>
+
+  <!-- ============ GROUPS ============ -->
+  <sc-if value="{{ isGroups }}" hint-placeholder-val="{{ false }}">
+  <div style="position: relative; padding: 22px 48px 0 48px; display: flex; flex-direction: column; gap: 18px;">
+    <div style="display: flex; align-items: flex-end; justify-content: space-between;">
+      <div><div class="eyebrow">Groups</div><h1 class="disp" style="margin: 8px 0 0 0; font-size: 36px; font-weight: 800; letter-spacing: -0.02em;">3 groups</h1></div>
+      <button class="btn">New group</button>
+    </div>
+    <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px;">
+      <div class="card">
+        <div style="display: flex; justify-content: space-between; align-items: baseline;"><span class="disp" style="font-size: 18px; font-weight: 600;">Laptops</span><span class="mono" style="color: #9AA0AD;">2 devices</span></div>
+        <div style="color: #9AA0AD;">Target <span style="color: #F2F3F5;">B2 · hody-backups</span><br>Policy <span style="color: #F2F3F5;">Home default</span></div>
+        <div style="display: flex; gap: 8px; margin-top: 4px;"><button class="btn primary" style="padding: 8px 12px;">Download installer</button><button class="btn" style="padding: 8px 12px;">Tokens</button></div>
+        <div class="mono" style="color: #6D7381; border-top: 1px solid #2A2E36; padding-top: 10px;">1 token · expires in 6 d · 3 uses left</div>
+      </div>
+      <div class="card">
+        <div style="display: flex; justify-content: space-between; align-items: baseline;"><span class="disp" style="font-size: 18px; font-weight: 600;">Family</span><span class="mono" style="color: #9AA0AD;">2 devices</span></div>
+        <div style="color: #9AA0AD;">Target <span style="color: #F2F3F5;">B2 · hody-backups</span><br>Policy <span style="color: #F2F3F5;">Family · docs &amp; photos</span></div>
+        <div style="display: flex; gap: 8px; margin-top: 4px;"><button class="btn primary" style="padding: 8px 12px;">Download installer</button><button class="btn" style="padding: 8px 12px;">Tokens</button></div>
+        <div class="mono" style="color: #6D7381; border-top: 1px solid #2A2E36; padding-top: 10px;">no active tokens</div>
+      </div>
+      <div class="card">
+        <div style="display: flex; justify-content: space-between; align-items: baseline;"><span class="disp" style="font-size: 18px; font-weight: 600;">Servers</span><span class="mono" style="color: #9AA0AD;">3 devices</span></div>
+        <div style="color: #9AA0AD;">Target <span style="color: #F2F3F5;">Filesystem · /tank/warphold</span><br>Policy <span style="color: #F2F3F5;">Server · system scope</span></div>
+        <div style="display: flex; gap: 8px; margin-top: 4px;"><button class="btn primary" style="padding: 8px 12px;">Download installer</button><button class="btn" style="padding: 8px 12px;">Tokens</button></div>
+        <div class="mono" style="color: #6D7381; border-top: 1px solid #2A2E36; padding-top: 10px;">1 token · expires in 41 min · single use</div>
+      </div>
+    </div>
+  </div>
+  </sc-if>
+
+  <!-- ============ POLICIES ============ -->
+  <sc-if value="{{ isPolicies }}" hint-placeholder-val="{{ false }}">
+  <div style="position: relative; padding: 22px 48px 0 48px; display: grid; grid-template-columns: 0.8fr 2fr; gap: 32px; flex-grow: 1; min-height: 0;">
+    <div>
+      <div class="eyebrow">Policy templates</div>
+      <div style="margin-top: 14px; display: flex; flex-direction: column;">
+        <div style="padding: 12px 14px; background: #1D2027; border-left: 3px solid #FF6A1A;"><div style="font-weight: 600;">Home default</div><div class="mono" style="color: #9AA0AD;">used by Laptops</div></div>
+        <div style="padding: 12px 14px; border-left: 3px solid transparent;"><div style="font-weight: 600;">Family · docs &amp; photos</div><div class="mono" style="color: #9AA0AD;">used by Family</div></div>
+        <div style="padding: 12px 14px; border-left: 3px solid transparent;"><div style="font-weight: 600;">Server · system scope</div><div class="mono" style="color: #9AA0AD;">used by Servers</div></div>
+      </div>
+      <button class="btn" style="margin-top: 14px;">New template</button>
+    </div>
+    <div style="display: flex; flex-direction: column; gap: 18px;">
+      <div style="display: flex; justify-content: space-between; align-items: flex-end;"><h1 class="disp" style="margin: 0; font-size: 30px; font-weight: 800; letter-spacing: -0.02em;">Home default</h1><div style="display: flex; gap: 8px;"><button class="btn">Discard</button><button class="btn primary">Save &amp; push to 2 devices</button></div></div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 18px;">
+        <div class="field"><span class="eyebrow">Sources</span><div class="input mono">~<br>/etc</div></div>
+        <div class="field"><span class="eyebrow">Schedule</span><div class="input">Hourly · only on AC power · run missed</div></div>
+        <div class="field" style="grid-column: span 2;"><span class="eyebrow">Exclude</span><div class="input mono" style="line-height: 1.7;">~/.cache · ~/.local/share/Trash · ~/.var/app/*/cache · **/node_modules · **/.venv · **/target · **/*.iso · **/*.qcow2 · ~/.steam · ~/Games</div></div>
+        <div class="field"><span class="eyebrow">Keep</span><div class="input">24 hourly · 7 daily · 4 weekly · 6 monthly</div></div>
+        <div class="field"><span class="eyebrow">Compression</span><div class="input">zstd · skip already-compressed files</div></div>
+      </div>
+      <div class="mono" style="color: #6D7381;">Everything Kopia's policy can express is available under Advanced.</div>
+    </div>
+  </div>
+  </sc-if>
+
+  <!-- ============ TARGETS ============ -->
+  <sc-if value="{{ isTargets }}" hint-placeholder-val="{{ false }}">
+  <div style="position: relative; padding: 22px 48px 0 48px; display: flex; flex-direction: column; gap: 18px;">
+    <div style="display: flex; align-items: flex-end; justify-content: space-between;">
+      <div><div class="eyebrow">Targets</div><h1 class="disp" style="margin: 8px 0 0 0; font-size: 36px; font-weight: 800; letter-spacing: -0.02em;">Where backups live</h1></div>
+      <button class="btn">Add target</button>
+    </div>
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 18px;">
+      <div class="card">
+        <div style="display: flex; justify-content: space-between;"><span class="disp" style="font-size: 18px; font-weight: 600;">Backblaze B2 · hody-backups</span><span class="pill" style="border-color: #2FBF83; color: #2FBF83;">Object Lock verified</span></div>
+        <div style="color: #9AA0AD;">us-west-004 · 4 devices · 1.62 TB stored</div>
+        <div class="mono" style="color: #6D7381;">Admin key sealed · agent keys: write + list + read, never delete · locked 30 days</div>
+        <div class="mono" style="color: #6D7381;">Last verify job: yesterday 03:00 · all 4 repos ok</div>
+      </div>
+      <div class="card">
+        <div style="display: flex; justify-content: space-between;"><span class="disp" style="font-size: 18px; font-weight: 600;">Filesystem · /tank/warphold</span><span class="pill">Local</span></div>
+        <div style="color: #9AA0AD;">on this server · 3 devices · 220 GB stored</div>
+        <div class="mono" style="color: #6D7381;">No immutability. Sync to B2 is a later feature.</div>
+        <div class="mono" style="color: #6D7381;">Last verify job: yesterday 03:00 · all 3 repos ok</div>
+      </div>
+    </div>
+  </div>
+  </sc-if>
+
+  <!-- ============ SETTINGS ============ -->
+  <sc-if value="{{ isSettings }}" hint-placeholder-val="{{ false }}">
+  <div style="position: relative; padding: 22px 48px 0 48px; display: grid; grid-template-columns: 1fr 1fr; gap: 24px;">
+    <div class="card">
+      <span class="disp" style="font-size: 18px; font-weight: 600;">Admins</span>
+      <div style="display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid #2A2E36;"><span>hody@hody.dev</span><span class="mono" style="color: #9AA0AD;">owner · you</span></div>
+      <button class="btn" style="align-self: flex-start;">Invite admin</button>
+    </div>
+    <div class="card">
+      <span class="disp" style="font-size: 18px; font-weight: 600;">Weekly digest</span>
+      <div class="field"><span class="eyebrow">Send to</span><div class="input">hody@hody.dev</div></div>
+      <div class="field"><span class="eyebrow">SMTP</span><div class="input mono">mail.smtp2go.com:587 · warphold@hody.email</div></div>
+      <div class="mono" style="color: #6D7381;">Mondays 08:00 · last sent 3 days ago</div>
+    </div>
+    <div class="card">
+      <span class="disp" style="font-size: 18px; font-weight: 600;">Sealing passphrase</span>
+      <div style="color: #9AA0AD;">Every repository password and storage key is sealed with this. Losing it means losing the escrow, not the backups: each device's recovery kit still works.</div>
+      <button class="btn" style="align-self: flex-start;">Change passphrase</button>
+    </div>
+    <div class="card">
+      <span class="disp" style="font-size: 18px; font-weight: 600;">Agents</span>
+      <div class="field"><span class="eyebrow">Poll interval</span><div class="input">5 minutes</div></div>
+      <div class="field"><span class="eyebrow">Health thresholds</span><div class="input">stale after 26 h · failing after 7 d</div></div>
+    </div>
+  </div>
+  </sc-if>
+
+  <!-- ============ ADD DEVICE OVERLAY ============ -->
+  <sc-if value="{{ addOpen }}" hint-placeholder-val="{{ false }}">
+  <div class="overlay" onClick="{{ closeAdd }}">
+    <div class="card" style="width: 560px; gap: 18px; border-color: #3A3F49;" onClick="{{ stop }}">
+      <div><div class="eyebrow">Add device</div><h2 class="disp" style="margin: 6px 0 0 0; font-size: 24px; font-weight: 800; letter-spacing: -0.02em;">Enroll a Linux machine</h2></div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px;">
+        <div class="field"><span class="eyebrow">Group</span><div class="input">Laptops</div></div>
+        <div class="field"><span class="eyebrow">Token lasts</span><div class="input">1 hour</div></div>
+        <div class="field"><span class="eyebrow">Uses</span><div class="input">1</div></div>
+      </div>
+      <div class="field"><span class="eyebrow">Run on the machine</span><div class="input mono" style="line-height: 1.6; color: #FFB089;">curl -fsSL https://fleet.hody.dev/enroll.sh | sh -s -- --token wh_7Kq2…f9</div></div>
+      <div class="mono" style="color: #6D7381;">Installs the agent for the current user, enables it at boot, and enrolls it into Laptops. Longer tokens and multi-use tokens are for rollouts that take days.</div>
+      <div style="display: flex; justify-content: flex-end; gap: 8px;"><button class="btn" onClick="{{ closeAdd }}">Close</button><button class="btn primary">Copy command</button></div>
+    </div>
+  </div>
+  </sc-if>
+</div>
+</x-dc>
+<script data-dc-script data-props='{}'>
+class Component extends DCLogic {
+  constructor(props) { super(props); this.state = { screen: 'overview', sel: 0, addOpen: false, errOpen: false }; }
+  renderVals() {
+    const go = (s) => () => this.setState({ screen: s, errOpen: false });
+    const G = '#2FBF83', A = '#F5B942', R = '#FF5D5D', E = '#FF6A1A', N = '#2A2E36';
+    const days = (pattern) => Array.from({ length: 30 }, (_, i) => ({ c: pattern(i) }));
+    const raw = [
+      { name: 'hody-fw13',      group: 'Laptops', color: G, last: '2 h ago',      size: '412 GB', ver: '0.1.0', meta: '2h · 412 GB',     kitPending: false, okDays: 30, days: days(() => G) },
+      { name: 'office-desktop', group: 'Laptops', color: G, last: '5 h ago',      size: '1.1 TB', ver: '0.1.0', meta: '5h · 1.1 TB',     kitPending: false, okDays: 29, days: days(i => i === 11 ? N : G) },
+      { name: 'mom-thinkpad',   group: 'Family',  color: A, last: '3 d ago',      size: '96 GB',  ver: '0.1.0', meta: '3d · 96 GB',      kitPending: true,  okDays: 21, days: days(i => i > 26 ? N : (i % 9 === 4 ? N : G)) },
+      { name: 'media-nuc',      group: 'Servers', color: R, last: 'failed 04:12', size: '208 GB', ver: '0.1.0', meta: 'failed · 208 GB', kitPending: false, okDays: 27, days: days(i => i > 26 ? R : G) },
+      { name: 'pve1',           group: 'Servers', color: E, last: 'uploading',    size: '31 GB',  ver: '0.1.0', meta: 'uploading 38%',   kitPending: false, okDays: 30, days: days(() => G) },
+      { name: 'dad-laptop',     group: 'Family',  color: G, last: '9 h ago',      size: '64 GB',  ver: '0.0.9', meta: '9h · 64 GB',      kitPending: true,  okDays: 24, days: days(i => i < 6 ? N : G) },
+      { name: 'workshop-pi',    group: 'Servers', color: G, last: '1 h ago',      size: '12 GB',  ver: '0.1.0', meta: '1h · 12 GB',      kitPending: false, okDays: 30, days: days(() => G) },
+    ];
+    const home = [{ path: '/home/hody', desc: 'Home default · 9 excludes · compression zstd' }, { path: '/etc', desc: 'Home default · daily 03:00' }];
+    const srv = [{ path: '/srv/media', desc: 'Server · system scope · nightly 04:00' }, { path: '/etc', desc: 'Server · daily 03:00' }];
+    const devices = raw.map((d, i) => ({ ...d, sources: d.group === 'Servers' ? srv : home, pick: () => this.setState({ screen: 'detail', sel: i, errOpen: false }) }));
+    const sel = devices[this.state.sel];
+    const failing = sel.color === R;
+    sel.history = [
+      { t: failing ? 'today 04:12' : 'today 20:00', src: sel.sources[0].path, r: failing ? 'error' : 'ok', c: failing ? R : G, d: failing ? '14 min' : '2 min', up: failing ? '0 B' : '38 MB' },
+      { t: failing ? 'yesterday 04:00' : 'today 19:00', src: sel.sources[0].path, r: 'ok', c: G, d: '1 min', up: '12 MB' },
+      { t: failing ? 'Aug 30 04:00' : 'today 18:00', src: sel.sources[0].path, r: 'ok', c: G, d: '3 min', up: '241 MB' },
+      { t: 'today 03:00', src: '/etc',       r: 'ok', c: G, d: '4 s',   up: '18 KB' },
+      { t: failing ? 'Aug 29 04:00' : 'yesterday 23:00', src: sel.sources[0].path, r: 'ok', c: G, d: '2 min', up: '61 MB' },
+    ];
+    const screens = ['overview', 'devices', 'groups', 'policies', 'targets', 'settings'];
+    const labels = ['Fleet', 'Devices', 'Groups', 'Policies', 'Targets', 'Settings'];
+    const cur = this.state.screen === 'detail' ? 'devices' : this.state.screen;
+    const nav = screens.map((s, i) => ({ label: labels[i], cls: s === cur ? 'on' : '', pick: go(s) }));
+    const heights = [30,30,55,30,30,80,30,30,55,30,100,30,55,30,30,80,30,30,55,30,30,30,80,30,55,30,30,30,55,30];
+    const ticks = heights.map((h, i) => ({ h: h + '%', c: i === 10 ? R : (i >= 28 ? E : '#F2F3F5'), o: (i === 10 || i >= 28) ? 1 : 0.85 }));
+    return {
+      nav, devices, sel, ticks,
+      isOverview: this.state.screen === 'overview', isDevices: this.state.screen === 'devices', isDetail: this.state.screen === 'detail',
+      isGroups: this.state.screen === 'groups', isPolicies: this.state.screen === 'policies', isTargets: this.state.screen === 'targets', isSettings: this.state.screen === 'settings',
+      addOpen: this.state.addOpen, errOpen: this.state.errOpen,
+      goOverview: go('overview'), goDevices: go('devices'),
+      openMediaNuc: () => this.setState({ screen: 'detail', sel: 3, errOpen: true }),
+      openAdd: () => this.setState({ addOpen: true }), closeAdd: () => this.setState({ addOpen: false }),
+      stop: (e) => { if (e && e.stopPropagation) e.stopPropagation(); },
+      toggleErr: () => this.setState({ errOpen: !this.state.errOpen }),
+    };
+  }
+}
+</script>
+</body>
+</html>

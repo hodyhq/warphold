@@ -1,0 +1,90 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@600;800&family=Space+Grotesk:wght@400;500;600&family=Space+Mono&display=swap">
+  <style>
+    body { margin: 0; background: #16181D; color: #F2F3F5; font-family: "Space Grotesk", system-ui, sans-serif; font-size: 14px; }
+    a { color: #FF8A4C; text-decoration: none; } a:hover { color: #FFB089; }
+    .disp { font-family: "Unbounded", "Space Grotesk", sans-serif; }
+    .mono { font-family: "Space Mono", ui-monospace, monospace; font-size: 12px; }
+    .eyebrow { font-family: "Space Mono", ui-monospace, monospace; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: #9AA0AD; }
+    .btn { border: 1px solid #3A3F49; background: transparent; color: #F2F3F5; border-radius: 4px; padding: 10px 16px; font: inherit; font-weight: 600; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; cursor: pointer; }
+    .btn.primary { background: #FF6A1A; border-color: #FF6A1A; color: #16181D; }
+    .field { display: flex; flex-direction: column; gap: 6px; }
+    .input { background: #16181D; border: 1px solid #3A3F49; color: #F2F3F5; padding: 11px 12px; font: inherit; border-radius: 4px; }
+    .step { display: flex; align-items: center; gap: 12px; padding: 12px 0; cursor: pointer; }
+    .num { font-family: "Unbounded", sans-serif; font-weight: 800; font-size: 14px; width: 28px; height: 28px; border: 1px solid #3A3F49; display: flex; align-items: center; justify-content: center; }
+  </style>
+</helmet>
+<div style="width: 960px; height: 640px; background: #16181D; display: grid; grid-template-columns: 300px 1fr; overflow: hidden; position: relative;">
+  <aside style="background: #1D2027; padding: 36px 32px; display: flex; flex-direction: column; gap: 6px; border-right: 1px solid #2A2E36;">
+    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 26px;">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#FF6A1A" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h13"></path><path d="M3 12h18"></path><path d="M3 17h10"></path><path d="M19 4l2 3-2 3"></path></svg>
+      <span class="disp" style="font-weight: 800; font-size: 15px;">ACTIVATE FLEET</span>
+    </div>
+    <sc-for list="{{ steps }}" as="s" hint-placeholder-count="4">
+      <div class="step" onClick="{{ s.pick }}"><span class="num" style="color: {{ s.color }}; border-color: {{ s.color }};">{{ s.n }}</span><span style="color: {{ s.color }}; font-weight: 600;">{{ s.label }}</span></div>
+    </sc-for>
+    <div class="mono" style="color: #6D7381; margin-top: auto; line-height: 1.6;">Nothing to download. Fleet is already inside this WarpHold; this turns it on.</div>
+  </aside>
+
+  <main style="padding: 44px 48px; display: flex; flex-direction: column; gap: 22px;">
+    <sc-if value="{{ is1 }}" hint-placeholder-val="{{ true }}">
+      <div><div class="eyebrow">Step 1 of 4</div><h1 class="disp" style="margin: 8px 0 0 0; font-size: 30px; font-weight: 800; letter-spacing: -0.02em;">Choose the sealing passphrase</h1></div>
+      <p style="margin: 0; color: #C7CBD4; line-height: 1.6;">Every device's repository password and storage key will be sealed with this. It is asked for once at startup. <b>You will be able to open any enrolled device's backups.</b> That is the point for a family fleet, and it's written on every recovery kit.</p>
+      <div class="field"><span class="eyebrow">Passphrase</span><div class="input mono">••••••••••••••••••••••••</div></div>
+      <div class="field"><span class="eyebrow">Again</span><div class="input mono">••••••••••••••••••••••••</div></div>
+      <div style="display: flex; justify-content: flex-end;"><button class="btn primary" onClick="{{ go2 }}">Continue</button></div>
+    </sc-if>
+    <sc-if value="{{ is2 }}" hint-placeholder-val="{{ false }}">
+      <div><div class="eyebrow">Step 2 of 4</div><h1 class="disp" style="margin: 8px 0 0 0; font-size: 30px; font-weight: 800; letter-spacing: -0.02em;">First admin</h1></div>
+      <div class="field"><span class="eyebrow">Email</span><div class="input">hody@hody.dev</div></div>
+      <div class="field"><span class="eyebrow">Password</span><div class="input mono">••••••••••••••••</div></div>
+      <div class="mono" style="color: #6D7381;">Admins sign in to the dashboard. Agents never do; they use their own tokens.</div>
+      <div style="display: flex; justify-content: space-between;"><button class="btn" onClick="{{ go1 }}">Back</button><button class="btn primary" onClick="{{ go3 }}">Continue</button></div>
+    </sc-if>
+    <sc-if value="{{ is3 }}" hint-placeholder-val="{{ false }}">
+      <div><div class="eyebrow">Step 3 of 4</div><h1 class="disp" style="margin: 8px 0 0 0; font-size: 30px; font-weight: 800; letter-spacing: -0.02em;">Where backups will live</h1></div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px;">
+        <div style="border: 1px solid #FF6A1A; padding: 16px; display: flex; flex-direction: column; gap: 6px;"><span style="font-weight: 600;">Backblaze B2</span><span style="color: #9AA0AD;">Off-site. Per-device keys that can't delete. Object Lock required.</span></div>
+        <div style="border: 1px solid #3A3F49; padding: 16px; display: flex; flex-direction: column; gap: 6px;"><span style="font-weight: 600;">A folder on this server</span><span style="color: #9AA0AD;">Fast and local. No immutability. Good for a first test.</span></div>
+      </div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px;">
+        <div class="field"><span class="eyebrow">Bucket</span><div class="input">hody-backups</div></div>
+        <div class="field"><span class="eyebrow">Admin key ID</span><div class="input mono">004a…f2</div></div>
+      </div>
+      <div class="mono" style="color: #2FBF83;">Object Lock: verified, 30-day minimum retention</div>
+      <div style="display: flex; justify-content: space-between;"><button class="btn" onClick="{{ go2 }}">Back</button><button class="btn primary" onClick="{{ go4 }}">Activate</button></div>
+    </sc-if>
+    <sc-if value="{{ is4 }}" hint-placeholder-val="{{ false }}">
+      <div><div class="eyebrow">Done</div><h1 class="disp" style="margin: 8px 0 0 0; font-size: 44px; font-weight: 800; letter-spacing: -0.02em; line-height: 1;">Fleet is on.</h1></div>
+      <p style="margin: 0; color: #C7CBD4; line-height: 1.6;">This machine is now a fleet server. It will keep backing itself up exactly as before. Next, add your first device: you'll get a one-line command to run on it.</p>
+      <div class="mono" style="padding: 12px 14px; background: #1D2027; border-left: 3px solid #FF6A1A; color: #FFB089;">curl -fsSL https://fleet.hody.dev/enroll.sh | sh -s -- --token wh_7Kq2…f9</div>
+      <div style="display: flex; gap: 8px;"><button class="btn primary">Open the Fleet dashboard</button><button class="btn" onClick="{{ go1 }}">Start over</button></div>
+    </sc-if>
+  </main>
+</div>
+</x-dc>
+<script data-dc-script data-props='{}'>
+class Component extends DCLogic {
+  constructor(props) { super(props); this.state = { step: 1 }; }
+  renderVals() {
+    const go = (n) => () => this.setState({ step: n });
+    const labels = ['Passphrase', 'First admin', 'Storage', 'Done'];
+    const steps = labels.map((label, i) => {
+      const n = i + 1;
+      const color = n === this.state.step ? '#FF6A1A' : (n < this.state.step ? '#2FBF83' : '#6D7381');
+      return { n, label, color, pick: go(n) };
+    });
+    return { steps, is1: this.state.step === 1, is2: this.state.step === 2, is3: this.state.step === 3, is4: this.state.step === 4, go1: go(1), go2: go(2), go3: go(3), go4: go(4) };
+  }
+}
+</script>
+</body>
+</html>

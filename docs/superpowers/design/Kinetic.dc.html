@@ -1,0 +1,72 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@600;800&family=Space+Grotesk:wght@400;500;600&family=Space+Mono&display=swap">
+  <style>
+    body { margin: 0; background: #16181D; color: #F2F3F5; font-family: "Space Grotesk", system-ui, sans-serif; font-size: 14px; }
+    a { color: #FF8A4C; } a:hover { color: #FFB089; }
+    .disp { font-family: "Unbounded", "Space Grotesk", sans-serif; }
+    .mono { font-family: "Space Mono", ui-monospace, monospace; font-size: 12px; }
+    .tick { width: 3px; border-radius: 1px; background: #F2F3F5; opacity: 0.85; }
+    .item { display: flex; align-items: center; gap: 14px; padding: 14px 0; border-bottom: 1px solid #2A2E36; }
+    .nav a { color: #9AA0AD; text-decoration: none; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; font-size: 12px; }
+    .nav a.on { color: #F2F3F5; border-bottom: 2px solid #FF6A1A; padding-bottom: 4px; }
+  </style>
+</helmet>
+<div style="width: 1280px; height: 800px; background: #16181D; display: flex; flex-direction: column; overflow: hidden; position: relative;">
+  <div style="position: absolute; left: -120px; top: 0; width: 640px; height: 800px; background: #1D2027; transform: skewX(-12deg); pointer-events: none;"></div>
+
+  <header style="position: relative; display: flex; align-items: center; gap: 36px; padding: 22px 48px;">
+    <div style="display: flex; align-items: center; gap: 10px;">
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#FF6A1A" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h13"></path><path d="M3 12h18"></path><path d="M3 17h10"></path><path d="M19 4l2 3-2 3"></path></svg>
+      <span class="disp" style="font-weight: 800; font-size: 16px; letter-spacing: 0.02em;">WARPHOLD</span>
+    </div>
+    <nav class="nav" style="display: flex; gap: 22px;">
+      <a href="#" class="on">Fleet</a><a href="#">Devices</a><a href="#">Groups</a><a href="#">Policies</a><a href="#">Targets</a>
+    </nav>
+    <div style="flex-grow: 1;"></div>
+    <button style="background: #FF6A1A; color: #16181D; border: 0; border-radius: 4px; padding: 10px 18px; font: inherit; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; font-size: 12px;">Add device</button>
+  </header>
+
+  <div style="position: relative; display: grid; grid-template-columns: 1.15fr 1fr; gap: 56px; padding: 30px 48px 0 48px; flex-grow: 1; min-height: 0;">
+    <section style="display: flex; flex-direction: column; gap: 26px;">
+      <div>
+        <div class="mono" style="color: #9AA0AD; letter-spacing: 0.1em;">MOINZADEH-HOME · 7 DEVICES</div>
+        <h1 class="disp" style="margin: 10px 0 0 0; font-size: 64px; font-weight: 800; line-height: 0.98; letter-spacing: -0.02em;">5<span style="color: #FF6A1A;">/</span>7<br><span style="font-size: 30px; font-weight: 600; color: #C7CBD4;">protected right now</span></h1>
+      </div>
+
+      <div>
+        <div style="display: flex; justify-content: space-between; align-items: baseline;"><span class="mono" style="color: #9AA0AD;">SNAPSHOTS · LAST 24 H</span><span class="mono" style="color: #9AA0AD;">41 completed · 1 failed</span></div>
+        <div style="display: flex; align-items: flex-end; gap: 6px; height: 72px; margin-top: 12px; border-bottom: 1px solid #3A3F49; padding-bottom: 6px;">
+          <div class="tick" style="height: 30%;"></div><div class="tick" style="height: 30%;"></div><div class="tick" style="height: 55%;"></div><div class="tick" style="height: 30%;"></div><div class="tick" style="height: 30%;"></div><div class="tick" style="height: 80%;"></div><div class="tick" style="height: 30%;"></div><div class="tick" style="height: 30%;"></div><div class="tick" style="height: 55%;"></div><div class="tick" style="height: 30%;"></div><div class="tick" style="height: 100%; background: #FF5D5D; opacity: 1;"></div><div class="tick" style="height: 30%;"></div><div class="tick" style="height: 55%;"></div><div class="tick" style="height: 30%;"></div><div class="tick" style="height: 30%;"></div><div class="tick" style="height: 80%;"></div><div class="tick" style="height: 30%;"></div><div class="tick" style="height: 30%;"></div><div class="tick" style="height: 55%;"></div><div class="tick" style="height: 30%;"></div><div class="tick" style="height: 30%;"></div><div class="tick" style="height: 30%;"></div><div class="tick" style="height: 80%;"></div><div class="tick" style="height: 30%;"></div><div class="tick" style="height: 55%;"></div><div class="tick" style="height: 30%;"></div><div class="tick" style="height: 30%;"></div><div class="tick" style="height: 30%;"></div><div class="tick" style="height: 55%; background: #FF6A1A; opacity: 1;"></div><div class="tick" style="height: 30%; background: #FF6A1A; opacity: 1;"></div>
+        </div>
+        <div style="display: flex; justify-content: space-between; margin-top: 6px;"><span class="mono" style="color: #6D7381;">00:00</span><span class="mono" style="color: #6D7381;">12:00</span><span class="mono" style="color: #FF6A1A;">now · pve1 uploading 2.1 GB</span></div>
+      </div>
+
+      <div style="border-left: 3px solid #FF5D5D; padding: 12px 16px; background: #1F1B1D;">
+        <div style="display: flex; justify-content: space-between;"><span style="font-weight: 600;">media-nuc failed at 04:12</span><a href="#" style="font-weight: 600; text-decoration: none;">Retry</a></div>
+        <div class="mono" style="color: #C9A0A0; margin-top: 6px;">kopia: error: unable to write blob: b2: 503 service_unavailable (attempt 5/5)</div>
+      </div>
+    </section>
+
+    <section style="display: flex; flex-direction: column;">
+      <div class="mono" style="color: #9AA0AD; letter-spacing: 0.1em; padding-bottom: 6px; border-bottom: 1px solid #3A3F49;">DEVICES</div>
+      <div class="item"><span style="width: 8px; height: 28px; background: #2FBF83; border-radius: 1px;"></span><span style="font-weight: 600; flex-grow: 1;">hody-fw13</span><span class="mono" style="color: #9AA0AD;">2h · 412 GB</span></div>
+      <div class="item"><span style="width: 8px; height: 28px; background: #2FBF83; border-radius: 1px;"></span><span style="font-weight: 600; flex-grow: 1;">office-desktop</span><span class="mono" style="color: #9AA0AD;">5h · 1.1 TB</span></div>
+      <div class="item"><span style="width: 8px; height: 28px; background: #F5B942; border-radius: 1px;"></span><span style="font-weight: 600; flex-grow: 1;">mom-thinkpad</span><span class="mono" style="color: #F5B942;">3d · 96 GB</span></div>
+      <div class="item"><span style="width: 8px; height: 28px; background: #FF5D5D; border-radius: 1px;"></span><span style="font-weight: 600; flex-grow: 1;">media-nuc</span><span class="mono" style="color: #FF5D5D;">failed · 208 GB</span></div>
+      <div class="item"><span style="width: 8px; height: 28px; background: #FF6A1A; border-radius: 1px;"></span><span style="font-weight: 600; flex-grow: 1;">pve1</span><span class="mono" style="color: #FF6A1A;">uploading 38%</span></div>
+      <div class="item"><span style="width: 8px; height: 28px; background: #2FBF83; border-radius: 1px;"></span><span style="font-weight: 600; flex-grow: 1;">dad-laptop</span><span class="mono" style="color: #9AA0AD;">9h · 64 GB</span></div>
+      <div class="item" style="border-bottom: 0;"><span style="width: 8px; height: 28px; background: #2FBF83; border-radius: 1px;"></span><span style="font-weight: 600; flex-grow: 1;">workshop-pi</span><span class="mono" style="color: #9AA0AD;">1h · 12 GB</span></div>
+    </section>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

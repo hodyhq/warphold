@@ -1,0 +1,21 @@
+{
+  "pages": [
+    { "id": "page-1", "name": "Prototype" },
+    { "id": "page-2", "name": "Directions" }
+  ],
+  "artboards": [
+    { "file": "Main.dc.html",     "title": "Fleet dashboard — click nav, devices, Add device", "x": 0,    "y": 0,    "w": 1280, "h": 860, "page": "page-1", "is_interactive": true },
+    { "file": "Solo.dc.html",     "title": "WarpHold app (single machine) — click nav, sources, snapshots", "x": 1400, "y": 0,    "w": 1280, "h": 800, "page": "page-1", "is_interactive": true },
+    { "file": "Activate.dc.html", "title": "Activate Fleet wizard — click steps", "x": 0,    "y": 1000, "w": 960,  "h": 640, "page": "page-1", "is_interactive": true },
+    { "file": "Tray.dc.html",     "title": "Tray popover (Omarchy bar)", "x": 1060, "y": 1000, "w": 380,  "h": 520, "page": "page-1", "is_interactive": true },
+    { "file": "Agent.dc.html",    "title": "Agent page on localhost — 'Details' from the tray", "x": 1560, "y": 1000, "w": 1100, "h": 700, "page": "page-1", "is_interactive": true },
+    { "file": "Bridge.dc.html",   "title": "A · Bridge — dark ops console",  "x": 0,    "y": 0,   "w": 1280, "h": 800, "page": "page-2" },
+    { "file": "Ledger.dc.html",   "title": "B · Ledger — calm, light, consumer", "x": 1400, "y": 0,   "w": 1280, "h": 800, "page": "page-2" },
+    { "file": "Kinetic.dc.html",  "title": "C · Kinetic — chosen", "x": 0,    "y": 960, "w": 1280, "h": 800, "page": "page-2" }
+  ],
+  "annotations": [
+    { "id": "proto-note", "x": 0, "y": -150, "w": 640, "page": "page-1", "text": "WarpHold prototype · Kinetic direction + heartbeat strips + KPI row.\nEverything ember-outlined or underlined is clickable: nav, device rows, the failure callout, Add device, history rows (expand raw stderr), wizard steps, tray 'show'.\nDevice names, sizes and errors are sample data." },
+    { "id": "dir-note", "x": 1400, "y": 960, "w": 520, "page": "page-2", "text": "Round 1 directions, kept for reference. C · Kinetic was chosen; A's 30-day heartbeat strips and KPI counters were folded into it." }
+  ],
+  "launch": { "view": "canvas", "page": "page-1" }
+}

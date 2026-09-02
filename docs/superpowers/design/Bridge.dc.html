@@ -1,0 +1,62 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+  <style>
+    body { margin: 0; background: #0B1020; color: #E6EAF5; font-family: "IBM Plex Sans", system-ui, sans-serif; font-size: 13px; }
+    a { color: #7FB0FF; } a:hover { color: #A9C8FF; }
+    .rail a { text-decoration: none; }
+    .kpi-num { font-family: "Chakra Petch", "IBM Plex Sans", sans-serif; font-weight: 700; font-size: 44px; line-height: 1; letter-spacing: -0.01em; }
+    .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+    .strip { height: 14px; border-radius: 2px; background: repeating-linear-gradient(90deg, #2FBF83 0 6px, #0B1020 6px 8px); }
+    .row { display: grid; grid-template-columns: 22px 1.4fr 1fr 2.2fr 0.9fr 0.7fr; gap: 16px; align-items: center; padding: 12px 16px; border-top: 1px solid #1B2440; }
+    .th { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #7C86A6; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; }
+  </style>
+</helmet>
+<div style="width: 1280px; height: 800px; display: flex; background: #0B1020; overflow: hidden;">
+  <nav class="rail" style="width: 200px; background: #0E1428; border-right: 1px solid #1B2440; display: flex; flex-direction: column; padding: 20px 14px; gap: 6px; box-sizing: border-box;">
+    <div style="display: flex; align-items: center; gap: 10px; padding: 4px 8px 22px 8px;">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#4C8DFF" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h13"></path><path d="M3 12h18"></path><path d="M3 17h10"></path><path d="M19 4l2 3-2 3"></path></svg>
+      <span style="font-family: 'Chakra Petch', sans-serif; font-weight: 700; font-size: 17px; letter-spacing: 0.02em;">WarpHold</span>
+    </div>
+    <a href="#" style="display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 6px; background: #17223F; color: #E6EAF5; font-weight: 500;">Overview</a>
+    <a href="#" style="display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 6px; color: #9AA4C2;">Devices</a>
+    <a href="#" style="display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 6px; color: #9AA4C2;">Groups</a>
+    <a href="#" style="display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 6px; color: #9AA4C2;">Policies</a>
+    <a href="#" style="display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 6px; color: #9AA4C2;">Targets</a>
+    <div style="flex-grow: 1;"></div>
+    <a href="#" style="display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 6px; color: #9AA4C2;">Settings</a>
+  </nav>
+  <main style="flex-grow: 1; display: flex; flex-direction: column; min-width: 0;">
+    <header style="display: flex; align-items: center; justify-content: space-between; padding: 18px 28px; border-bottom: 1px solid #1B2440;">
+      <div style="display: flex; align-items: baseline; gap: 12px;"><span style="font-family: 'Chakra Petch', sans-serif; font-weight: 600; font-size: 20px;">Fleet</span><span class="mono" style="color: #7C86A6; font-size: 12px;">moinzadeh-home · 7 devices</span></div>
+      <div style="display: flex; gap: 10px;"><button style="background: transparent; color: #C9D2EA; border: 1px solid #2A3658; border-radius: 6px; padding: 8px 14px; font: inherit; font-weight: 500;">Snapshot all now</button><button style="background: #4C8DFF; color: #061024; border: 0; border-radius: 6px; padding: 8px 14px; font: inherit; font-weight: 600;">Add device</button></div>
+    </header>
+    <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; background: #1B2440; border-bottom: 1px solid #1B2440;">
+      <div style="background: #0B1020; padding: 22px 28px;"><div class="th">Protected</div><div class="kpi-num" style="color: #2FBF83; margin-top: 8px;">5</div><div style="color: #7C86A6; margin-top: 6px;">snapshot under 26 h</div></div>
+      <div style="background: #0B1020; padding: 22px 28px;"><div class="th">Stale</div><div class="kpi-num" style="color: #F5B942; margin-top: 8px;">1</div><div style="color: #7C86A6; margin-top: 6px;">older than a day</div></div>
+      <div style="background: #0B1020; padding: 22px 28px;"><div class="th">Failing</div><div class="kpi-num" style="color: #FF5D5D; margin-top: 8px;">1</div><div style="color: #7C86A6; margin-top: 6px;">last run errored</div></div>
+      <div style="background: #0B1020; padding: 22px 28px;"><div class="th">Stored</div><div class="kpi-num" style="color: #E6EAF5; margin-top: 8px;">1.84 <span style="font-size: 20px; color: #7C86A6;">TB</span></div><div style="color: #7C86A6; margin-top: 6px;">across 2 targets · 3.1× dedup</div></div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 12px; margin: 16px 28px 0 28px; padding: 12px 16px; border: 1px solid #5A2A2A; background: #1B1220; border-radius: 6px;"><span class="dot" style="background: #FF5D5D;"></span><span style="font-weight: 600;">media-nuc</span><span class="mono" style="color: #FFB4B4; flex-grow: 1;">kopia: error: unable to write blob: b2: 503 service_unavailable (attempt 5/5)</span><a href="#" style="font-weight: 500;">Open</a></div>
+    <section style="margin: 16px 28px; border: 1px solid #1B2440; border-radius: 6px; overflow: hidden;">
+      <div class="row th" style="border-top: 0; background: #0E1428;"><span></span><span>Device</span><span>Group</span><span>Last 30 days</span><span>Last snapshot</span><span style="text-align: right;">Size</span></div>
+      <div class="row"><span class="dot" style="background: #2FBF83;"></span><span style="font-weight: 500;">hody-fw13</span><span style="color: #9AA4C2;">Laptops</span><div class="strip"></div><span class="mono" style="color: #9AA4C2;">2 h ago</span><span class="mono" style="text-align: right;">412 GB</span></div>
+      <div class="row"><span class="dot" style="background: #2FBF83;"></span><span style="font-weight: 500;">office-desktop</span><span style="color: #9AA4C2;">Laptops</span><div class="strip"></div><span class="mono" style="color: #9AA4C2;">5 h ago</span><span class="mono" style="text-align: right;">1.1 TB</span></div>
+      <div class="row"><span class="dot" style="background: #F5B942;"></span><span style="font-weight: 500;">mom-thinkpad</span><span style="color: #9AA4C2;">Family</span><div class="strip" style="background: repeating-linear-gradient(90deg, #2FBF83 0 6px, #0B1020 6px 8px) 0 0 / 70% 100% no-repeat, repeating-linear-gradient(90deg, #2A3658 0 6px, #0B1020 6px 8px);"></div><span class="mono" style="color: #F5B942;">3 d ago</span><span class="mono" style="text-align: right;">96 GB</span></div>
+      <div class="row"><span class="dot" style="background: #FF5D5D;"></span><span style="font-weight: 500;">media-nuc</span><span style="color: #9AA4C2;">Servers</span><div class="strip" style="background: repeating-linear-gradient(90deg, #2FBF83 0 6px, #0B1020 6px 8px) 0 0 / 88% 100% no-repeat, repeating-linear-gradient(90deg, #FF5D5D 0 6px, #0B1020 6px 8px);"></div><span class="mono" style="color: #FF5D5D;">failed 04:12</span><span class="mono" style="text-align: right;">208 GB</span></div>
+      <div class="row"><span class="dot" style="background: #2FBF83;"></span><span style="font-weight: 500;">pve1</span><span style="color: #9AA4C2;">Servers</span><div class="strip"></div><span class="mono" style="color: #9AA4C2;">40 min ago</span><span class="mono" style="text-align: right;">31 GB</span></div>
+      <div class="row"><span class="dot" style="background: #2FBF83;"></span><span style="font-weight: 500;">dad-laptop</span><span style="color: #9AA4C2;">Family</span><div class="strip"></div><span class="mono" style="color: #9AA4C2;">9 h ago</span><span class="mono" style="text-align: right;">64 GB</span></div>
+    </section>
+  </main>
+</div>
+</x-dc>
+</body>
+</html>
