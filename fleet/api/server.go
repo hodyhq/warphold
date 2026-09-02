@@ -73,7 +73,13 @@ type Server struct {
 // New creates a Server for stateDir; if Fleet was activated before, its state is loaded.
 func New(stateDir string) *Server {
 	s := &Server{paths: fleet.PathsFor(stateDir), login: newLimiter(loginMaxAttempts, loginWindow), now: time.Now, b2: b2api.New(nil)}
-	_ = s.load()
+	// A missing key file just means "never activated"; anything else (bad
+	// permissions, a corrupt DB) must be loud, because the server would
+	// otherwise report "not activated" and print the setup-token path while
+	// real state sits on disk. Activate refuses to overwrite it.
+	if err := s.load(); err != nil && !errors.Is(err, os.ErrNotExist) {
+		log.Printf("warphold fleet: cannot load state from %s: %v", stateDir, err)
+	}
 	if !s.Activated() {
 		if path, token, err := ensureSetupToken(s.paths.StateDir); err == nil {
 			s.mu.Lock()
@@ -151,6 +157,14 @@ func (s *Server) Activate(ctx context.Context, passphrase, email, password strin
 
 	if s.Activated() {
 		return ErrAlreadyActivated
+	}
+	// Not activated can also mean "state exists but load() failed" (see New).
+	// Writing a fresh seal.key here would derive a new key from a new salt and
+	// permanently destroy every escrowed repo password and B2 key.
+	for _, p := range []string{s.paths.KeyFile, s.paths.DB} {
+		if _, err := os.Stat(p); err == nil {
+			return errors.New("fleet state exists but could not be loaded; refusing to overwrite seal.key - fix or remove " + s.paths.StateDir + " first")
+		}
 	}
 	if len(passphrase) < 8 || len(password) < 8 || !strings.Contains(email, "@") {
 		return ErrInvalidActivation
@@ -243,14 +257,12 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"activated": s.Activated()})
 }
 
-// setupAllowed reports whether r may call POST /activate: either it comes
-// from loopback, or it carries the one-time setup token. This only gates the
-// HTTP endpoint; the `fleet activate` CLI calls Activate directly and is
-// unaffected.
+// setupAllowed reports whether r may call POST /activate: it must carry the
+// one-time setup token, with no loopback exception - RemoteAddr is the proxy
+// behind a reverse proxy, so "from loopback" says nothing about who is
+// calling. This only gates the HTTP endpoint; the `fleet activate` CLI calls
+// Activate directly and covers local use.
 func (s *Server) setupAllowed(r *http.Request) bool {
-	if ip := clientIP(r); ip == "127.0.0.1" || ip == "::1" {
-		return true
-	}
 	s.mu.RLock()
 	tok := s.setupToken
 	s.mu.RUnlock()
@@ -262,7 +274,7 @@ func (s *Server) setupAllowed(r *http.Request) bool {
 
 func (s *Server) handleActivate(w http.ResponseWriter, r *http.Request) {
 	if !s.setupAllowed(r) {
-		writeErr(w, http.StatusForbidden, "activation requires loopback or the setup token")
+		writeErr(w, http.StatusForbidden, "activation requires the "+setupTokenHeader+" header")
 		return
 	}
 	var in struct{ Passphrase, Email, Password string }
@@ -291,6 +303,9 @@ func (s *Server) handleActivate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"admin_id": a.ID})
 }
 
+// clientIP is the peer address as seen by this process; behind a reverse
+// proxy every request shares one bucket in the login limiter. Trusted-proxy
+// handling (X-Forwarded-For with a configured trust list) is Plan 2.
 func clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -325,6 +340,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleLogout(w http.ResponseWriter, _ *http.Request) {
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", HttpOnly: true, MaxAge: -1})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// SetupTokenPathForTesting returns the path of the one-time setup-token file,
+// or "" once activation has cleared it.
+func (s *Server) SetupTokenPathForTesting() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.setupTokenPath
 }
 
 // SetB2ForTesting swaps the B2 client.

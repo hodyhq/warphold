@@ -8,7 +8,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"io"
-	"sync"
 	"time"
 
 	"github.com/kopia/kopia/fleet/store"
@@ -48,7 +47,6 @@ func HashToken(plain string) []byte {
 type Tokens struct {
 	st  *store.Store
 	now func() time.Time
-	mu  sync.Mutex
 }
 
 // NewTokens wraps a store.
@@ -81,21 +79,32 @@ func (t *Tokens) Issue(ctx context.Context, groupID int64, ttl time.Duration, ma
 	return plain, tok, nil
 }
 
-// Consume validates a token and counts one use.
+// Consume validates a token and counts one use. Validation and the increment
+// are one conditional UPDATE in the database (store.ConsumeToken), not a
+// read-check-write here: a fresh Tokens is built per request, so a mutex on
+// this struct would guard nothing and two concurrent enrollments could both
+// spend a single-use token.
 func (t *Tokens) Consume(ctx context.Context, plain string) (*store.Token, error) {
-	t.mu.Lock() // ponytail: process-wide lock; fine for one Fleet server
-	defer t.mu.Unlock()
-	tok, err := t.st.TokenByHash(ctx, HashToken(plain))
+	hash := HashToken(plain)
+
+	tok, err := t.st.TokenByHash(ctx, hash)
 	if err != nil {
 		return nil, ErrTokenInvalid
 	}
-	now := t.now()
-	if tok.RevokedAt != nil || now.After(tok.ExpiresAt) || (tok.MaxUses > 0 && tok.Uses >= tok.MaxUses) {
-		return nil, ErrTokenInvalid
-	}
-	if err := t.st.IncrementTokenUses(ctx, tok.ID); err != nil {
+
+	ok, err := t.st.ConsumeToken(ctx, tok.ID, t.now())
+	if err != nil {
 		return nil, err
 	}
-	tok.Uses++
+
+	if !ok {
+		return nil, ErrTokenInvalid
+	}
+
+	// Re-read so the returned token carries the post-update use count.
+	if fresh, err := t.st.TokenByHash(ctx, hash); err == nil {
+		tok = fresh
+	}
+
 	return tok, nil
 }

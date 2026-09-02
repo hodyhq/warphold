@@ -17,7 +17,16 @@ ARCH="$(uname -m)"; case "$ARCH" in x86_64) ARCH=amd64 ;; aarch64|arm64) ARCH=ar
 if [ "$SCOPE" = "system" ]; then BIN=/usr/local/bin; else BIN="${HOME}/.local/bin"; fi
 mkdir -p "$BIN"
 echo "Downloading warphold ({{.Version}}, linux/$ARCH)…"
-curl -fsSL "{{.Server}}/dl/warphold-linux-$ARCH" -o "$BIN/warphold.tmp" && chmod +x "$BIN/warphold.tmp" && mv "$BIN/warphold.tmp" "$BIN/warphold"
+# Fail loudly: continuing here would silently enroll with whatever stale (or
+# absent) binary is already on the box. The /dl/ route arrives in Plan 2; until
+# then, place the binary yourself and re-run.
+curl -fsSL "{{.Server}}/dl/warphold-linux-$ARCH" -o "$BIN/warphold.tmp" || {
+  rm -f "$BIN/warphold.tmp"
+  echo "download failed: place the warphold binary at $BIN/warphold and re-run" >&2
+  exit 1
+}
+chmod +x "$BIN/warphold.tmp"
+mv "$BIN/warphold.tmp" "$BIN/warphold"
 echo "Running: warphold agent enroll --server {{.Server}} --token {{.Token}} --scope $SCOPE"
 "$BIN/warphold" agent enroll --server "$SERVER" --token "$TOKEN" --scope "$SCOPE"
 "$BIN/warphold" agent install --scope "$SCOPE"

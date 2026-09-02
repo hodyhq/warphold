@@ -74,15 +74,17 @@ agent/            device side
 cli/command_fleet_*.go, cli/command_agent_*.go   thin wrappers
 ```
 
-Merging upstream: `git fetch upstream && git merge upstream/master`, expected to conflict only in the three touched files. Any Fleet package is PR-able upstream as a unit.
+Merging upstream: `git fetch upstream && git merge upstream/master`, expected to conflict only in the five touched files above **plus `go.mod` / `go.sum`** (the fork adds `modernc.org/sqlite` and friends, and upstream bumps versions in the same hunks; `go mod tidy` after resolving settles it). Any Fleet package is PR-able upstream as a unit.
 
 ### 3.3 Fleet server
 
 Mounts `/api/v1/fleet/*` on the same gorilla/mux router the upstream server exposes through its public `Setup*Handlers` methods. State is SQLite via `modernc.org/sqlite` (pure Go, no CGO). Fleet admin auth is separate from Kopia's repository users: email + argon2id password, HTTP-only session cookie, upstream's existing CSRF token scheme, login rate limiting.
 
-**Activation.** `warphold fleet activate` (also the Activate Fleet wizard in the UI) prompts for an admin passphrase, derives the sealing key, creates the DB and the first admin, and enables the routes. Unattended restarts read the sealing key from a `0600` file in the state directory (`/var/lib/warphold/` or `$XDG_STATE_HOME/warphold/`). Documented alternative: systemd `LoadCredential`. Stated as accepted risk in the docs.
+**Activation.** `warphold fleet activate` (also the Activate Fleet wizard in the UI) prompts for an admin passphrase, derives the sealing key, creates the DB and the first admin, and enables the routes. Unattended restarts read the sealing key from a `0600` file in the state directory. **The state directory is `dirname(<repository config file>)/fleet`** (`fleet.StateDirFor`) — it follows `--config-file`, so it is `/var/lib/warphold/fleet` only when the config file is `/var/lib/warphold/repository.config`; it is not a fixed `/var/lib/warphold`. Documented alternative: systemd `LoadCredential`. Stated as accepted risk in the docs.
 
-Activating over HTTP (`POST /api/v1/fleet/activate`, as opposed to the `fleet activate` CLI, which calls `Activate` directly and is unaffected) requires either a loopback client (`127.0.0.1`/`::1`) or the one-time setup token: a CSPRNG value the server writes to `<stateDir>/setup-token` on first boot before activation, logs the path, and deletes once activation succeeds. The caller presents it via the `X-WarpHold-Setup-Token` header, compared with `subtle.ConstantTimeCompare`. This closes the window where an unauthenticated LAN client could activate (and so become) the Fleet admin before the real admin gets to it.
+Activating over HTTP (`POST /api/v1/fleet/activate`, as opposed to the `fleet activate` CLI, which calls `Activate` directly and is unaffected) **always requires the one-time setup token** — there is no loopback exception, because behind a reverse proxy `RemoteAddr` is the proxy, so "came from `127.0.0.1`" says nothing about the caller. The token is a CSPRNG value the server writes to `<stateDir>/setup-token` on first boot before activation, logs the path of, and deletes once activation succeeds. The caller presents it via the `X-WarpHold-Setup-Token` header, compared with `subtle.ConstantTimeCompare`. This closes the window where an unauthenticated LAN client could activate (and so become) the Fleet admin before the real admin gets to it; local use is covered by the CLI.
+
+`Activate` also refuses to run when `<stateDir>/seal.key` or the DB file already exists but could not be loaded (a transient load failure makes the server report "not activated"): writing a fresh key from a fresh salt would permanently destroy every escrowed repo password and B2 key. `New` logs the load error instead of discarding it.
 
 **Scheduled jobs** (run by the Fleet server with the target's admin key, never by agents):
 
@@ -175,7 +177,7 @@ Admin endpoints under `/api/v1/fleet/`: `admins`, `targets`, `templates`, `group
 ## 7. Security model
 
 - Object Lock is required on B2 buckets and verified when a target is created; the target screen shows the verification state.
-- Writer keys can never delete. All prune/GC runs from Fleet with the admin key.
+- Per-agent keys carry `writeFiles`/`listFiles` but **not** `deleteFiles`; all prune/GC runs from Fleet with the admin key. This is *not* the same as "an agent key can never destroy data": Kopia's B2 backend implements `DeleteBlob` as `b2_hide_file` (`repo/blob/b2/b2_storage.go`), which B2 authorizes under `writeFiles`, so a compromised agent key can hide every blob under its own prefix and Kopia then sees an empty repository. Object Lock is the actual guarantee — the retained versions survive and recovery is un-hiding them — not the key's permission set.
 - Agents never hold the admin key and cannot list other agents' prefixes.
 - Enrollment tokens: hashed at rest, expiring, use-counted, revocable.
 - Bearer tokens: 32 bytes CSPRNG, hashed at rest, rotated on re-enroll, revocable (revocation also deletes the B2 keys).
@@ -276,7 +278,7 @@ Anything else is asked about first.
 
 ## 14. Reconcile at execution time
 
-- Whether Kopia's B2 backend needs `deleteFiles` for its own temporary blobs during `snapshot create`. If it does, the design falls back to Object Lock as the sole immutability guarantee and the key gains delete.
+- ~~Whether Kopia's B2 backend needs `deleteFiles` for its own temporary blobs during `snapshot create`.~~ **Resolved:** it does not — `b2_storage.go`'s `DeleteBlob` is `HideFile`, which B2 allows under `writeFiles`, so no `deleteFiles` capability is needed. The caveat is the mirror image of the original worry: a writer key *can* hide (and so effectively erase, from Kopia's point of view) everything under its prefix, and Object Lock is what makes that recoverable — see §7. Re-verify on the first real B2 target, since this is read from Kopia's code, not observed against the live B2 API.
 - Whether the Omarchy bar (waybar) tray module renders SNI icons from `fyne.io/systray` without extra config.
 - Whether upstream's Kopia connect token can carry a B2 config with a prefix; if not, the agent stores storage config and password separately.
 - Kopia's `--without-password`/control-API startup flags for the headless engine may differ on current master; check `cli/command_server_start.go`.

@@ -3,6 +3,8 @@ package enroll_test
 import (
 	"context"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -56,4 +58,51 @@ func TestTokenLifecycle(t *testing.T) {
 	now = now.Add(3 * time.Hour)
 	_, err = tk.Consume(ctx, multi)
 	require.ErrorIs(t, err, enroll.ErrTokenInvalid, "expired")
+}
+
+// TestConsumeIsAtomic pins I3: fleet/api builds a fresh enroll.Tokens per
+// request, so a mutex on the struct guards nothing and a read-check-increment
+// would let two concurrent enrollments both spend a single-use token. The
+// conditional UPDATE in store.ConsumeToken makes exactly one win.
+func TestConsumeIsAtomic(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "f.db"))
+	require.NoError(t, err)
+	defer st.Close()
+
+	ctx := context.Background()
+	tid, err := st.CreateTarget(ctx, &store.Target{Name: "local", Kind: "filesystem", Path: t.TempDir()})
+	require.NoError(t, err)
+	tpl, err := st.CreateTemplate(ctx, &store.Template{Name: "Home default", Sources: []string{"~"}})
+	require.NoError(t, err)
+	gid, err := st.CreateGroup(ctx, &store.Group{Name: "Laptops", TargetID: tid, TemplateID: tpl})
+	require.NoError(t, err)
+
+	// consume plain from n goroutines, each with its own Tokens (as the API
+	// does per request), and count the successes.
+	race := func(plain string, n int) int {
+		var wg sync.WaitGroup
+		var okCount int64
+		start := make(chan struct{})
+		for i := 0; i < n; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				if _, err := enroll.NewTokens(st).Consume(ctx, plain); err == nil {
+					atomic.AddInt64(&okCount, 1)
+				}
+			}()
+		}
+		close(start)
+		wg.Wait()
+		return int(okCount)
+	}
+
+	single, _, err := enroll.NewTokens(st).Issue(ctx, gid, time.Hour, 1, 7)
+	require.NoError(t, err)
+	require.Equal(t, 1, race(single, 10), "max_uses=1 token can only be spent once")
+
+	unlimited, _, err := enroll.NewTokens(st).Issue(ctx, gid, time.Hour, 0, 7)
+	require.NoError(t, err)
+	require.Equal(t, 10, race(unlimited, 10), "max_uses=0 means unlimited")
 }

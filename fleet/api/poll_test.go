@@ -55,10 +55,17 @@ func TestPollReportHealth(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, after, "command acknowledged, back to 304")
 
+	// A command ack is NOT a backup: acknowledging a pause/resume must not
+	// turn health green (fleet/store.LastOKReport counts kind='snapshot').
 	_, detail := h.do("GET", "/api/v1/fleet/agents/"+id, nil)
-	require.Equal(t, "green", detail["health"])
+	require.Equal(t, "unknown", detail["health"], "a command ack is not evidence of a backup")
 	require.Equal(t, "0.1.1", detail["version"])
 	require.NotNil(t, detail["last_seen_at"])
+
+	// an actual snapshot report is what makes it green
+	require.NoError(t, c.Report(ctx, poll.Report{TaskID: "t1s", Kind: "snapshot", Source: "~", StartedAt: now.Add(-time.Minute), FinishedAt: now, Status: "ok", SnapshotID: "k1", Bytes: 5, Files: 1}))
+	_, detail = h.do("GET", "/api/v1/fleet/agents/"+id, nil)
+	require.Equal(t, "green", detail["health"])
 
 	require.NoError(t, c.Report(ctx, poll.Report{TaskID: "t2", Kind: "snapshot", Source: "~", StartedAt: now, FinishedAt: now.Add(time.Second), Status: "error", Stderr: "kopia: error: unable to write blob"}))
 	_, detail = h.do("GET", "/api/v1/fleet/agents/"+id, nil)

@@ -39,9 +39,18 @@ func (s *Store) TokenByHash(ctx context.Context, h []byte) (*Token, error) {
 	return scanToken(s.db.QueryRowContext(ctx, `SELECT `+tokenCols+` FROM enrollment_tokens WHERE token_hash=?`, h))
 }
 
-func (s *Store) IncrementTokenUses(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE enrollment_tokens SET uses=uses+1 WHERE id=?`, id)
-	return err
+// ConsumeToken counts one use of a token, but only if it is still usable, in
+// a single conditional UPDATE so concurrent enrollments cannot both pass the
+// check. It reports whether the use was counted. expires_at is RFC3339 UTC
+// text, which sorts lexicographically, so the SQL comparison against ts(now)
+// matches the Go one.
+func (s *Store) ConsumeToken(ctx context.Context, id int64, now time.Time) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE enrollment_tokens SET uses=uses+1 WHERE id=? AND revoked_at IS NULL AND expires_at>? AND (max_uses=0 OR uses<max_uses)`, id, ts(now))
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
 }
 
 func (s *Store) RevokeToken(ctx context.Context, id int64, at time.Time) error {

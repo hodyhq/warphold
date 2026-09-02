@@ -139,3 +139,43 @@ func TestWatchParsesRealSnapshotDescriptionFormat(t *testing.T) {
 	require.Len(t, reports, 1)
 	require.Equal(t, "/data", reports[0].Source)
 }
+
+// TestRestartedAgentReportsUniqueTaskIDs pins C1: Kopia numbers tasks from a
+// per-process counter, so the first snapshot after an agent restart is task
+// "1" again. Fleet dedupes on (agent_id, task_id) with INSERT OR IGNORE, so
+// a repeated id would be silently dropped and health would never go green
+// again. Two loops (a simulated restart) reporting a task with the same local
+// id must reach Fleet as two distinct reports.
+func TestRestartedAgentReportsUniqueTaskIDs(t *testing.T) {
+	var mu sync.Mutex
+	var reports []poll.Report
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var rep poll.Report
+		json.NewDecoder(r.Body).Decode(&rep) //nolint:errcheck
+		mu.Lock()
+		reports = append(reports, rep)
+		mu.Unlock()
+		w.WriteHeader(204)
+	}))
+	defer srv.Close()
+
+	report := func(start time.Time) {
+		end := start.Add(time.Minute)
+		fl := &fakeLocal{tasks: []uitask.Info{
+			{TaskID: "1", Kind: "Snapshot", Description: "hody@fw13:/data at 2026-09-01T23:00:00Z", StartTime: start, EndTime: &end, Status: uitask.StatusSuccess},
+		}}
+		l := run.New(run.Deps{Fleet: &poll.Client{Server: srv.URL, Bearer: "wa_1"}, Local: fl, State: &state.Config{Scope: "user"}, Now: time.Now, Log: t.Logf})
+		require.NoError(t, l.WatchOnce(context.Background()))
+		// a re-poll within one engine lifetime must still dedupe locally
+		require.NoError(t, l.WatchOnce(context.Background()))
+	}
+
+	first := time.Now().Add(-time.Hour)
+	report(first)
+	report(first.Add(30 * time.Minute)) // restart: same local task id, later start
+
+	require.Len(t, reports, 2)
+	require.NotEqual(t, reports[0].TaskID, reports[1].TaskID, "wire task id must be unique per engine lifetime")
+	require.Contains(t, reports[0].TaskID, "-1")
+	require.Equal(t, "/data", reports[0].Source)
+}

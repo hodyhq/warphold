@@ -149,6 +149,18 @@ func (l *Loop) WatchOnce(ctx context.Context) error {
 		}
 
 		rep := engine.ToReport(t, source)
+
+		// Kopia numbers tasks from a per-process counter
+		// (internal/uitask.Manager.nextTaskID), so after every agent restart
+		// the first snapshot is task "1" again. Fleet stores reports with
+		// INSERT OR IGNORE on UNIQUE(agent_id, task_id), so a repeated id is
+		// silently dropped and health never goes green again. Prefix the wire
+		// id with the task's start time: unique per engine lifetime, and
+		// deterministic for one task, so a retry before Fleet has recorded it
+		// still dedupes. Command reports use "cmd-<id>" and are already
+		// globally unique, so they are left alone.
+		rep.TaskID = strconv.FormatInt(t.StartTime.UnixNano(), 36) + "-" + t.TaskID
+
 		if rep.Status == "error" && rep.Stderr == "" {
 			rep.Stderr, _ = l.d.Local.TaskLog(ctx, t.TaskID)
 		}

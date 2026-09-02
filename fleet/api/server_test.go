@@ -110,9 +110,26 @@ func (h *harness) mkGroup(t *testing.T) float64 {
 	return g["id"].(float64)
 }
 
+// setupToken reads the one-time setup token the server wrote to its state
+// directory. HTTP activation always requires it (there is no loopback
+// exception), so every test that activates over HTTP goes through here.
+func (h *harness) setupToken() string {
+	h.t.Helper()
+	path := h.s.SetupTokenPathForTesting()
+	require.NotEmpty(h.t, path, "server has no pending setup token")
+	b, err := os.ReadFile(path)
+	require.NoError(h.t, err)
+	return strings.TrimSpace(string(b))
+}
+
 func (h *harness) activateAndLogin() {
 	h.t.Helper()
-	resp, _ := h.do("POST", "/api/v1/fleet/activate", map[string]string{"passphrase": "seal-me!", "email": "hody@hody.dev", "password": "pw12345678"})
+	req, _ := http.NewRequest("POST", h.srv.URL+"/api/v1/fleet/activate", jsonBody(map[string]string{"passphrase": "seal-me!", "email": "hody@hody.dev", "password": "pw12345678"}))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-WarpHold-Setup-Token", h.setupToken())
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(h.t, err)
+	resp.Body.Close()
 	require.Equal(h.t, 201, resp.StatusCode)
 	resp, _ = h.do("POST", "/api/v1/fleet/session", map[string]string{"email": "hody@hody.dev", "password": "pw12345678"})
 	require.Equal(h.t, 204, resp.StatusCode)
@@ -131,8 +148,12 @@ func TestStatusActivateLogin(t *testing.T) {
 	resp, body = h.do("GET", "/api/v1/fleet/status", nil)
 	require.Equal(t, true, body["activated"])
 
+	// The token file is gone after activation, so a second HTTP activation is
+	// refused by the gate before it ever reaches the already-activated check.
 	resp, _ = h.do("POST", "/api/v1/fleet/activate", map[string]string{"passphrase": "again", "email": "a@b", "password": "pw12345678"})
-	require.Equal(t, 409, resp.StatusCode)
+	require.Equal(t, 403, resp.StatusCode)
+	require.Empty(t, h.s.SetupTokenPathForTesting(), "setup token cleared on activation")
+	require.ErrorIs(t, h.s.Activate(t.Context(), "again", "a@b", "pw12345678"), api.ErrAlreadyActivated)
 
 	resp, _ = h.do("DELETE", "/api/v1/fleet/session", nil)
 	require.Equal(t, 204, resp.StatusCode)
@@ -156,7 +177,7 @@ func TestActivationSurvivesRestart(t *testing.T) {
 	m := mux.NewRouter()
 	s.Mount(m)
 	ts := httptest.NewServer(m)
-	h := &harness{t: t, srv: ts}
+	h := &harness{t: t, srv: ts, s: s}
 	h.activateAndLogin()
 	ts.Close()
 	require.NoError(t, s.Close())
@@ -166,19 +187,21 @@ func TestActivationSurvivesRestart(t *testing.T) {
 	require.True(t, s2.Activated(), "key file + db must reopen without the passphrase")
 }
 
-// TestActivateAllowsLoopback confirms the setup-token gate does not break the
-// common case: a request from loopback (as httptest.Server serves) may
-// activate without any header.
-func TestActivateAllowsLoopback(t *testing.T) {
+// TestActivateRejectsLoopbackWithoutToken pins the dropped loopback bypass:
+// RemoteAddr is the reverse proxy's address behind a proxy, so "came from
+// 127.0.0.1" proves nothing about the caller. httptest.Server serves from
+// loopback, and the request is still refused without the header.
+func TestActivateRejectsLoopbackWithoutToken(t *testing.T) {
 	h := newHarness(t)
 	resp, _ := h.do("POST", "/api/v1/fleet/activate", map[string]string{"passphrase": "seal-me!", "email": "hody@hody.dev", "password": "pw12345678"})
-	require.Equal(t, 201, resp.StatusCode)
+	require.Equal(t, 403, resp.StatusCode)
+	require.False(t, h.s.Activated())
 }
 
-// TestActivateRequiresLoopbackOrToken drives the mux directly (rather than
-// through a real TCP httptest.Server) so RemoteAddr can be forged to a
-// non-loopback address, and checks the setup-token file bridges the gate.
-func TestActivateRequiresLoopbackOrToken(t *testing.T) {
+// TestActivateRequiresToken drives the mux directly (rather than through a
+// real TCP httptest.Server) so RemoteAddr can be forged to a non-loopback
+// address, and checks the setup-token file bridges the gate.
+func TestActivateRequiresToken(t *testing.T) {
 	dir := t.TempDir()
 	s := api.New(dir)
 	t.Cleanup(func() { s.Close() })
@@ -246,4 +269,40 @@ func TestActivateIsExclusive(t *testing.T) {
 	admins, err := s.AdminsForTesting(context.Background())
 	require.NoError(t, err)
 	require.Len(t, admins, 1)
+}
+
+// TestActivateRefusesToOverwriteUnloadableState pins C2: if New cannot load
+// existing state (here: an unreadable DB) the server reports "not activated",
+// but Activate must NOT write a fresh seal.key over the old one - deriving a
+// new key from a new salt would permanently destroy every escrowed repo
+// password and B2 key.
+func TestActivateRefusesToOverwriteUnloadableState(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores file permissions")
+	}
+
+	dir := t.TempDir()
+	s := api.New(dir)
+	require.NoError(t, s.Activate(t.Context(), "seal-me!", "hody@hody.dev", "pw12345678"))
+	require.NoError(t, s.Close())
+
+	keyFile := filepath.Join(dir, "seal.key")
+	before, err := os.ReadFile(keyFile)
+	require.NoError(t, err)
+
+	dbFile := filepath.Join(dir, "fleet.db")
+	require.NoError(t, os.Chmod(dbFile, 0))
+	t.Cleanup(func() { os.Chmod(dbFile, 0o600) }) //nolint:errcheck
+
+	s2 := api.New(dir)
+	t.Cleanup(func() { s2.Close() })
+	require.False(t, s2.Activated(), "unreadable DB means state could not be loaded")
+
+	err = s2.Activate(t.Context(), "different-passphrase", "attacker@example.com", "pw12345678")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "refusing to overwrite seal.key")
+
+	after, err := os.ReadFile(keyFile)
+	require.NoError(t, err)
+	require.Equal(t, before, after, "seal.key must be byte-identical")
 }

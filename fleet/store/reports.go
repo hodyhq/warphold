@@ -56,9 +56,12 @@ func (s *Store) ReportsForAgent(ctx context.Context, agentID string, limit int) 
 	return out, rows.Err()
 }
 
-// LastOKReport returns the newest successful snapshot report for an agent, or nil.
+// LastOKReport returns the newest successful snapshot report for an agent, or
+// nil. Only kind='snapshot' counts: health means "this device has a recent
+// backup", and the agent reports every command it applies (including a
+// pause/resume that runs no backup at all) as kind='command', status='ok'.
 func (s *Store) LastOKReport(ctx context.Context, agentID string) (*Report, error) {
-	r, err := scanReport(s.db.QueryRowContext(ctx, `SELECT `+reportCols+` FROM reports WHERE agent_id=? AND status='ok' AND kind IN ('snapshot','command') ORDER BY finished_at DESC, id DESC LIMIT 1`, agentID))
+	r, err := scanReport(s.db.QueryRowContext(ctx, `SELECT `+reportCols+` FROM reports WHERE agent_id=? AND status='ok' AND kind='snapshot' ORDER BY finished_at DESC, id DESC LIMIT 1`, agentID))
 	if errors.Is(err, ErrNotFound) {
 		return nil, nil
 	}
