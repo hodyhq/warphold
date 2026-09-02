@@ -388,7 +388,7 @@ Wants=network-online.target
 User=warphold
 Group=warphold
 EnvironmentFile=/etc/warphold/env
-ExecStart=/usr/local/bin/warphold --config-file /var/lib/warphold/repository.config server start --address <FLEET_IP>:51515 --no-grpc --server-username admin --server-password \${KOPIA_SERVER_PASSWORD} --server-control-password \${KOPIA_SERVER_CONTROL_PASSWORD}
+ExecStart=/usr/local/bin/warphold --config-file /var/lib/warphold/repository.config server start --insecure --address http://<FLEET_IP>:51515 --no-grpc --server-username admin --server-password \${KOPIA_SERVER_PASSWORD} --server-control-password \${KOPIA_SERVER_CONTROL_PASSWORD}
 Restart=on-failure
 RestartSec=10
 NoNewPrivileges=true
@@ -401,6 +401,7 @@ WantedBy=multi-user.target
 EOF
 systemctl daemon-reload'
 ```
+Flags note (found at execution): `--insecure` is required for plain HTTP (the engine refuses to start without TLS otherwise) and `--address` must be a URL. The CLI `fleet activate` path writes no `setup-token` file; only HTTP activation uses one.
 Bind note: the service listens on the VM's LAN address so Traefik (CT 101) can reach it; the setup token gates activation, Fleet routes carry their own auth, and the Kopia UI/control APIs are password-protected, so plain HTTP inside the LAN is acceptable until every client also goes through Traefik.
 
 - [ ] **Step 4: Activate**

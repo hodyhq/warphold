@@ -3,6 +3,8 @@ package engine_test
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -133,4 +135,84 @@ func TestStatus(t *testing.T) {
 		status, connected = l.Status(ctx)
 		return connected && status == "paused"
 	}, 10*time.Second, 100*time.Millisecond)
+}
+
+// TestHeadlessServesUI pins that agent mode serves the WarpHold SPA itself:
+// the tray's handoff URL has to land on a real page, not a 404 from the API
+// router.
+func TestHeadlessServesUI(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("WARPHOLD_STATE_DIR", t.TempDir())
+	cfg, pw := provisionedRepo(t)
+	h, err := engine.StartHeadless(ctx, cfg, pw, "user")
+	require.NoError(t, err)
+
+	defer h.Stop(ctx) //nolint:errcheck
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, h.BaseURL+"/", nil)
+	require.NoError(t, err)
+	req.SetBasicAuth(h.User, h.Password)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+
+	defer resp.Body.Close() //nolint:errcheck
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	require.Contains(t, string(body), "<title>WarpHold")
+
+	// client-side routes survive a direct navigation or a refresh: upstream's
+	// isKnownUIRoute allowlist does not know them, so they must be served the
+	// index rather than the file server's 404.
+	for _, p := range []string{"/agent", "/fleet/devices"} {
+		deepReq, err := http.NewRequestWithContext(ctx, http.MethodGet, h.BaseURL+p, nil)
+		require.NoError(t, err)
+		deepReq.SetBasicAuth(h.User, h.Password)
+
+		deep, err := http.DefaultClient.Do(deepReq)
+		require.NoError(t, err)
+
+		deepBody, err := io.ReadAll(deep.Body)
+		deep.Body.Close() //nolint:errcheck,gosec
+		require.NoError(t, err)
+
+		require.Equal(t, http.StatusOK, deep.StatusCode, p)
+		require.Contains(t, string(deepBody), "<title>WarpHold", p)
+	}
+
+	// ... and an unknown path is still a 404.
+	nopeReq, err := http.NewRequestWithContext(ctx, http.MethodGet, h.BaseURL+"/nope", nil)
+	require.NoError(t, err)
+	nopeReq.SetBasicAuth(h.User, h.Password)
+
+	nope, err := http.DefaultClient.Do(nopeReq)
+	require.NoError(t, err)
+
+	defer nope.Body.Close() //nolint:errcheck
+
+	require.Equal(t, http.StatusNotFound, nope.StatusCode)
+
+	// the SPA's mode detection: no Fleet routes in agent mode.
+	fleetReq, err := http.NewRequestWithContext(ctx, http.MethodGet, h.BaseURL+"/api/v1/fleet/status", nil)
+	require.NoError(t, err)
+	fleetReq.SetBasicAuth(h.User, h.Password)
+
+	fleet, err := http.DefaultClient.Do(fleetReq)
+	require.NoError(t, err)
+
+	defer fleet.Body.Close() //nolint:errcheck
+
+	require.Equal(t, http.StatusNotFound, fleet.StatusCode)
+
+	// unauthenticated requests still don't get the page.
+	anon, err := http.Get(h.BaseURL + "/") //nolint:noctx
+	require.NoError(t, err)
+
+	defer anon.Body.Close() //nolint:errcheck
+
+	require.Equal(t, http.StatusUnauthorized, anon.StatusCode)
 }

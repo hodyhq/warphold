@@ -77,7 +77,17 @@ func TestEnrollShIsServed(t *testing.T) {
 	// The script is static: the operator supplies the token at run time, so
 	// no token material is ever in the body.
 	require.NotContains(t, script, "wh_", "the served script must not carry an enrollment token")
-	require.Contains(t, script, "usage: WARPHOLD_ENROLL_TOKEN=", "no token means the usage message, not a silent enroll")
+	// With no token anywhere, the script prompts for one on the terminal with
+	// the echo off - the form the dashboard tells an admin to copy, because
+	// the token then never lands in shell history.
+	require.Contains(t, script, "stty -echo < /dev/tty")
+	require.Contains(t, script, "read -r TOKEN < /dev/tty")
+	require.Contains(t, script, "usage: run it on a terminal", "no token and no tty means the usage message, not a silent enroll")
+	// The prompt is skipped rather than run in the clear when the echo cannot
+	// be turned off, and Ctrl-C restores the terminal on the way out.
+	require.Contains(t, script, "if stty -echo < /dev/tty 2>/dev/null; then")
+	require.Contains(t, script, "trap 'stty echo < /dev/tty 2>/dev/null' EXIT")
+	require.Contains(t, script, "trap 'stty echo < /dev/tty 2>/dev/null; exit 130' INT HUP TERM")
 }
 
 // TestEnrollShIgnoresQueryToken pins the fix for a token served back in the

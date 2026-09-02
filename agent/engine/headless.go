@@ -26,7 +26,8 @@ import (
 
 const headlessUser = "warphold-agent"
 
-// Headless is Kopia's engine on loopback: scheduler, uploads, tasks; no static UI.
+// Headless is Kopia's engine on loopback: scheduler, uploads, tasks, and the
+// WarpHold UI.
 type Headless struct {
 	BaseURL string
 	User    string
@@ -56,7 +57,7 @@ func randomHex(n int) string {
 }
 
 // StartHeadless opens the repository at configFile and serves the control +
-// UI API on 127.0.0.1:0. scope selects the state directory (see state.Dir),
+// UI API, plus the WarpHold UI itself, on 127.0.0.1:0. scope selects the state directory (see state.Dir),
 // which holds the UI preferences and the engine.json written once the engine
 // is listening; Stop removes that file.
 func StartHeadless(ctx context.Context, configFile, repoPassword, scope string) (_ *Headless, retErr error) {
@@ -71,11 +72,13 @@ func StartHeadless(ctx context.Context, configFile, repoPassword, scope string) 
 		UIUser:            h.User,
 		ServerControlUser: h.User,
 		UIPreferencesFile: filepath.Join(state.Dir(scope), "ui-preferences.json"),
-		// Kopia's CSRF tokens are minted for its own UI, which this engine does
-		// not serve. Requests reach it either with basic auth (the agent's API
-		// client, the tray) or through localAuth's cookie branch, and that
-		// branch injects credentials only for same-origin requests, so a page
-		// on another loopback port cannot ride the session cookie.
+		// The engine serves the WarpHold UI, but its own API client (and the
+		// tray) authenticate with basic auth and carry no session cookie, so
+		// Kopia's cookie-bound CSRF token can't be required here. Requests
+		// reach the engine either with basic auth or through localAuth's
+		// cookie branch, and that branch injects credentials only for
+		// same-origin requests, so a page on another loopback port cannot ride
+		// the session cookie.
 		DisableCSRFTokenChecks: true,
 		MinMaintenanceInterval: 24 * time.Hour,
 	})
@@ -101,6 +104,11 @@ func StartHeadless(ctx context.Context, configFile, repoPassword, scope string) 
 	m := mux.NewRouter()
 	srv.SetupControlAPIHandlers(m)
 	srv.SetupHTMLUIAPIHandlers(m)
+	// Serve the SPA itself so the tray's handoff URL lands on a real page.
+	// Deep links first (they must precede the "/" catch-all), then the static
+	// files, which must come after the API handlers.
+	server.ServeSPADeepLinks(m)
+	srv.ServeStaticFiles(m, server.AssetFile())
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, err
@@ -122,7 +130,7 @@ func StartHeadless(ctx context.Context, configFile, repoPassword, scope string) 
 	}
 
 	h.http = &http.Server{
-		Handler:           newLocalAuth(m, h.LocalToken, h.User, h.Password),
+		Handler:           newLocalAuth(m, h.LocalToken, h.User, h.Password, scope),
 		ReadHeaderTimeout: 15 * time.Second,
 		BaseContext:       func(net.Listener) context.Context { return ctx },
 	}

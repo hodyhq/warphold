@@ -3,6 +3,7 @@ package api_test
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,7 +72,7 @@ func TestPollReportHealth(t *testing.T) {
 	_, detail = h.do("GET", "/api/v1/fleet/agents/"+id, nil)
 	require.Equal(t, "red", detail["health"])
 	reports := detail["reports"].([]any)
-	require.Equal(t, "kopia: error: unable to write blob", reports[0].(map[string]any)["Stderr"])
+	require.Equal(t, "kopia: error: unable to write blob", reports[0].(map[string]any)["stderr"])
 
 	// template change → new etag
 	_, tpls := h.doList("GET", "/api/v1/fleet/templates")
@@ -161,4 +162,20 @@ func TestReportAckIsIdempotentOnRetry(t *testing.T) {
 	// Retry: the command is already acked, so AckCommand now returns
 	// ErrNotFound. That must not surface as a failed report.
 	require.NoError(t, c.Report(ctx, rep))
+}
+
+func TestReportStderrIsCapped(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+	id, bearer := enrollAgent(t, h)
+	c := &poll.Client{Server: h.srv.URL, Bearer: bearer}
+	now := time.Now()
+	huge := strings.Repeat("x", 3*8192)
+	require.NoError(t, c.Report(t.Context(), poll.Report{TaskID: "t-big", Kind: "snapshot", Source: "~", StartedAt: now, FinishedAt: now, Status: "failed", Stderr: huge}))
+	resp, body := h.do("GET", "/api/v1/fleet/agents/"+id, nil)
+	require.Equal(t, 200, resp.StatusCode)
+	reports := body["reports"].([]any)
+	require.Len(t, reports, 1)
+	got := reports[0].(map[string]any)["stderr"].(string)
+	require.Len(t, got, 8192) // == maxReportStderr in package api
 }

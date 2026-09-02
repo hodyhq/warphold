@@ -25,14 +25,16 @@ export KOPIA_SERVER_CONTROL_PASSWORD="$(head -c 32 /dev/urandom | base64)"   # k
 export KOPIA_SERVER_PASSWORD="$(head -c 32 /dev/urandom | base64)"          # keep this secret too
 warphold --config-file /var/lib/warphold/repository.config fleet activate --email admin@example.com
 warphold --config-file /var/lib/warphold/repository.config server start \
-  --server-username admin --no-ui --no-grpc \
-  --address 127.0.0.1:51515
+  --server-username admin --no-grpc \
+  --insecure --address http://127.0.0.1:51515   # --insecure = plain HTTP; put TLS on the reverse proxy
 
 # on the device being enrolled, with a token from the Fleet admin API/UI
 read -rs -p "Enrollment token: " WARPHOLD_ENROLL_TOKEN; echo
 export WARPHOLD_ENROLL_TOKEN
 sh -c "$(curl -fsSL https://<fleet-host>/enroll.sh)"
 ```
+
+The WarpHold dashboard is served at the same address (`--address`); sign in with the Fleet admin credentials to manage devices from the browser.
 
 The token is read from a hidden prompt so it never appears in your shell history or process list. `sh -s -- --token <TOKEN>` still works, but it puts the token in the installer's argument list, where anyone who can run `ps` on that machine can read it while the install runs, and your shell records it in its history.
 

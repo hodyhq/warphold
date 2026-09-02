@@ -27,6 +27,9 @@ const defaultPollSeconds = 300
 // revokeTimeout bounds the detached B2 key hand-back after a failed enrollment.
 const revokeTimeout = 30 * time.Second
 
+// maxReportStderr caps the agent-supplied stderr stored per report.
+const maxReportStderr = 8 << 10
+
 // errCategory describes err without quoting it. Enrollment errors carry token
 // material, B2 key ids and provisioning URLs in their text, and the fleet log
 // is not a secret store, so only the concrete Go type of the error (or a
@@ -209,7 +212,7 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) pollInterval(ctx context.Context) int {
-	v, _ := s.store().Setting(ctx, "poll_interval")
+	v, _ := s.store().Setting(ctx, pollIntervalSetting)
 	if n, err := strconv.Atoi(v); err == nil && n > 0 {
 		return n
 	}
@@ -299,6 +302,11 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "command_id does not belong to this agent")
 			return
 		}
+	}
+	// Stderr is agent-controlled free text shown to admins; cap it so a chatty
+	// or hostile agent cannot bloat the store or the overview payload.
+	if len(in.Stderr) > maxReportStderr {
+		in.Stderr = in.Stderr[:maxReportStderr]
 	}
 	if _, err := s.store().AddReport(ctx, &store.Report{AgentID: a.ID, TaskID: in.TaskID, Kind: in.Kind, Source: in.Source, StartedAt: in.StartedAt, FinishedAt: in.FinishedAt, Status: in.Status, Bytes: in.Bytes, Files: in.Files, SnapshotID: in.SnapshotID, Stderr: in.Stderr}); err != nil {
 		agentFailed(w, "add report", err)

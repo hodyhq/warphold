@@ -5,10 +5,10 @@ package server
 import (
 	"net/http"
 
-	"github.com/kopia/htmluibuild"
+	warpholdui "github.com/hodyhq/warphold-ui" // warphold: serve the WarpHold UI instead of upstream htmluibuild
 )
 
 // AssetFile exposes HTML UI files.
 func AssetFile() http.FileSystem {
-	return htmluibuild.AssetFile()
+	return warpholdui.AssetFile()
 }
