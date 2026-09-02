@@ -60,7 +60,9 @@ type Server struct {
 	st    *store.Store
 	key   seal.Key
 	login *limiter
-	now   func() time.Time
+	// nowFn is the server clock, read through now() under mu so
+	// SetNowForTesting can move it between requests without racing handlers.
+	nowFn func() time.Time
 	b2    b2api.API
 	// closed is set by Close instead of nilling st: handlers read st through
 	// store() and would otherwise have to re-check for nil between every
@@ -76,7 +78,7 @@ type Server struct {
 
 // New creates a Server for stateDir; if Fleet was activated before, its state is loaded.
 func New(stateDir string) *Server {
-	s := &Server{paths: fleet.PathsFor(stateDir), login: newLimiter(loginMaxAttempts, loginWindow), now: time.Now, b2: b2api.New(nil)}
+	s := &Server{paths: fleet.PathsFor(stateDir), login: newLimiter(loginMaxAttempts, loginWindow), nowFn: time.Now, b2: b2api.New(nil)}
 	// A missing key file just means "never activated"; anything else (bad
 	// permissions, a corrupt DB) must be loud, because the server would
 	// otherwise report "not activated" and print the setup-token path while
@@ -140,6 +142,22 @@ func (s *Server) load() error {
 	return nil
 }
 
+// now returns the server clock.
+func (s *Server) now() time.Time {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.nowFn()
+}
+
+// SetNowForTesting overrides the server clock, so a test can step past a
+// session TTL instead of sleeping for it.
+func (s *Server) SetNowForTesting(f func() time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nowFn = f
+}
+
 // Activated reports whether the store and key are loaded.
 func (s *Server) Activated() bool {
 	s.mu.RLock()
@@ -190,6 +208,7 @@ func (s *Server) Activate(ctx context.Context, passphrase, email, password strin
 			return errors.New("fleet state exists but could not be loaded; refusing to overwrite seal.key - fix or remove " + s.paths.StateDir + " first")
 		}
 	}
+	email = normalizeEmail(email)
 	if len(passphrase) < 8 || len(password) < 8 || !strings.Contains(email, "@") {
 		return ErrInvalidActivation
 	}
@@ -327,7 +346,7 @@ func (s *Server) handleActivate(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	a, err := s.store().AdminByEmail(r.Context(), in.Email)
+	a, err := s.store().AdminByEmail(r.Context(), normalizeEmail(in.Email))
 	if err != nil {
 		log.Printf("warphold fleet: activated but admin lookup failed: %v", err)
 		writeErr(w, http.StatusInternalServerError, "activation failed")
@@ -366,7 +385,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, "fleet is not activated")
 		return
 	}
-	a, err := st.AdminByEmail(r.Context(), in.Email)
+	a, err := st.AdminByEmail(r.Context(), normalizeEmail(in.Email))
 	hash := dummyPWHash()
 	if err == nil {
 		hash = a.PWHash

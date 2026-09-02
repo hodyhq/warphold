@@ -13,6 +13,15 @@ import (
 // the same bar as the first.
 const minPasswordLen = 8
 
+// normalizeEmail is the single spelling of an admin's address: addresses are
+// case-insensitive in practice, so "Hody@Example.com" and "hody@example.com"
+// must be one account rather than two, and a stray space pasted into a login
+// form must not be a wrong password. Every write and every lookup goes through
+// it, so stored rows and queries always agree.
+func normalizeEmail(e string) string {
+	return strings.ToLower(strings.TrimSpace(e))
+}
+
 type adminOut struct {
 	ID        int64     `json:"id"`
 	Email     string    `json:"email"`
@@ -42,12 +51,14 @@ func (s *Server) handleAdminCreate(w http.ResponseWriter, r *http.Request) {
 		Email    string `json:"email"`
 		Password string `json:"password"`
 	}
-	if err := decode(r, &in); err != nil || !strings.Contains(in.Email, "@") || len(in.Password) < minPasswordLen {
+	err := decode(r, &in)
+	in.Email = normalizeEmail(in.Email)
+	if err != nil || !strings.Contains(in.Email, "@") || len(in.Password) < minPasswordLen {
 		writeErr(w, http.StatusBadRequest, "email must be valid and password needs 8+ characters")
 		return
 	}
 	st := s.store()
-	_, err := st.AdminByEmail(r.Context(), in.Email)
+	_, err = st.AdminByEmail(r.Context(), in.Email)
 	switch {
 	case err == nil:
 		writeErr(w, http.StatusConflict, "an admin with that email already exists")
@@ -72,10 +83,18 @@ func (s *Server) handleAdminCreate(w http.ResponseWriter, r *http.Request) {
 // handleAdminDelete removes an admin. The store refuses to delete the last
 // one, and the delete cascades onto that admin's sessions, so a browser the
 // deleted admin left signed in is locked out on its next request.
+//
+// Deleting yourself is refused even when other admins remain: it is almost
+// always a misclick on the wrong row, and it signs the caller out mid-request
+// with no way back in. Another admin can still remove the account.
 func (s *Server) handleAdminDelete(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if !ok {
 		writeErr(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	if id == adminFrom(r) {
+		writeErr(w, http.StatusConflict, "cannot delete your own account")
 		return
 	}
 	switch err := s.store().DeleteAdmin(r.Context(), id); {

@@ -41,13 +41,37 @@ func constantTimeEqual(a, b string) bool {
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
+// sameOrigin reports whether r may be authenticated from the wh_local cookie
+// alone. SameSite=Strict does not isolate ports, so a page served from any
+// other 127.0.0.1 port is same-site and its fetches carry the cookie; the
+// fetch-metadata and Origin headers are what actually separate the engine's
+// own UI from such a page.
+//
+// A request with neither header is allowed on purpose. Browsers send at least
+// one of them on a cross-origin request, so "neither" means the caller is not
+// a browser (curl, the tray), and a local process that can read the cookie can
+// read engine.json's password just as easily - it is not the threat here.
+func sameOrigin(r *http.Request) bool {
+	switch r.Header.Get("Sec-Fetch-Site") {
+	case "", "same-origin", "none":
+	default:
+		return false
+	}
+
+	if o := r.Header.Get("Origin"); o != "" && o != "http://"+r.Host {
+		return false
+	}
+
+	return true
+}
+
 func (a *localAuth) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == localSessionPath {
 		a.handoff(w, r)
 		return
 	}
 
-	if r.Header.Get("Authorization") == "" {
+	if r.Header.Get("Authorization") == "" && sameOrigin(r) {
 		if c, err := r.Cookie(localCookieName); err == nil && constantTimeEqual(c.Value, a.cookie) {
 			r.Header.Set("Authorization", a.basic)
 		}

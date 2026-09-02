@@ -42,9 +42,16 @@ type Headless struct {
 	ln    net.Listener
 }
 
+// randomHex returns n random bytes as hex. A failing entropy source must never
+// degrade into a short or guessable token: every caller here mints a secret
+// (the API password, the local-session token, the session cookie), so the only
+// safe answer is to take the process down.
 func randomHex(n int) string {
 	b := make([]byte, n)
-	_, _ = rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		panic("warphold: crypto/rand failed, refusing to mint a guessable token: " + err.Error())
+	}
+
 	return hex.EncodeToString(b)
 }
 
@@ -55,16 +62,21 @@ func randomHex(n int) string {
 func StartHeadless(ctx context.Context, configFile, repoPassword, scope string) (_ *Headless, retErr error) {
 	h := &Headless{User: headlessUser, Password: randomHex(32), LocalToken: randomHex(32), scope: scope}
 	srv, err := server.New(ctx, &server.Options{
-		ConfigFile:             configFile,
-		ConnectOptions:         &repo.ConnectOptions{},
-		RefreshInterval:        4 * time.Hour,
-		Authenticator:          auth.AuthenticateSingleUser(h.User, h.Password),
-		Authorizer:             auth.DefaultAuthorizer(),
-		PasswordPersist:        passwordpersist.None(),
-		UIUser:                 h.User,
-		ServerControlUser:      h.User,
-		UIPreferencesFile:      filepath.Join(state.Dir(scope), "ui-preferences.json"),
-		DisableCSRFTokenChecks: true, // loopback + random per-process password; CSRF is for browsers
+		ConfigFile:        configFile,
+		ConnectOptions:    &repo.ConnectOptions{},
+		RefreshInterval:   4 * time.Hour,
+		Authenticator:     auth.AuthenticateSingleUser(h.User, h.Password),
+		Authorizer:        auth.DefaultAuthorizer(),
+		PasswordPersist:   passwordpersist.None(),
+		UIUser:            h.User,
+		ServerControlUser: h.User,
+		UIPreferencesFile: filepath.Join(state.Dir(scope), "ui-preferences.json"),
+		// Kopia's CSRF tokens are minted for its own UI, which this engine does
+		// not serve. Requests reach it either with basic auth (the agent's API
+		// client, the tray) or through localAuth's cookie branch, and that
+		// branch injects credentials only for same-origin requests, so a page
+		// on another loopback port cannot ride the session cookie.
+		DisableCSRFTokenChecks: true,
 		MinMaintenanceInterval: 24 * time.Hour,
 	})
 	if err != nil {

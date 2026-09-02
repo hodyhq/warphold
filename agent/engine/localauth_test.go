@@ -36,6 +36,29 @@ func doGet(t *testing.T, cl *http.Client, url string, cookies ...*http.Cookie) *
 	return resp
 }
 
+// doGetWithHeaders is doGet plus request headers, for the browser-shaped
+// requests the same-origin guard keys on.
+func doGetWithHeaders(t *testing.T, cl *http.Client, url string, hdr map[string]string, cookies ...*http.Cookie) *http.Response {
+	t.Helper()
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+	require.NoError(t, err)
+
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+
+	for k, v := range hdr {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := cl.Do(req)
+	require.NoError(t, err)
+	t.Cleanup(func() { resp.Body.Close() }) //nolint:errcheck
+
+	return resp
+}
+
 // TestLocalSessionHandoff pins the tray's path into the engine's UI: a
 // one-URL handoff on loopback that swaps a process-lifetime token for a
 // cookie, which the middleware turns into the basic auth Kopia's own
@@ -114,6 +137,25 @@ func TestLocalSessionHandoff(t *testing.T) {
 	defer elevated.Body.Close() //nolint:errcheck
 
 	require.Equal(t, http.StatusUnauthorized, elevated.StatusCode)
+
+	// SameSite=Strict ignores ports, so a page on another 127.0.0.1 port is
+	// same-site and its fetches carry wh_local. Only the fetch-metadata and
+	// Origin headers separate it from the engine's own UI.
+	require.Equal(t, http.StatusUnauthorized,
+		doGetWithHeaders(t, cl, h.BaseURL+"/api/v1/sources", map[string]string{"Sec-Fetch-Site": "cross-site"}, c).StatusCode,
+		"a cross-site fetch cannot ride the cookie")
+	require.Equal(t, http.StatusUnauthorized,
+		doGetWithHeaders(t, cl, h.BaseURL+"/api/v1/sources", map[string]string{"Origin": "http://127.0.0.1:9999"}, c).StatusCode,
+		"another loopback port is a different origin")
+	require.Equal(t, http.StatusOK,
+		doGetWithHeaders(t, cl, h.BaseURL+"/api/v1/sources", map[string]string{"Sec-Fetch-Site": "same-origin"}, c).StatusCode)
+	require.Equal(t, http.StatusOK,
+		doGetWithHeaders(t, cl, h.BaseURL+"/api/v1/sources", map[string]string{"Origin": h.BaseURL}, c).StatusCode,
+		"the engine's own origin passes")
+
+	// Neither header: a non-browser caller (curl, the tray). Deliberately
+	// allowed - it is not the threat the guard exists for, and such a caller
+	// can read engine.json's password anyway. This is the doGet call above.
 
 	// a forged cookie does not.
 	require.Equal(t, http.StatusUnauthorized,
