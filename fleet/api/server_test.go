@@ -68,23 +68,78 @@ func (f fakeB2API) CreateKey(_ context.Context, _, _ string, r b2api.KeyRequest)
 
 func (f fakeB2API) DeleteKey(_ context.Context, _, _, _ string) error { return nil }
 
+// csrfCookieName and csrfHeaderName mirror the server's double-submit pair;
+// the harness echoes the cookie back in the header the way the UI must.
+const (
+	csrfCookieName = "wh_csrf"
+	csrfHeaderName = "X-WarpHold-CSRF"
+)
+
+// cookie returns the value of one cookie in the jar, or "".
+func (h *harness) cookie(name string) string {
+	for _, c := range h.jar {
+		if c.Name == name {
+			return c.Value
+		}
+	}
+	return ""
+}
+
+// mergeCookies applies Set-Cookie headers to the jar by name, the way a
+// browser would, so a response that refreshes one cookie does not drop the
+// other. It never writes through the old backing array: tests keep a copy of
+// the jar to prove a stale cookie is dead.
+func (h *harness) mergeCookies(cs []*http.Cookie) {
+	if len(cs) == 0 {
+		return
+	}
+	jar := append([]*http.Cookie(nil), h.jar...)
+	for _, c := range cs {
+		replaced := false
+		for i, old := range jar {
+			if old.Name == c.Name {
+				jar[i], replaced = c, true
+				break
+			}
+		}
+		if !replaced {
+			jar = append(jar, c)
+		}
+	}
+	h.jar = jar
+}
+
+// newRequest builds a request carrying the jar plus the CSRF header read back
+// out of the wh_csrf cookie - the double submit every state-changing admin
+// call has to make.
+func (h *harness) newRequest(method, path string, body io.Reader) *http.Request {
+	h.t.Helper()
+	req, err := http.NewRequest(method, h.srv.URL+path, body)
+	require.NoError(h.t, err)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	for _, c := range h.jar {
+		req.AddCookie(c)
+	}
+	if tok := h.cookie(csrfCookieName); tok != "" {
+		req.Header.Set(csrfHeaderName, tok)
+	}
+	return req
+}
+
 func (h *harness) do(method, path string, body any) (*http.Response, map[string]any) {
 	h.t.Helper()
 	var buf bytes.Buffer
 	if body != nil {
 		require.NoError(h.t, json.NewEncoder(&buf).Encode(body))
 	}
-	req, _ := http.NewRequest(method, h.srv.URL+path, &buf)
+	req := h.newRequest(method, path, &buf)
 	req.Header.Set("Content-Type", "application/json")
-	for _, c := range h.jar {
-		req.AddCookie(c)
-	}
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(h.t, err)
 	defer resp.Body.Close()
-	if cs := resp.Cookies(); len(cs) > 0 {
-		h.jar = cs
-	}
+	h.mergeCookies(resp.Cookies())
 	var out map[string]any
 	_ = json.NewDecoder(resp.Body).Decode(&out)
 	return resp, out
@@ -92,16 +147,26 @@ func (h *harness) do(method, path string, body any) (*http.Response, map[string]
 
 func (h *harness) doList(method, path string) (*http.Response, []map[string]any) {
 	h.t.Helper()
-	req, _ := http.NewRequest(method, h.srv.URL+path, nil)
-	for _, c := range h.jar {
-		req.AddCookie(c)
-	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(h.newRequest(method, path, nil))
 	require.NoError(h.t, err)
 	defer resp.Body.Close()
 	var out []map[string]any
 	_ = json.NewDecoder(resp.Body).Decode(&out)
 	return resp, out
+}
+
+// login signs in with a jar of its own and returns the cookies it got, so a
+// test can hold two independent sessions at once.
+func (h *harness) login(email, pw string) []*http.Cookie {
+	h.t.Helper()
+	req, err := http.NewRequest("POST", h.srv.URL+"/api/v1/fleet/session", jsonBody(map[string]string{"email": email, "password": pw}))
+	require.NoError(h.t, err)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(h.t, err)
+	defer resp.Body.Close()
+	require.Equal(h.t, 204, resp.StatusCode)
+	return resp.Cookies()
 }
 
 func (h *harness) mkGroup(t *testing.T) float64 {
@@ -133,8 +198,7 @@ func (h *harness) activateAndLogin() {
 	require.NoError(h.t, err)
 	resp.Body.Close()
 	require.Equal(h.t, 201, resp.StatusCode)
-	resp, _ = h.do("POST", "/api/v1/fleet/session", map[string]string{"email": "hody@hody.dev", "password": "pw12345678"})
-	require.Equal(h.t, 204, resp.StatusCode)
+	h.jar = h.login("hody@hody.dev", "pw12345678")
 }
 
 func TestStatusActivateLogin(t *testing.T) {
@@ -168,7 +232,7 @@ func TestSessionCookieSecureFollowsForwardedProto(t *testing.T) {
 	h := newHarness(t)
 	h.activateAndLogin()
 
-	login := func(proto string) *http.Cookie {
+	login := func(proto string) []*http.Cookie {
 		t.Helper()
 		req, _ := http.NewRequest("POST", h.srv.URL+"/api/v1/fleet/session", jsonBody(map[string]string{"email": "hody@hody.dev", "password": "pw12345678"}))
 		req.Header.Set("Content-Type", "application/json")
@@ -180,14 +244,23 @@ func TestSessionCookieSecureFollowsForwardedProto(t *testing.T) {
 		defer resp.Body.Close()
 		require.Equal(t, 204, resp.StatusCode)
 		cs := resp.Cookies()
-		require.Len(t, cs, 1)
-		return cs[0]
+		require.Len(t, cs, 2, "login sets the session and CSRF cookies")
+		return cs
 	}
 
-	require.False(t, login("").Secure, "plain http must not set Secure")
-	require.False(t, login("http").Secure)
-	require.True(t, login("https").Secure, "https through a proxy must set Secure")
-	require.True(t, login("HTTPS").Secure, "the header value is case-insensitive")
+	// Both cookies follow the same scheme: a CSRF token leaked over plain HTTP
+	// is as good as no CSRF token.
+	secure := func(proto string) bool {
+		t.Helper()
+		cs := login(proto)
+		require.Equal(t, cs[0].Secure, cs[1].Secure, "both cookies agree")
+		return cs[0].Secure
+	}
+
+	require.False(t, secure(""), "plain http must not set Secure")
+	require.False(t, secure("http"))
+	require.True(t, secure("https"), "https through a proxy must set Secure")
+	require.True(t, secure("HTTPS"), "the header value is case-insensitive")
 }
 
 func TestLoginRateLimitAndBadPassword(t *testing.T) {

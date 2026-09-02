@@ -216,3 +216,95 @@ func TestTemplatePolicyJSONIsValidatedAtTheStore(t *testing.T) {
 	require.NoError(t, err)
 	require.JSONEq(t, `{"retention":{"keepLatest":3}}`, string(got.PolicyJSON))
 }
+
+func TestSessionsLifecycle(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	now := clock.Now().UTC().Truncate(time.Second)
+
+	aid, err := s.CreateAdmin(ctx, "a@hody.dev", "hash-a", now)
+	require.NoError(t, err)
+
+	h1 := []byte("hash-one")
+	sid, err := s.CreateSession(ctx, h1, aid, now, now.Add(time.Hour))
+	require.NoError(t, err)
+
+	got, err := s.SessionByHash(ctx, h1)
+	require.NoError(t, err)
+	require.Equal(t, sid, got.ID)
+	require.Equal(t, aid, got.AdminID)
+	require.Nil(t, got.RevokedAt)
+	require.True(t, got.ExpiresAt.Equal(now.Add(time.Hour)), "expiry round-trips")
+
+	_, err = s.SessionByHash(ctx, []byte("no-such-hash"))
+	require.ErrorIs(t, err, store.ErrNotFound)
+
+	require.NoError(t, s.RevokeSession(ctx, sid, now))
+	got, err = s.SessionByHash(ctx, h1)
+	require.NoError(t, err)
+	require.NotNil(t, got.RevokedAt, "revoked sessions stay looked up, marked")
+
+	// RevokeSessionsForAdmin hits every live session of one admin only.
+	other, err := s.CreateAdmin(ctx, "b@hody.dev", "hash-b", now)
+	require.NoError(t, err)
+	h2 := []byte("hash-two")
+	_, err = s.CreateSession(ctx, h2, aid, now, now.Add(time.Hour))
+	require.NoError(t, err)
+	h3 := []byte("hash-three")
+	_, err = s.CreateSession(ctx, h3, other, now, now.Add(time.Hour))
+	require.NoError(t, err)
+	require.NoError(t, s.RevokeSessionsForAdmin(ctx, aid, now))
+	for _, h := range [][]byte{h1, h2} {
+		got, err = s.SessionByHash(ctx, h)
+		require.NoError(t, err)
+		require.NotNil(t, got.RevokedAt)
+	}
+	got, err = s.SessionByHash(ctx, h3)
+	require.NoError(t, err)
+	require.Nil(t, got.RevokedAt, "another admin's session is untouched")
+
+	// The "except" variant is what a password change uses: keep the caller in.
+	h4 := []byte("hash-four")
+	keep, err := s.CreateSession(ctx, h4, aid, now, now.Add(time.Hour))
+	require.NoError(t, err)
+	h5 := []byte("hash-five")
+	_, err = s.CreateSession(ctx, h5, aid, now, now.Add(time.Hour))
+	require.NoError(t, err)
+	require.NoError(t, s.RevokeSessionsForAdminExcept(ctx, aid, keep, now))
+	got, err = s.SessionByHash(ctx, h4)
+	require.NoError(t, err)
+	require.Nil(t, got.RevokedAt)
+	got, err = s.SessionByHash(ctx, h5)
+	require.NoError(t, err)
+	require.NotNil(t, got.RevokedAt)
+}
+
+func TestAdminPasswordUpdateAndDelete(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	now := clock.Now().UTC().Truncate(time.Second)
+
+	a, err := s.CreateAdmin(ctx, "a@hody.dev", "hash-a", now)
+	require.NoError(t, err)
+
+	require.ErrorIs(t, s.DeleteAdmin(ctx, a), store.ErrLastAdmin, "the last admin cannot be deleted")
+
+	b, err := s.CreateAdmin(ctx, "b@hody.dev", "hash-b", now)
+	require.NoError(t, err)
+
+	require.NoError(t, s.UpdateAdminPassword(ctx, b, "hash-b2"))
+	got, err := s.AdminByID(ctx, b)
+	require.NoError(t, err)
+	require.Equal(t, "hash-b2", got.PWHash)
+
+	_, err = s.CreateSession(ctx, []byte("b-session"), b, now, now.Add(time.Hour))
+	require.NoError(t, err)
+
+	require.NoError(t, s.DeleteAdmin(ctx, b))
+	_, err = s.AdminByID(ctx, b)
+	require.ErrorIs(t, err, store.ErrNotFound)
+	_, err = s.SessionByHash(ctx, []byte("b-session"))
+	require.ErrorIs(t, err, store.ErrNotFound, "deleting an admin drops its sessions")
+
+	require.ErrorIs(t, s.DeleteAdmin(ctx, 9999), store.ErrNotFound)
+}

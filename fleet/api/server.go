@@ -59,7 +59,6 @@ type Server struct {
 	paths fleet.Paths
 	st    *store.Store
 	key   seal.Key
-	sess  *sessions
 	login *limiter
 	now   func() time.Time
 	b2    b2api.API
@@ -135,13 +134,8 @@ func (s *Server) load() error {
 	if err != nil {
 		return err
 	}
-	secret, err := st.Setting(context.Background(), "session_secret")
-	if err != nil || secret == "" {
-		st.Close()
-		return errors.New("session secret missing")
-	}
 	s.mu.Lock()
-	s.key, s.st, s.sess, s.closed = key, st, newSessions([]byte(secret), sessionTTL), false
+	s.key, s.st, s.closed = key, st, false
 	s.mu.Unlock()
 	return nil
 }
@@ -171,13 +165,6 @@ func (s *Server) store() *store.Store {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.st
-}
-
-// signer returns the session signer, or nil before activation.
-func (s *Server) signer() *sessions {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.sess
 }
 
 // sealKey returns the sealing key; the zero Key before activation.
@@ -245,14 +232,7 @@ func (s *Server) writeActivation(ctx context.Context, salt []byte, passphrase, e
 	if _, err := st.CreateAdmin(ctx, email, pwHash, s.now()); err != nil {
 		return err
 	}
-	secret := make([]byte, 32)
-	if _, err := io.ReadFull(rand.Reader, secret); err != nil {
-		return err
-	}
-	if err := errors.Join(
-		st.SetSetting(ctx, "seal_salt", hex.EncodeToString(salt)),
-		st.SetSetting(ctx, "session_secret", hex.EncodeToString(secret)),
-	); err != nil {
+	if err := st.SetSetting(ctx, "seal_salt", hex.EncodeToString(salt)); err != nil {
 		return err
 	}
 	if err := st.Close(); err != nil {
@@ -381,8 +361,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "malformed body")
 		return
 	}
-	st, sess := s.store(), s.signer()
-	if st == nil || sess == nil {
+	st := s.store()
+	if st == nil {
 		writeErr(w, http.StatusConflict, "fleet is not activated")
 		return
 	}
@@ -399,12 +379,29 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "wrong email or password")
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: sess.issue(a.ID), Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: requestIsHTTPS(r), MaxAge: int(sessionTTL.Seconds())})
+	if err := s.startSession(r.Context(), w, r, a.ID); err != nil {
+		adminFailed(w, "create session", err)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) handleLogout(w http.ResponseWriter, _ *http.Request) {
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", HttpOnly: true, MaxAge: -1})
+// handleLogout revokes the session row behind the cookie, so the cookie is
+// dead server-side even if the client keeps a copy. Signing out is a state
+// change, so a live session must carry the CSRF token; a request with no live
+// session has nothing to revoke and just gets its cookies cleared.
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if sess := s.currentSession(r); sess != nil {
+		if !csrfOK(r) {
+			writeErr(w, http.StatusForbidden, "missing or invalid "+csrfHeader+" header")
+			return
+		}
+		if err := s.store().RevokeSession(r.Context(), sess.ID, s.now()); err != nil {
+			adminFailed(w, "revoke session", err)
+			return
+		}
+	}
+	clearAuthCookies(w, r)
 	w.WriteHeader(http.StatusNoContent)
 }
 
