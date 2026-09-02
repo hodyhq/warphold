@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -20,6 +22,15 @@ import (
 	"github.com/kopia/kopia/fleet/api"
 	"github.com/kopia/kopia/fleet/b2api"
 )
+
+// jsonNum formats a float64 (as decoded from JSON) back into an integer path segment.
+func jsonNum(f float64) string { return strconv.FormatInt(int64(f), 10) }
+
+// jsonBody marshals v into a JSON request body.
+func jsonBody(v any) io.Reader {
+	b, _ := json.Marshal(v)
+	return bytes.NewReader(b)
+}
 
 type harness struct {
 	t   *testing.T

@@ -13,6 +13,7 @@ import (
 
 	"github.com/gorilla/mux"
 
+	"github.com/kopia/kopia/agent/poll"
 	"github.com/kopia/kopia/fleet/enroll"
 	"github.com/kopia/kopia/fleet/store"
 )
@@ -137,5 +138,79 @@ func (s *Server) pollInterval(ctx context.Context) int {
 	return defaultPollSeconds
 }
 
-// mountAgentPoll is a no-op until Task 14 adds agent polling/reporting.
-func (s *Server) mountAgentPoll(_ *mux.Router) {}
+func (s *Server) mountAgentPoll(m *mux.Router) {
+	m.HandleFunc("/api/v1/fleet/agent/poll", s.requireActivated(s.requireAgent(s.handlePoll))).Methods(http.MethodPost)
+	m.HandleFunc("/api/v1/fleet/agent/report", s.requireActivated(s.requireAgent(s.handleReport))).Methods(http.MethodPost)
+}
+
+type agentKey struct{}
+
+// requireAgent authenticates the bearer token and rejects revoked agents.
+func (s *Server) requireAgent(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if bearer == "" || bearer == r.Header.Get("Authorization") {
+			writeErr(w, http.StatusUnauthorized, "missing bearer token")
+			return
+		}
+		a, err := s.st.AgentByBearerHash(r.Context(), enroll.HashToken(bearer))
+		if err != nil || a.RevokedAt != nil {
+			writeErr(w, http.StatusUnauthorized, "unknown or revoked agent")
+			return
+		}
+		next(w, r.WithContext(context.WithValue(r.Context(), agentKey{}, a)))
+	}
+}
+
+func agentFrom(r *http.Request) *store.Agent { return r.Context().Value(agentKey{}).(*store.Agent) }
+
+func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
+	a := agentFrom(r)
+	var in struct {
+		ETag      string         `json:"etag"`
+		Heartbeat poll.Heartbeat `json:"heartbeat"`
+	}
+	if err := decode(r, &in); err != nil {
+		writeErr(w, http.StatusBadRequest, "malformed body")
+		return
+	}
+	ctx := r.Context()
+	doc, err := s.policyDocFor(ctx, a)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	version := in.Heartbeat.Version
+	if version == "" {
+		version = a.Version
+	}
+	_ = s.st.TouchAgent(ctx, a.ID, s.now(), version, doc.ETag)
+	pending, _ := s.st.PendingCommands(ctx, a.ID)
+	for _, c := range pending {
+		doc.Commands = append(doc.Commands, poll.Command{ID: c.ID, Kind: c.Kind, Source: c.Source})
+	}
+	if in.ETag == doc.ETag && len(pending) == 0 {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	writeJSON(w, http.StatusOK, doc)
+}
+
+func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
+	a := agentFrom(r)
+	var in poll.Report
+	if err := decode(r, &in); err != nil || in.TaskID == "" || in.Kind == "" || in.Status == "" {
+		writeErr(w, http.StatusBadRequest, "task_id, kind and status are required")
+		return
+	}
+	ctx := r.Context()
+	if _, err := s.st.AddReport(ctx, &store.Report{AgentID: a.ID, TaskID: in.TaskID, Kind: in.Kind, Source: in.Source, StartedAt: in.StartedAt, FinishedAt: in.FinishedAt, Status: in.Status, Bytes: in.Bytes, Files: in.Files, SnapshotID: in.SnapshotID, Stderr: in.Stderr}); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if in.CommandID != 0 {
+		_ = s.st.AckCommand(ctx, in.CommandID, s.now())
+	}
+	_ = s.st.TouchAgent(ctx, a.ID, s.now(), a.Version, a.PolicyETag)
+	w.WriteHeader(http.StatusNoContent)
+}

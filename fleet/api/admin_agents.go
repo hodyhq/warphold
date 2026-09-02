@@ -1,12 +1,14 @@
 package api
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"time"
 
 	"github.com/gorilla/mux"
 
+	"github.com/kopia/kopia/fleet/health"
 	"github.com/kopia/kopia/fleet/store"
 )
 
@@ -38,8 +40,17 @@ func (s *Server) agentOut(a store.Agent, latest *store.Report) agentOut {
 	return agentOut{ID: a.ID, Name: a.Name, Hostname: a.Hostname, OS: a.OS, Arch: a.Arch, Version: a.Version, Scope: a.Scope, GroupID: a.GroupID, EnrolledAt: a.EnrolledAt, LastSeenAt: a.LastSeenAt, RevokedAt: a.RevokedAt, Health: s.healthOf(a, latest)}
 }
 
-// healthOf is replaced by fleet/health in Task 14; until then every agent is "unknown".
-func (s *Server) healthOf(_ store.Agent, _ *store.Report) string { return "unknown" }
+func (s *Server) healthOf(a store.Agent, latest *store.Report) string {
+	in := health.Input{Revoked: a.RevokedAt != nil}
+	if latest != nil {
+		in.LastRunFailed = latest.Status == "error"
+	}
+	if ok, err := s.st.LastOKReport(context.Background(), a.ID); err == nil && ok != nil {
+		t := ok.FinishedAt
+		in.LastOK = &t
+	}
+	return health.Status(in, s.now())
+}
 
 func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 	as, err := s.st.Agents(r.Context())

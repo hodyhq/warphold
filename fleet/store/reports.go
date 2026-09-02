@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -53,6 +54,15 @@ func (s *Store) ReportsForAgent(ctx context.Context, agentID string, limit int) 
 		out = append(out, *r)
 	}
 	return out, rows.Err()
+}
+
+// LastOKReport returns the newest successful snapshot report for an agent, or nil.
+func (s *Store) LastOKReport(ctx context.Context, agentID string) (*Report, error) {
+	r, err := scanReport(s.db.QueryRowContext(ctx, `SELECT `+reportCols+` FROM reports WHERE agent_id=? AND status='ok' AND kind IN ('snapshot','command') ORDER BY finished_at DESC, id DESC LIMIT 1`, agentID))
+	if errors.Is(err, ErrNotFound) {
+		return nil, nil
+	}
+	return r, err
 }
 
 // LatestReports returns the newest report per agent.
