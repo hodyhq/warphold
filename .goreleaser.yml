@@ -1,7 +1,14 @@
 # This is an example goreleaser.yaml file with some sane defaults.
 # Make sure to check the documentation at http://goreleaser.com
+project_name: warphold   # warphold: renamed fork of kopia
 builds:
-- env:
+# warphold: release artifacts are named warphold, so they land in
+# dist/warphold_<os>_<arch>/warphold. The Makefile's kopia_ui_embedded_exe
+# paths are pointed at the same location (one of the upstream files the fork
+# may touch), so `make kopia-ui` and the release build agree.
+- id: warphold
+  binary: warphold
+  env:
   - CGO_ENABLED=0
   goos:
   - linux

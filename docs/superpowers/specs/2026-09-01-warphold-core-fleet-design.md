@@ -46,11 +46,13 @@ This spec covers **sub-project 1**: the fork, the Fleet control plane, the Linux
 
 ### 3.2 Fork discipline
 
-Upstream files touched, and nothing else:
+Upstream files touched, and nothing else (the UI import swap in `internal/server/htmlui_embed.go` originally planned here didn't happen in sub-project 1 — no UI fork exists yet, so it's Plan 2's item, §15):
 
-1. `internal/server/htmlui_embed.go` — swap the UI module import.
-2. `cli/app.go` — register the `fleet` and `agent` command groups.
-3. `Makefile` / goreleaser config — binary name and branding strings (title prefix, icons).
+1. `cli/app.go` — register the `fleet` and `agent` command groups (`c.fleet.setup(c, app)`, an `agent commandAgent` field).
+2. `cli/command_server_start.go` — a `setupHandlers` hook: before mounting the control-API and UI handlers, `setupHandlers` walks `serverExtraHandlers` (populated by the new `cli/server_hooks.go`'s `RegisterServerHandlers`) so Fleet's routes mount on the same mux router ahead of the UI catch-all. `server_hooks.go` is a new file, not an upstream one, but it's the seam `command_server_start.go` was cut open to expose — one three-line hook, no other changes to `server start`.
+3. `Makefile` — a `warphold-build` target (`CGO_ENABLED=0 go build … -o dist/warphold$(exe_suffix) .`), additive.
+4. `.goreleaser.yml` — `project_name: warphold`, binary renamed to `warphold`; ldflags/homepage otherwise unchanged.
+5. `main.go` — the kingpin app name changes from `kopia` to `warphold` (`kingpin.New("warphold", …)`); usage text otherwise unchanged.
 
 All Fleet and agent code is **new files** in new packages:
 
@@ -72,13 +74,17 @@ agent/            device side
 cli/command_fleet_*.go, cli/command_agent_*.go   thin wrappers
 ```
 
-Merging upstream: `git fetch upstream && git merge upstream/master`, expected to conflict only in the three touched files. Any Fleet package is PR-able upstream as a unit.
+Merging upstream: `git fetch upstream && git merge upstream/master`, expected to conflict only in the five touched files above **plus `go.mod` / `go.sum`** (the fork adds `modernc.org/sqlite` and friends, and upstream bumps versions in the same hunks; `go mod tidy` after resolving settles it). Any Fleet package is PR-able upstream as a unit.
 
 ### 3.3 Fleet server
 
 Mounts `/api/v1/fleet/*` on the same gorilla/mux router the upstream server exposes through its public `Setup*Handlers` methods. State is SQLite via `modernc.org/sqlite` (pure Go, no CGO). Fleet admin auth is separate from Kopia's repository users: email + argon2id password, HTTP-only session cookie, upstream's existing CSRF token scheme, login rate limiting.
 
-**Activation.** `warphold fleet activate` (also the Activate Fleet wizard in the UI) prompts for an admin passphrase, derives the sealing key, creates the DB and the first admin, and enables the routes. Unattended restarts read the sealing key from a `0600` file in the state directory (`/var/lib/warphold/` or `$XDG_STATE_HOME/warphold/`). Documented alternative: systemd `LoadCredential`. Stated as accepted risk in the docs.
+**Activation.** `warphold fleet activate` (also the Activate Fleet wizard in the UI) prompts for an admin passphrase, derives the sealing key, creates the DB and the first admin, and enables the routes. Unattended restarts read the sealing key from a `0600` file in the state directory. **The state directory is `dirname(<repository config file>)/fleet`** (`fleet.StateDirFor`) — it follows `--config-file`, so it is `/var/lib/warphold/fleet` only when the config file is `/var/lib/warphold/repository.config`; it is not a fixed `/var/lib/warphold`. Documented alternative: systemd `LoadCredential`. Stated as accepted risk in the docs.
+
+Activating over HTTP (`POST /api/v1/fleet/activate`, as opposed to the `fleet activate` CLI, which calls `Activate` directly and is unaffected) **always requires the one-time setup token** — there is no loopback exception, because behind a reverse proxy `RemoteAddr` is the proxy, so "came from `127.0.0.1`" says nothing about the caller. The token is a CSPRNG value the server writes to `<stateDir>/setup-token` on first boot before activation, logs the path of, and deletes once activation succeeds. The caller presents it via the `X-WarpHold-Setup-Token` header, compared with `subtle.ConstantTimeCompare`. This closes the window where an unauthenticated LAN client could activate (and so become) the Fleet admin before the real admin gets to it; local use is covered by the CLI.
+
+`Activate` also refuses to run when `<stateDir>/seal.key` or the DB file already exists but could not be loaded (a transient load failure makes the server report "not activated"): writing a fresh key from a fresh salt would permanently destroy every escrowed repo password and B2 key. `New` logs the load error instead of discarding it.
 
 **Scheduled jobs** (run by the Fleet server with the target's admin key, never by agents):
 
@@ -131,7 +137,7 @@ Health is computed at read time: **green** when the newest successful snapshot i
 
 **Flow.**
 
-1. Admin: Devices → Add device → pick group → gets a token and a one-liner: `curl -fsSL https://<fleet>/enroll.sh | sh -s -- --token <T>`. Groups also offer a **preconfigured installer download** with the token baked in.
+1. Admin: Devices → Add device → pick group → gets a token and a one-liner: `curl -fsSL https://<fleet>/enroll.sh | sh -s -- --token <T>`. The token is passed as an argument, never in the URL: the served script is static, so the token stays out of the fleet's access log, out of any proxy in front of it, and out of the response body that `sh -s` echoes into terminals and CI logs. Groups also offer a **preconfigured installer download** with the token baked in.
 2. Script installs `warphold` to the user's local bin (or `/usr/local/bin` for system scope), writes the unit and autostart entry, and runs `warphold agent enroll --server <url> --token <T>`.
 3. `POST /api/v1/fleet/enroll {token, hostname, os, arch, version, scope}`. Fleet validates the token and, using the target's admin key:
    - creates a **writer** B2 application key scoped to the bucket and prefix `agents/<agent-id>/` with `writeFiles`, `listFiles`, `readFiles` and **no** `deleteFiles`;
@@ -142,6 +148,8 @@ Health is computed at read time: **green** when the newest successful snapshot i
 4. Response: agent id, bearer token, display name, Kopia connect token, poll interval. Agent stores them `0600`, connects, starts the engine, and polls.
 
 **Filesystem targets** exist so CI and homelab tests run without cloud credentials. Isolation there is a per-agent directory plus a per-agent repo password; the hosted-mode ACL model comes in sub-project 2.
+
+`GET /enroll.sh` serves a **static** script: it reads no `token` query parameter, and the token reaches the script only as an argument (`sh -s -- --token <T>`), so no token is ever templated into the body or carried in a URL. Missing `--token` prints the usage message and exits `2`. The one attacker-controlled value still interpolated is the `Host` header (used to build the `Server` URL baked into the script); it must match `^(\[ipv6\]|host)(:port)?$` or the request is a `400`, not a template-injection opportunity. The endpoint is deliberately unauthenticated: the script carries no secret, and a device that hasn't enrolled yet has no admin session to present.
 
 ## 6. Agent ↔ Fleet protocol
 
@@ -169,14 +177,15 @@ Admin endpoints under `/api/v1/fleet/`: `admins`, `targets`, `templates`, `group
 ## 7. Security model
 
 - Object Lock is required on B2 buckets and verified when a target is created; the target screen shows the verification state.
-- Writer keys can never delete. All prune/GC runs from Fleet with the admin key.
+- Per-agent keys carry `writeFiles`/`listFiles` but **not** `deleteFiles`; all prune/GC runs from Fleet with the admin key. This is *not* the same as "an agent key can never destroy data": Kopia's B2 backend implements `DeleteBlob` as `b2_hide_file` (`repo/blob/b2/b2_storage.go`), which B2 authorizes under `writeFiles`, so a compromised agent key can hide every blob under its own prefix and Kopia then sees an empty repository. Object Lock is the actual guarantee — the retained versions survive and recovery is un-hiding them — not the key's permission set.
 - Agents never hold the admin key and cannot list other agents' prefixes.
-- Enrollment tokens: hashed at rest, expiring, use-counted, revocable.
+- Enrollment tokens: hashed at rest, expiring, use-counted, revocable, and never carried in a URL — `/enroll.sh` is static and takes `--token` as a script argument.
 - Bearer tokens: 32 bytes CSPRNG, hashed at rest, rotated on re-enroll, revocable (revocation also deletes the B2 keys).
 - Repo passwords and B2 keys sealed at rest under the admin passphrase.
 - Fleet admin login rate-limited; sessions HTTP-only, SameSite=Strict.
 - Every error shown in the UI is the raw Kopia stderr.
 - **Documented honestly:** the Fleet admin can decrypt every agent's backups. For a family fleet that is the point; it is stated on the Activate screen and in the README.
+- Reports may only acknowledge commands that belong to the reporting agent: `POST /agent/report` with a `command_id` looks up that command's owning `agent_id` and rejects the ack (`400`) if it doesn't match the authenticated caller, so one agent can't guess another's sequential command id and silently discard its pending command.
 
 ## 8. Recovery kit
 
@@ -269,10 +278,11 @@ Anything else is asked about first.
 
 ## 14. Reconcile at execution time
 
-- Whether Kopia's B2 backend needs `deleteFiles` for its own temporary blobs during `snapshot create`. If it does, the design falls back to Object Lock as the sole immutability guarantee and the key gains delete.
+- ~~Whether Kopia's B2 backend needs `deleteFiles` for its own temporary blobs during `snapshot create`.~~ **Resolved:** it does not — `b2_storage.go`'s `DeleteBlob` is `HideFile`, which B2 allows under `writeFiles`, so no `deleteFiles` capability is needed. The caveat is the mirror image of the original worry: a writer key *can* hide (and so effectively erase, from Kopia's point of view) everything under its prefix, and Object Lock is what makes that recoverable — see §7. Re-verify on the first real B2 target, since this is read from Kopia's code, not observed against the live B2 API.
 - Whether the Omarchy bar (waybar) tray module renders SNI icons from `fyne.io/systray` without extra config.
 - Whether upstream's Kopia connect token can carry a B2 config with a prefix; if not, the agent stores storage config and password separately.
 - Kopia's `--without-password`/control-API startup flags for the headless engine may differ on current master; check `cli/command_server_start.go`.
+- ~~Resolved during implementation~~: the real Snapshot task `Description` from `internal/server.runSnapshotTask` is `fmt.Sprintf("%v at %v", src, time)` where `src` is a `snapshot.SourceInfo.String()` rendering `user@host:path` — e.g. `hody@fw13:/home/hody at 2026-09-01T23:00:00Z` — not the placeholder `Snapshot <path>:` shape originally assumed. The agent's task-watcher parses this with `^(?:Snapshot )?[^@\s]+@[^:\s]+:(.+?)(?: at \S+)?$`.
 
 ## 15. Out of scope for sub-project 1
 

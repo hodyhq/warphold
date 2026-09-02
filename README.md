@@ -67,6 +67,29 @@ Building Kopia
 ---
 See [Build Infrastructure](BUILD.md) for more information on building Kopia and working with the source code.
 
+WarpHold Fleet quick start
+---
+WarpHold adds a "Fleet" control plane and a device-side agent on top of Kopia. Activate a Fleet, start its server, and enroll a device:
+
+```bash
+# on the Fleet host
+export KOPIA_SERVER_CONTROL_PASSWORD="$(head -c 32 /dev/urandom | base64)"   # keep this secret
+warphold --config-file /var/lib/warphold/repository.config fleet activate --email admin@example.com
+warphold --config-file /var/lib/warphold/repository.config server start \
+  --insecure --without-password --no-ui --no-grpc \
+  --address 127.0.0.1:51515 \
+  --server-control-password "$KOPIA_SERVER_CONTROL_PASSWORD"
+
+# on the device being enrolled, with a token from the Fleet admin API/UI
+curl -fsSL https://<fleet-host>/enroll.sh | sh -s -- --token <TOKEN>
+```
+
+`--without-password` leaves Kopia's own control API unauthenticated, so **always pass `--server-control-password`** (without it the control API is open to anyone who can reach the port) and **bind to `127.0.0.1`**, with a TLS reverse proxy (Traefik/Caddy/nginx) terminating in front. Binding `0.0.0.0` directly puts an unencrypted control plane on the LAN: enrollment bearer tokens and the setup token travel in the clear.
+
+**The installer does not download the binary in this version.** Put the `warphold` binary at `~/.local/bin/warphold` (or `/usr/local/bin/warphold` for `--scope system`) on the device first and `enroll.sh` will use it as-is; the download from `GET /dl/warphold-linux-<arch>` arrives in Plan 2, so without a preinstalled binary the script fails loudly instead of enrolling. With the binary in place the script enrolls it against the token and installs a `systemd --user` unit (`warphold agent install --scope user`) so the agent runs and polls automatically.
+
+**The Fleet admin can decrypt every enrolled device's backups.** Fleet holds the admin key for every target it provisions, so it can run maintenance and generate recovery kits on agents' behalf — for a family or personal fleet that's the point, but it means Fleet's admin passphrase is the one secret that must never leak. And the per-agent B2 *writer* key is not as harmless as "writer" suggests: Kopia's B2 backend implements blob deletion as `b2_hide_file`, which needs only `writeFiles`, so a compromised agent can hide every blob under its own prefix and make its repository look empty. Object Lock is what makes that recoverable — the retained versions are still there and can be un-hidden — not the key's permission set.
+
 Contribution Guidelines
 ---
 Kopia is open source. For more information see the [Contribution Guidelines](https://kopia.io/docs/contribution-guidelines/).

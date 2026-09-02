@@ -1,0 +1,78 @@
+package install_test
+
+import (
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+
+	"github.com/kopia/kopia/agent/install"
+)
+
+func TestSystemdPlans(t *testing.T) {
+	// XDG_CONFIG_HOME, not HOME: os.UserHomeDir reads a different variable on
+	// Windows, so a HOME-only test pins a path this code never produces there.
+	cfg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+	p, err := install.Systemd("user", "/home/hody/.local/bin/warphold")
+	require.NoError(t, err)
+	unit, ok := p.Files[filepath.Join(cfg, "systemd", "user", "warphold-agent.service")]
+	require.True(t, ok)
+	require.Contains(t, unit, "ExecStart=\"/home/hody/.local/bin/warphold\" agent run --scope user")
+	require.Contains(t, unit, "RestartPreventExitStatus=3")
+	require.Contains(t, unit, "StartLimitIntervalSec=600")
+	require.Contains(t, unit, "StartLimitBurst=5")
+	require.Contains(t, unit, "WantedBy=default.target")
+	require.Equal(t, [][]string{{"systemctl", "--user", "daemon-reload"}, {"systemctl", "--user", "enable", "--now", "warphold-agent"}, {"loginctl", "enable-linger"}}, p.Commands)
+
+	s, err := install.Systemd("system", "/usr/local/bin/warphold")
+	require.NoError(t, err)
+	unit = s.Files["/etc/systemd/system/warphold-agent.service"]
+	require.Contains(t, unit, "--scope system")
+	require.Contains(t, unit, "WantedBy=multi-user.target")
+	require.Equal(t, [][]string{{"systemctl", "daemon-reload"}, {"systemctl", "enable", "--now", "warphold-agent"}}, s.Commands)
+}
+
+func TestApplyWritesAndRuns(t *testing.T) {
+	dir := t.TempDir()
+	p := install.Plan{Files: map[string]string{filepath.Join(dir, "a", "x.service"): "unit"}, Commands: [][]string{{"systemctl", "daemon-reload"}}}
+	var ran []string
+	require.NoError(t, install.Apply(p, func(name string, args ...string) error {
+		ran = append(ran, name+" "+strings.Join(args, " "))
+		return nil
+	}))
+	require.Equal(t, []string{"systemctl daemon-reload"}, ran)
+	require.FileExists(t, filepath.Join(dir, "a", "x.service"))
+}
+
+func TestSystemdRejectsRelativeConfigDir(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "relative/config")
+	_, err := install.Systemd("user", "/home/hody/.local/bin/warphold")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "not absolute")
+}
+
+// TestSystemdRejectsTraversalInConfigDir pins the fix for an XDG_CONFIG_HOME
+// that is absolute but escapes its own directory via "..": IsAbs alone would
+// accept it, and the unit would land wherever filepath.Join resolves it to
+// (e.g. /etc) rather than under the user's config directory.
+func TestSystemdRejectsTraversalInConfigDir(t *testing.T) {
+	// Concatenated, not filepath.Join: Join cleans, and cleaning is exactly
+	// what this test needs Systemd to refuse to do on its behalf.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()+string(filepath.Separator)+"..")
+	_, err := install.Systemd("user", "/home/hody/.local/bin/warphold")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), `must not contain ".."`)
+}
+
+// TestSystemdAcceptsTrailingSeparatorInConfigDir pins that a trailing
+// separator is normalized rather than rejected: it escapes nothing, and
+// "XDG_CONFIG_HOME=$HOME/.config/" is a perfectly ordinary shell export.
+func TestSystemdAcceptsTrailingSeparatorInConfigDir(t *testing.T) {
+	cfg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfg+string(filepath.Separator))
+	p, err := install.Systemd("user", "/home/hody/.local/bin/warphold")
+	require.NoError(t, err)
+	require.Contains(t, p.Files, filepath.Join(cfg, "systemd", "user", "warphold-agent.service"))
+}

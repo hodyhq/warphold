@@ -318,6 +318,10 @@ func shutdownHTTPServer(ctx context.Context, httpServer *http.Server) {
 }
 
 func (c *commandServerStart) setupHandlers(srv *server.Server, m *mux.Router) {
+	for _, h := range serverExtraHandlers { // warphold: fleet routes, registered before the UI catch-all
+		h(srv, m, c.svc.repositoryConfigFileName())
+	}
+
 	if c.serverStartControlAPI {
 		srv.SetupControlAPIHandlers(m)
 	}
