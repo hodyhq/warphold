@@ -355,6 +355,15 @@ func (s *Server) IssueTokenForTesting(ctx context.Context, groupID int64) string
 	return plain
 }
 
+// AgentForTesting exposes one agent's stored record for tests, or nil if it does not exist.
+func (s *Server) AgentForTesting(ctx context.Context, id string) *store.Agent {
+	a, err := s.st.Agent(ctx, id)
+	if err != nil {
+		return nil
+	}
+	return a
+}
+
 // requireActivated wraps admin handlers so they 409 before activation.
 func (s *Server) requireActivated(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
