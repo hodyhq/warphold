@@ -32,6 +32,12 @@ func (c *commandFleet) setup(svc advancedAppServices, parent commandParent) {
 			fs := api.New(fleet.StateDirFor(configFile))
 			fs.Mount(m)
 
+			// This hook is the one place that runs before setupHandlers
+			// registers the UI's "/" catch-all, so WarpHold's client-side
+			// routes are made refresh-safe here rather than in upstream's
+			// isKnownUIRoute allowlist.
+			server.ServeSPADeepLinks(m)
+
 			// The closure runs once per `server start`, and the in-process
 			// test runner starts several servers in the same process, so the
 			// api.Server built here must hand its Fleet state DB back when

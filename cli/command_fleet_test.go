@@ -2,6 +2,7 @@ package cli_test
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"path/filepath"
 	"testing"
@@ -75,4 +76,59 @@ func fleetSeamRoundTrip(t *testing.T) {
 func TestFleetSeamSurvivesRepeatedAppSetup(t *testing.T) {
 	t.Run("first", fleetSeamRoundTrip)
 	t.Run("second", fleetSeamRoundTrip)
+}
+
+// TestServerServesSPADeepLinks pins the other half of the seam: `server start`
+// serves the UI index for WarpHold's own client-side routes, so a bookmark or
+// a refresh on /fleet/devices does not hit upstream's file-server 404.
+// Upstream's isKnownUIRoute allowlist knows nothing about them, so the routes
+// registered by the Fleet hook (which runs before the UI catch-all) are what
+// makes this work.
+func TestServerServesSPADeepLinks(t *testing.T) {
+	runner := testenv.NewInProcRunner(t)
+	e := testenv.NewCLITest(t, nil, runner)
+
+	var sp testutil.ServerParameters
+
+	wait, kill := e.RunAndProcessStderr(t, sp.ProcessOutput,
+		"server", "start",
+		"--insecure",
+		"--without-password",
+		"--no-grpc",
+		"--address=127.0.0.1:0",
+		"--server-control-password=admin-pwd",
+	)
+
+	defer func() {
+		kill()
+		wait() //nolint:errcheck
+	}()
+
+	require.NotEmpty(t, sp.BaseURL, "server did not report its address")
+
+	for _, tc := range []struct {
+		path string
+		want int
+	}{
+		{"/fleet", http.StatusOK},
+		{"/fleet/login", http.StatusOK},
+		{"/fleet/devices", http.StatusOK},
+		{"/agent", http.StatusOK},
+		{"/snapshots", http.StatusOK}, // upstream route, still works
+		{"/nope", http.StatusNotFound},
+		{"/fleeting", http.StatusNotFound}, // prefix match must not be greedy
+	} {
+		res, err := http.Get(sp.BaseURL + tc.path) //nolint:noctx
+		require.NoError(t, err)
+
+		body, err := io.ReadAll(res.Body)
+		res.Body.Close() //nolint:errcheck,gosec
+		require.NoError(t, err)
+
+		require.Equal(t, tc.want, res.StatusCode, tc.path)
+
+		if tc.want == http.StatusOK {
+			require.Contains(t, string(body), "<title>WarpHold", tc.path)
+		}
+	}
 }

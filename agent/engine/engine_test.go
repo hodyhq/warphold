@@ -165,6 +165,37 @@ func TestHeadlessServesUI(t *testing.T) {
 
 	require.Contains(t, string(body), "<title>WarpHold")
 
+	// client-side routes survive a direct navigation or a refresh: upstream's
+	// isKnownUIRoute allowlist does not know them, so they must be served the
+	// index rather than the file server's 404.
+	for _, p := range []string{"/agent", "/fleet/devices"} {
+		deepReq, err := http.NewRequestWithContext(ctx, http.MethodGet, h.BaseURL+p, nil)
+		require.NoError(t, err)
+		deepReq.SetBasicAuth(h.User, h.Password)
+
+		deep, err := http.DefaultClient.Do(deepReq)
+		require.NoError(t, err)
+
+		deepBody, err := io.ReadAll(deep.Body)
+		deep.Body.Close() //nolint:errcheck,gosec
+		require.NoError(t, err)
+
+		require.Equal(t, http.StatusOK, deep.StatusCode, p)
+		require.Contains(t, string(deepBody), "<title>WarpHold", p)
+	}
+
+	// ... and an unknown path is still a 404.
+	nopeReq, err := http.NewRequestWithContext(ctx, http.MethodGet, h.BaseURL+"/nope", nil)
+	require.NoError(t, err)
+	nopeReq.SetBasicAuth(h.User, h.Password)
+
+	nope, err := http.DefaultClient.Do(nopeReq)
+	require.NoError(t, err)
+
+	defer nope.Body.Close() //nolint:errcheck
+
+	require.Equal(t, http.StatusNotFound, nope.StatusCode)
+
 	// the SPA's mode detection: no Fleet routes in agent mode.
 	fleetReq, err := http.NewRequestWithContext(ctx, http.MethodGet, h.BaseURL+"/api/v1/fleet/status", nil)
 	require.NoError(t, err)
