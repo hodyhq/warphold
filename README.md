@@ -67,6 +67,23 @@ Building Kopia
 ---
 See [Build Infrastructure](BUILD.md) for more information on building Kopia and working with the source code.
 
+WarpHold Fleet quick start
+---
+WarpHold adds a "Fleet" control plane and a device-side agent on top of Kopia. Activate a Fleet, start its server, and enroll a device:
+
+```bash
+# on the Fleet host
+warphold --config-file /var/lib/warphold/repository.config fleet activate --email admin@example.com
+warphold --config-file /var/lib/warphold/repository.config server start --insecure --without-password --address 0.0.0.0:51515 --ui=false --grpc=false
+
+# on the device being enrolled, with a token from the Fleet admin API/UI
+curl -fsSL http://<fleet-host>:51515/enroll.sh?token=<TOKEN> | sh
+```
+
+The enroll one-liner installs `warphold`, enrolls the device against the given token, and installs a `systemd --user` unit (`warphold agent install --scope user`) so the agent runs and polls automatically.
+
+**The Fleet admin can decrypt every enrolled device's backups.** Fleet holds the admin key for every target it provisions, so it can run maintenance and generate recovery kits on agents' behalf — for a family or personal fleet that's the point, but it means Fleet's admin passphrase is the one secret that must never leak. Put HTTPS (Traefik/step-ca or similar) in front of the Fleet server before using it beyond your LAN: until then, the enrollment bearer token travels in the clear.
+
 Contribution Guidelines
 ---
 Kopia is open source. For more information see the [Contribution Guidelines](https://kopia.io/docs/contribution-guidelines/).

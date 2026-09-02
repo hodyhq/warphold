@@ -46,11 +46,13 @@ This spec covers **sub-project 1**: the fork, the Fleet control plane, the Linux
 
 ### 3.2 Fork discipline
 
-Upstream files touched, and nothing else:
+Upstream files touched, and nothing else (the UI import swap in `internal/server/htmlui_embed.go` originally planned here didn't happen in sub-project 1 — no UI fork exists yet, so it's Plan 2's item, §15):
 
-1. `internal/server/htmlui_embed.go` — swap the UI module import.
-2. `cli/app.go` — register the `fleet` and `agent` command groups.
-3. `Makefile` / goreleaser config — binary name and branding strings (title prefix, icons).
+1. `cli/app.go` — register the `fleet` and `agent` command groups (`c.fleet.setup(c, app)`, an `agent commandAgent` field).
+2. `cli/command_server_start.go` — a `setupHandlers` hook: before mounting the control-API and UI handlers, `setupHandlers` walks `serverExtraHandlers` (populated by the new `cli/server_hooks.go`'s `RegisterServerHandlers`) so Fleet's routes mount on the same mux router ahead of the UI catch-all. `server_hooks.go` is a new file, not an upstream one, but it's the seam `command_server_start.go` was cut open to expose — one three-line hook, no other changes to `server start`.
+3. `Makefile` — a `warphold-build` target (`CGO_ENABLED=0 go build … -o dist/warphold$(exe_suffix) .`), additive.
+4. `.goreleaser.yml` — `project_name: warphold`, binary renamed to `warphold`; ldflags/homepage otherwise unchanged.
+5. `main.go` — the kingpin app name changes from `kopia` to `warphold` (`kingpin.New("warphold", …)`); usage text otherwise unchanged.
 
 All Fleet and agent code is **new files** in new packages:
 
@@ -79,6 +81,8 @@ Merging upstream: `git fetch upstream && git merge upstream/master`, expected to
 Mounts `/api/v1/fleet/*` on the same gorilla/mux router the upstream server exposes through its public `Setup*Handlers` methods. State is SQLite via `modernc.org/sqlite` (pure Go, no CGO). Fleet admin auth is separate from Kopia's repository users: email + argon2id password, HTTP-only session cookie, upstream's existing CSRF token scheme, login rate limiting.
 
 **Activation.** `warphold fleet activate` (also the Activate Fleet wizard in the UI) prompts for an admin passphrase, derives the sealing key, creates the DB and the first admin, and enables the routes. Unattended restarts read the sealing key from a `0600` file in the state directory (`/var/lib/warphold/` or `$XDG_STATE_HOME/warphold/`). Documented alternative: systemd `LoadCredential`. Stated as accepted risk in the docs.
+
+Activating over HTTP (`POST /api/v1/fleet/activate`, as opposed to the `fleet activate` CLI, which calls `Activate` directly and is unaffected) requires either a loopback client (`127.0.0.1`/`::1`) or the one-time setup token: a CSPRNG value the server writes to `<stateDir>/setup-token` on first boot before activation, logs the path, and deletes once activation succeeds. The caller presents it via the `X-WarpHold-Setup-Token` header, compared with `subtle.ConstantTimeCompare`. This closes the window where an unauthenticated LAN client could activate (and so become) the Fleet admin before the real admin gets to it.
 
 **Scheduled jobs** (run by the Fleet server with the target's admin key, never by agents):
 
@@ -143,6 +147,8 @@ Health is computed at read time: **green** when the newest successful snapshot i
 
 **Filesystem targets** exist so CI and homelab tests run without cloud credentials. Isolation there is a per-agent directory plus a per-agent repo password; the hosted-mode ACL model comes in sub-project 2.
 
+`GET /enroll.sh?token=<T>` validates both attacker-controlled inputs it interpolates into the served shell script before templating: `token` must match `^wh_[A-Za-z0-9_-]{20,64}$`, and the `Host` header (used to build the `Server` URL baked into the script) must match `^(\[ipv6\]|host)(:port)?$`. Either mismatch is a `400`, not a template-injection opportunity.
+
 ## 6. Agent ↔ Fleet protocol
 
 All over HTTPS with `Authorization: Bearer <token>`. Two agent endpoints:
@@ -177,6 +183,7 @@ Admin endpoints under `/api/v1/fleet/`: `admins`, `targets`, `templates`, `group
 - Fleet admin login rate-limited; sessions HTTP-only, SameSite=Strict.
 - Every error shown in the UI is the raw Kopia stderr.
 - **Documented honestly:** the Fleet admin can decrypt every agent's backups. For a family fleet that is the point; it is stated on the Activate screen and in the README.
+- Reports may only acknowledge commands that belong to the reporting agent: `POST /agent/report` with a `command_id` looks up that command's owning `agent_id` and rejects the ack (`400`) if it doesn't match the authenticated caller, so one agent can't guess another's sequential command id and silently discard its pending command.
 
 ## 8. Recovery kit
 
@@ -273,6 +280,7 @@ Anything else is asked about first.
 - Whether the Omarchy bar (waybar) tray module renders SNI icons from `fyne.io/systray` without extra config.
 - Whether upstream's Kopia connect token can carry a B2 config with a prefix; if not, the agent stores storage config and password separately.
 - Kopia's `--without-password`/control-API startup flags for the headless engine may differ on current master; check `cli/command_server_start.go`.
+- ~~Resolved during implementation~~: the real Snapshot task `Description` from `internal/server.runSnapshotTask` is `fmt.Sprintf("%v at %v", src, time)` where `src` is a `snapshot.SourceInfo.String()` rendering `user@host:path` — e.g. `hody@fw13:/home/hody at 2026-09-01T23:00:00Z` — not the placeholder `Snapshot <path>:` shape originally assumed. The agent's task-watcher parses this with `^(?:Snapshot )?[^@\s]+@[^:\s]+:(.+?)(?: at \S+)?$`.
 
 ## 15. Out of scope for sub-project 1
 
