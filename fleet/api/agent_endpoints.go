@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"encoding/base32"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -25,11 +27,28 @@ const defaultPollSeconds = 300
 // revokeTimeout bounds the detached B2 key hand-back after a failed enrollment.
 const revokeTimeout = 30 * time.Second
 
+// errCategory describes err without quoting it. Enrollment errors carry token
+// material, B2 key ids and provisioning URLs in their text, and the fleet log
+// is not a secret store, so only the concrete Go type of the error (or a
+// coarse classification for the context errors) is ever logged.
+func errCategory(err error) string {
+	switch {
+	case err == nil:
+		return "none"
+	case errors.Is(err, context.Canceled):
+		return "context.Canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "context.DeadlineExceeded"
+	}
+	return fmt.Sprintf("%T", err)
+}
+
 // enrollFailed answers an unauthenticated enroller with a fixed message and
-// keeps the real cause in the server log. The endpoint runs before the agent
-// has any credential, so internal error text must not reach it.
+// records the failing stage plus a safe error category in the server log. The
+// endpoint runs before the agent has any credential, so neither the enroller
+// nor the log gets internal error text.
 func enrollFailed(w http.ResponseWriter, status int, public, stage string, err error) {
-	log.Printf("warphold fleet: enroll failed at %s: %v", stage, err)
+	log.Printf("warphold fleet: enroll failed at stage %s (%s)", stage, errCategory(err))
 	writeErr(w, status, public)
 }
 
@@ -133,7 +152,10 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), revokeTimeout)
 		defer cancel()
 		if err := prov.Revoke(rctx, spec, bundle); err != nil {
-			log.Printf("warphold fleet: enroll %s failed and its b2 keys could not be revoked: %v", id, err)
+			// Agent id + stage is what makes an orphaned B2 key findable;
+			// the error text itself may quote key material, so only its
+			// category is logged.
+			log.Printf("warphold fleet: enroll %s failed at stage revoke: b2 keys may be orphaned (%s)", id, errCategory(err))
 		}
 	}()
 	sealedBundle, err := json.Marshal(bundle)

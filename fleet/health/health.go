@@ -33,6 +33,10 @@ func Status(in Input, now time.Time) string {
 	}
 	age := now.Sub(*in.LastOK)
 	switch {
+	case age < 0:
+		// A LastOK in the future means a clock jumped somewhere; reporting
+		// green off it would hide an agent that has not run in weeks.
+		return Unknown
 	case age < greenFor:
 		return Green
 	case age < yellowFor:

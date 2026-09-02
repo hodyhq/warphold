@@ -18,6 +18,8 @@ func TestSystemdPlans(t *testing.T) {
 	require.True(t, ok)
 	require.Contains(t, unit, "ExecStart=/home/hody/.local/bin/warphold agent run --scope user")
 	require.Contains(t, unit, "RestartPreventExitStatus=3")
+	require.Contains(t, unit, "StartLimitIntervalSec=600")
+	require.Contains(t, unit, "StartLimitBurst=5")
 	require.Contains(t, unit, "WantedBy=default.target")
 	require.Equal(t, [][]string{{"systemctl", "--user", "daemon-reload"}, {"systemctl", "--user", "enable", "--now", "warphold-agent"}, {"loginctl", "enable-linger"}}, p.Commands)
 

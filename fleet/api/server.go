@@ -86,7 +86,12 @@ func New(stateDir string) *Server {
 		log.Printf("warphold fleet: cannot load state from %s: %v", stateDir, err)
 	}
 	if !s.Activated() {
-		if path, token, err := ensureSetupToken(s.paths.StateDir); err == nil {
+		// Without the setup token POST /activate cannot be authorized, so a
+		// failure here is the difference between "not activated yet" and "can
+		// never be activated"; it has to be visible in the log.
+		if path, token, err := ensureSetupToken(s.paths.StateDir); err != nil {
+			log.Printf("warphold fleet: cannot create setup token in %s: %v", s.paths.StateDir, err)
+		} else {
 			s.mu.Lock()
 			s.setupTokenPath, s.setupToken = path, token
 			s.mu.Unlock()
@@ -380,7 +385,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "wrong email or password")
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: sess.issue(a.ID), Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil, MaxAge: int(sessionTTL.Seconds())})
+	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: sess.issue(a.ID), Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: requestIsHTTPS(r), MaxAge: int(sessionTTL.Seconds())})
 	w.WriteHeader(http.StatusNoContent)
 }
 

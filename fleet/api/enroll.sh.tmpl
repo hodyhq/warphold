@@ -31,7 +31,7 @@ else
   chmod +x "$BIN/warphold.tmp"
   mv "$BIN/warphold.tmp" "$BIN/warphold"
 fi
-echo "Running: warphold agent enroll --server {{.Server}} --token {{.Token}} --scope $SCOPE"
+echo "Running: warphold agent enroll --server $SERVER --token <redacted> --scope $SCOPE"
 "$BIN/warphold" agent enroll --server "$SERVER" --token "$TOKEN" --scope "$SCOPE"
 "$BIN/warphold" agent install --scope "$SCOPE"
 echo "Enrolled. The agent is running and will report to $SERVER."

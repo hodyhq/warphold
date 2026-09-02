@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -48,6 +49,28 @@ func fakeB2(t *testing.T) (*httptest.Server, *[]map[string]any) {
 	}))
 	t.Cleanup(srv.Close)
 	return srv, &calls
+}
+
+// B2's error body is upstream text of unbounded size, and it ends up in fleet
+// logs and in admin-facing errors, so only its first 512 bytes are quoted.
+func TestErrorBodyIsTruncated(t *testing.T) {
+	huge := strings.Repeat("x", 4096)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/b2api/v3/b2_authorize_account" {
+			json.NewEncoder(w).Encode(map[string]any{"accountId": "acct1", "authorizationToken": "tok1", "apiInfo": map[string]any{"storageApi": map[string]any{"apiUrl": "http://" + r.Host}}}) //nolint:errcheck,errchkjson
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(huge)) //nolint:errcheck
+	}))
+	t.Cleanup(srv.Close)
+
+	_, err := b2api.New(srv.Client()).WithBase(srv.URL).BucketInfo(context.Background(), "adminKeyId", "adminKey", "hody-backups")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "b2 returned 500")
+	require.Contains(t, err.Error(), "(truncated)")
+	require.NotContains(t, err.Error(), strings.Repeat("x", 513))
+	require.Less(t, len(err.Error()), 700, "the whole 4 KiB body must not be quoted")
 }
 
 func TestBucketInfoCreateDeleteKey(t *testing.T) {

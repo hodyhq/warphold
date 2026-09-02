@@ -181,41 +181,42 @@ endif
 build-current-os-noui:
 	go build $(KOPIA_BUILD_FLAGS) -o $(kopia_ui_embedded_exe) github.com/kopia/kopia
 
+# warphold: dist paths follow the renamed goreleaser layout (dist/warphold_<os>_<arch>/warphold).
 # on macOS build and sign AMD64, ARM64 and Universal binary and *.tar.gz files for them
-dist/kopia_darwin_universal/kopia dist/kopia_darwin_amd64/kopia dist/kopia_darwin_arm6/kopia: $(all_go_sources)
-	GOARCH=arm64 go build $(KOPIA_BUILD_FLAGS) -o dist/kopia_darwin_arm64/kopia -tags "$(KOPIA_BUILD_TAGS)" github.com/kopia/kopia
-	GOARCH=amd64 go build $(KOPIA_BUILD_FLAGS) -o dist/kopia_darwin_amd64/kopia -tags "$(KOPIA_BUILD_TAGS)" github.com/kopia/kopia
-	mkdir -p dist/kopia_darwin_universal
-	lipo -create -output dist/kopia_darwin_universal/kopia dist/kopia_darwin_arm64/kopia dist/kopia_darwin_amd64/kopia
+dist/warphold_darwin_universal/warphold dist/warphold_darwin_amd64/warphold dist/warphold_darwin_arm6/warphold: $(all_go_sources)
+	GOARCH=arm64 go build $(KOPIA_BUILD_FLAGS) -o dist/warphold_darwin_arm64/warphold -tags "$(KOPIA_BUILD_TAGS)" github.com/kopia/kopia
+	GOARCH=amd64 go build $(KOPIA_BUILD_FLAGS) -o dist/warphold_darwin_amd64/warphold -tags "$(KOPIA_BUILD_TAGS)" github.com/kopia/kopia
+	mkdir -p dist/warphold_darwin_universal
+	lipo -create -output dist/warphold_darwin_universal/warphold dist/warphold_darwin_arm64/warphold dist/warphold_darwin_amd64/warphold
 ifneq ($(MACOS_SIGNING_IDENTITY),)
-	codesign -v --keychain $(MACOS_KEYCHAIN) -s $(MACOS_SIGNING_IDENTITY) --force dist/kopia_darwin_amd64/kopia
-	codesign -v --keychain $(MACOS_KEYCHAIN) -s $(MACOS_SIGNING_IDENTITY) --force dist/kopia_darwin_arm64/kopia
-	codesign -v --keychain $(MACOS_KEYCHAIN) -s $(MACOS_SIGNING_IDENTITY) --force dist/kopia_darwin_universal/kopia
+	codesign -v --keychain $(MACOS_KEYCHAIN) -s $(MACOS_SIGNING_IDENTITY) --force dist/warphold_darwin_amd64/warphold
+	codesign -v --keychain $(MACOS_KEYCHAIN) -s $(MACOS_SIGNING_IDENTITY) --force dist/warphold_darwin_arm64/warphold
+	codesign -v --keychain $(MACOS_KEYCHAIN) -s $(MACOS_SIGNING_IDENTITY) --force dist/warphold_darwin_universal/warphold
 endif
-	tools/make-tgz.sh dist kopia-$(KOPIA_VERSION_NO_PREFIX)-macOS-x64 dist/kopia_darwin_amd64/kopia
-	tools/make-tgz.sh dist kopia-$(KOPIA_VERSION_NO_PREFIX)-macOS-arm64 dist/kopia_darwin_arm64/kopia
-	tools/make-tgz.sh dist kopia-$(KOPIA_VERSION_NO_PREFIX)-macOS-universal dist/kopia_darwin_universal/kopia
+	tools/make-tgz.sh dist kopia-$(KOPIA_VERSION_NO_PREFIX)-macOS-x64 dist/warphold_darwin_amd64/warphold
+	tools/make-tgz.sh dist kopia-$(KOPIA_VERSION_NO_PREFIX)-macOS-arm64 dist/warphold_darwin_arm64/warphold
+	tools/make-tgz.sh dist kopia-$(KOPIA_VERSION_NO_PREFIX)-macOS-universal dist/warphold_darwin_universal/warphold
 
 # on Windows build and sign AMD64 and *.zip file
-dist/kopia_windows_amd64/kopia.exe: $(all_go_sources)
-	GOOS=windows GOARCH=amd64 go build $(KOPIA_BUILD_FLAGS) -o dist/kopia_windows_amd64/kopia.exe -tags "$(KOPIA_BUILD_TAGS)" github.com/kopia/kopia
+dist/warphold_windows_amd64/warphold.exe: $(all_go_sources)
+	GOOS=windows GOARCH=amd64 go build $(KOPIA_BUILD_FLAGS) -o dist/warphold_windows_amd64/warphold.exe -tags "$(KOPIA_BUILD_TAGS)" github.com/kopia/kopia
 ifneq ($(WINDOWS_SIGN_TOOL),)
-	tools/.tools/signtool.exe sign //sha1 $(WINDOWS_CERT_SHA1) //fd sha256 //tr "http://timestamp.digicert.com" //v dist/kopia_windows_amd64/kopia.exe
+	tools/.tools/signtool.exe sign //sha1 $(WINDOWS_CERT_SHA1) //fd sha256 //tr "http://timestamp.digicert.com" //v dist/warphold_windows_amd64/warphold.exe
 endif
 	mkdir -p dist/kopia-$(KOPIA_VERSION_NO_PREFIX)-windows-x64
-	cp dist/kopia_windows_amd64/kopia.exe LICENSE README.md dist/kopia-$(KOPIA_VERSION_NO_PREFIX)-windows-x64
+	cp dist/warphold_windows_amd64/warphold.exe LICENSE README.md dist/kopia-$(KOPIA_VERSION_NO_PREFIX)-windows-x64
 	(cd dist && zip -r kopia-$(KOPIA_VERSION_NO_PREFIX)-windows-x64.zip kopia-$(KOPIA_VERSION_NO_PREFIX)-windows-x64)
 	rm -rf dist/kopia-$(KOPIA_VERSION_NO_PREFIX)-windows-x64
 
 # On Linux use use goreleaser which will build Kopia for all supported Linux architectures
 # and creates .tar.gz, rpm and deb packages.
-dist/kopia_linux_x64/kopia dist/kopia_linux_arm64/kopia dist/kopia_linux_armv7l/kopia: $(all_go_sources)
+dist/warphold_linux_x64/warphold dist/warphold_linux_arm64/warphold dist/warphold_linux_armv7l/warphold: $(all_go_sources)
 ifeq ($(GOARCH),amd64)
 	$(MAKE) goreleaser
-	rm -f dist/kopia_linux_x64
-	ln -sf kopia_linux_amd64 dist/kopia_linux_x64
-	rm -f dist/kopia_linux_armv7l
-	ln -sf kopia_linux_arm_6 dist/kopia_linux_armv7l
+	rm -f dist/warphold_linux_x64
+	ln -sf warphold_linux_amd64 dist/warphold_linux_x64
+	rm -f dist/warphold_linux_armv7l
+	ln -sf warphold_linux_arm_6 dist/warphold_linux_armv7l
 else
 	go build $(KOPIA_BUILD_FLAGS) -o $(kopia_ui_embedded_exe) -tags "$(KOPIA_BUILD_TAGS)" github.com/kopia/kopia
 endif
@@ -251,9 +252,9 @@ endif
 
 
 download-rclone:
-	go run ./tools/gettool --tool rclone:$(RCLONE_VERSION) --output-dir dist/kopia_linux_amd64/ --goos=linux --goarch=amd64
-	go run ./tools/gettool --tool rclone:$(RCLONE_VERSION) --output-dir dist/kopia_linux_arm64/ --goos=linux --goarch=arm64
-	go run ./tools/gettool --tool rclone:$(RCLONE_VERSION) --output-dir dist/kopia_linux_arm_6/ --goos=linux --goarch=arm
+	go run ./tools/gettool --tool rclone:$(RCLONE_VERSION) --output-dir dist/warphold_linux_amd64/ --goos=linux --goarch=amd64
+	go run ./tools/gettool --tool rclone:$(RCLONE_VERSION) --output-dir dist/warphold_linux_arm64/ --goos=linux --goarch=arm64
+	go run ./tools/gettool --tool rclone:$(RCLONE_VERSION) --output-dir dist/warphold_linux_arm_6/ --goos=linux --goarch=arm
 
 
 ci-tests: vet test

@@ -81,6 +81,27 @@ func TestProvisionB2CleansUpKeysWhenInitializeFails(t *testing.T) {
 	require.ElementsMatch(t, []string{"kid-warphold-ag_9-writer", "kid-warphold-ag_9-reader"}, fake.deleted)
 }
 
+// Revoke also runs on a half-provisioned bundle, where one or both key ids
+// are still empty. B2 rejects an empty applicationKeyId, so those must never
+// reach it.
+func TestRevokeSkipsEmptyKeyIDs(t *testing.T) {
+	ctx := context.Background()
+	spec := enroll.TargetSpec{Kind: "b2", Bucket: "hody-backups", AdminKeyID: "adm", AdminKey: "sec"}
+	p := func(f *fakeB2) *enroll.Provisioner { return &enroll.Provisioner{B2: f, Owner: "fleet@test"} }
+
+	empty := &fakeB2{}
+	require.NoError(t, p(empty).Revoke(ctx, spec, &enroll.Bundle{}))
+	require.Empty(t, empty.deleted)
+
+	writerOnly := &fakeB2{}
+	require.NoError(t, p(writerOnly).Revoke(ctx, spec, &enroll.Bundle{WriterKeyID: "kid-w"}))
+	require.Equal(t, []string{"kid-w"}, writerOnly.deleted)
+
+	both := &fakeB2{}
+	require.NoError(t, p(both).Revoke(ctx, spec, &enroll.Bundle{WriterKeyID: "kid-w", ReaderKeyID: "kid-r"}))
+	require.Equal(t, []string{"kid-w", "kid-r"}, both.deleted)
+}
+
 type fakeB2 struct {
 	created []b2api.KeyRequest
 	deleted []string

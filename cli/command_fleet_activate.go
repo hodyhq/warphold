@@ -50,6 +50,15 @@ func (c *commandFleetActivate) run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		// Same reason as the sealing passphrase: this is the only admin, and
+		// a mistyped password is only discovered at the first sign-in.
+		again, err := askPass(c.out.stdout(), "Confirm admin password: ")
+		if err != nil {
+			return err
+		}
+		if p != again {
+			return errors.New("admin passwords do not match")
+		}
 		c.password = p
 	}
 	s := api.New(fleet.StateDirFor(c.svc.repositoryConfigFileName()))

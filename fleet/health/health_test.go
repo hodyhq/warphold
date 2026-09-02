@@ -21,4 +21,7 @@ func TestStatus(t *testing.T) {
 	require.Equal(t, health.Red, health.Status(health.Input{LastOK: at(8 * 24 * time.Hour)}, now))
 	require.Equal(t, health.Red, health.Status(health.Input{LastOK: at(time.Hour), LastRunFailed: true}, now))
 	require.Equal(t, "revoked", health.Status(health.Input{LastOK: at(time.Hour), Revoked: true}, now))
+	// A LastOK in the future (skewed agent clock) must not read as green.
+	require.Equal(t, health.Unknown, health.Status(health.Input{LastOK: at(-time.Hour)}, now))
+	require.Equal(t, health.Unknown, health.Status(health.Input{LastOK: at(-365 * 24 * time.Hour)}, now))
 }

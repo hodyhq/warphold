@@ -185,8 +185,18 @@ func (p *Provisioner) Revoke(ctx context.Context, t TargetSpec, b *Bundle) error
 		return nil
 	}
 
-	return errors.Join(
-		p.B2.DeleteKey(ctx, t.AdminKeyID, t.AdminKey, b.WriterKeyID),
-		p.B2.DeleteKey(ctx, t.AdminKeyID, t.AdminKey, b.ReaderKeyID),
-	)
+	// Revoke also runs on a half-finished Provision, where one or both key
+	// ids are still empty; b2_delete_key with an empty applicationKeyId is an
+	// error that says nothing.
+	var errs []error
+
+	for _, id := range []string{b.WriterKeyID, b.ReaderKeyID} {
+		if id == "" {
+			continue
+		}
+
+		errs = append(errs, p.B2.DeleteKey(ctx, t.AdminKeyID, t.AdminKey, id))
+	}
+
+	return errors.Join(errs...)
 }

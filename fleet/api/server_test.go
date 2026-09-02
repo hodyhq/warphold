@@ -159,6 +159,35 @@ func TestStatusActivateLogin(t *testing.T) {
 	require.Equal(t, 204, resp.StatusCode)
 }
 
+// The session cookie must keep its Secure attribute when Fleet runs behind a
+// TLS-terminating reverse proxy, where r.TLS is always nil and the only
+// evidence of the client's scheme is X-Forwarded-Proto.
+func TestSessionCookieSecureFollowsForwardedProto(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+
+	login := func(proto string) *http.Cookie {
+		t.Helper()
+		req, _ := http.NewRequest("POST", h.srv.URL+"/api/v1/fleet/session", jsonBody(map[string]string{"email": "hody@hody.dev", "password": "pw12345678"}))
+		req.Header.Set("Content-Type", "application/json")
+		if proto != "" {
+			req.Header.Set("X-Forwarded-Proto", proto)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		require.Equal(t, 204, resp.StatusCode)
+		cs := resp.Cookies()
+		require.Len(t, cs, 1)
+		return cs[0]
+	}
+
+	require.False(t, login("").Secure, "plain http must not set Secure")
+	require.False(t, login("http").Secure)
+	require.True(t, login("https").Secure, "https through a proxy must set Secure")
+	require.True(t, login("HTTPS").Secure, "the header value is case-insensitive")
+}
+
 func TestLoginRateLimitAndBadPassword(t *testing.T) {
 	h := newHarness(t)
 	h.activateAndLogin()

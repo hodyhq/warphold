@@ -112,7 +112,9 @@ func (c *Client) do(req *http.Request, out any) error {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("b2 returned %d: %s", resp.StatusCode, string(raw))
+		// The body is upstream text of unbounded size and goes into logs and
+		// API responses; the first few hundred bytes carry B2's error code.
+		return fmt.Errorf("b2 returned %d: %s", resp.StatusCode, truncate(raw, maxErrBody))
 	}
 	if out == nil {
 		return nil
@@ -172,4 +174,15 @@ func (c *Client) DeleteKey(ctx context.Context, keyID, key, targetKeyID string) 
 		return err
 	}
 	return c.call(ctx, s, "b2_delete_key", map[string]string{"applicationKeyId": targetKeyID}, nil)
+}
+
+// maxErrBody bounds how much of a non-2xx B2 response is quoted in an error.
+const maxErrBody = 512
+
+func truncate(b []byte, n int) string {
+	if len(b) <= n {
+		return string(b)
+	}
+
+	return string(b[:n]) + "... (truncated)"
 }

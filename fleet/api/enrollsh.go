@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"net/http"
 	"regexp"
+	"strings"
 	"text/template"
 
 	"github.com/kopia/kopia/repo"
@@ -30,7 +31,7 @@ func (s *Server) handleEnrollSh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	scheme := "http"
-	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+	if requestIsHTTPS(r) {
 		scheme = "https"
 	}
 	w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
@@ -39,4 +40,14 @@ func (s *Server) handleEnrollSh(w http.ResponseWriter, r *http.Request) {
 		"Token":   token,
 		"Version": repo.BuildVersion,
 	})
+}
+
+// requestIsHTTPS reports whether the client reached the server over HTTPS,
+// either directly or through a TLS-terminating reverse proxy that sets
+// X-Forwarded-Proto. Fleet is expected to run behind such a proxy, where
+// r.TLS alone is always nil; the header is only as trustworthy as whatever
+// terminates TLS in front of this process, and getting it wrong drops the
+// Secure attribute on the session cookie rather than granting anything.
+func requestIsHTTPS(r *http.Request) bool {
+	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }

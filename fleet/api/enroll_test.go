@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -60,10 +61,15 @@ func TestEnrollShIsServed(t *testing.T) {
 	defer res.Body.Close()
 	require.Equal(t, 200, res.StatusCode)
 	require.Contains(t, res.Header.Get("Content-Type"), "text/x-shellscript")
-	buf := make([]byte, 4096)
-	n, _ := res.Body.Read(buf)
-	require.Contains(t, string(buf[:n]), "warphold agent enroll")
-	require.Contains(t, string(buf[:n]), "--token "+wellFormedEnrollToken)
+	raw, err := io.ReadAll(res.Body)
+	require.NoError(t, err)
+	script := string(raw)
+	require.Contains(t, script, "warphold agent enroll")
+	require.Contains(t, script, `TOKEN="`+wellFormedEnrollToken+`"`)
+	require.Contains(t, script, `agent enroll --server "$SERVER" --token "$TOKEN"`)
+	// The script is run with `sh -s`, so anything it echoes lands in the
+	// operator's terminal and in whatever CI log captured it.
+	require.NotContains(t, script, "--token "+wellFormedEnrollToken, "the echoed command must not print the token")
 }
 
 func TestEnrollShRejectsUnsafeToken(t *testing.T) {

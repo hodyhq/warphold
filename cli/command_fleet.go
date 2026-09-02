@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"sync"
 
 	"github.com/gorilla/mux"
@@ -26,8 +28,26 @@ func (c *commandFleet) setup(svc advancedAppServices, parent commandParent) {
 	c.activate.setup(svc, cmd)
 
 	registerFleetHandlersOnce.Do(func() {
-		RegisterServerHandlers(func(_ *server.Server, m *mux.Router, configFile string) {
-			api.New(fleet.StateDirFor(configFile)).Mount(m)
+		RegisterServerHandlers(func(srv *server.Server, m *mux.Router, configFile string) {
+			fs := api.New(fleet.StateDirFor(configFile))
+			fs.Mount(m)
+
+			// The closure runs once per `server start`, and the in-process
+			// test runner starts several servers in the same process, so the
+			// api.Server built here must hand its Fleet state DB back when
+			// this server shuts down. command_server_start.go has already
+			// installed its own OnShutdown by now, so chain rather than
+			// replace it, and close the DB only after it has drained the
+			// in-flight requests that are still using it.
+			prev := srv.OnShutdown
+			srv.OnShutdown = func(ctx context.Context) error {
+				var err error
+				if prev != nil {
+					err = prev(ctx)
+				}
+
+				return errors.Join(err, fs.Close())
+			}
 		})
 	})
 }

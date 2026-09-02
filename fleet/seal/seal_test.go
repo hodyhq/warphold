@@ -64,6 +64,33 @@ func TestKeyFileIs0600(t *testing.T) {
 	require.Equal(t, k, got)
 }
 
+// WriteKeyFile writes through a temp file and renames, because os.WriteFile
+// keeps the mode of a file that already exists: a key file left at 0644 by an
+// older build (or by a careless restore) must come back as 0600.
+func TestKeyFileReplacesPermissiveExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "seal.key")
+	require.NoError(t, os.WriteFile(p, []byte("stale\n"), 0o644))
+
+	salt, _ := seal.NewSalt()
+	k := seal.Derive("pw", salt)
+	require.NoError(t, seal.WriteKeyFile(p, k))
+
+	st, err := os.Stat(p)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o600), st.Mode().Perm())
+
+	got, err := seal.ReadKeyFile(p)
+	require.NoError(t, err)
+	require.Equal(t, k, got)
+
+	// The temp file must not survive the write.
+	ents, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Len(t, ents, 1)
+	require.Equal(t, "seal.key", ents[0].Name())
+}
+
 func TestReadKeyFileRejectsMalformed(t *testing.T) {
 	// Test rejection of invalid hex
 	p := filepath.Join(t.TempDir(), "bad-hex.key")

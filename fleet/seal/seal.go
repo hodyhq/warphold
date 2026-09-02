@@ -60,15 +60,44 @@ func (k Key) Open(sealed []byte) ([]byte, error) {
 	return out, nil
 }
 
-// WriteKeyFile writes the key hex-encoded with mode 0600.
+// WriteKeyFile writes the key hex-encoded with mode 0600. It writes a 0600
+// temp file in the same directory and renames it over path, so a pre-existing
+// key file ends up 0600 too (os.WriteFile keeps the permissions of a file that
+// already exists) and a partially written key is never visible.
 func WriteKeyFile(path string, k Key) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	if err := os.Chmod(filepath.Dir(path), 0o700); err != nil {
+	if err := os.Chmod(dir, 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(hex.EncodeToString(k[:])+"\n"), 0o600)
+
+	f, err := os.CreateTemp(dir, ".seal-key-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+
+	defer func() {
+		f.Close()      //nolint:errcheck
+		os.Remove(tmp) //nolint:errcheck // no-op once the rename succeeded
+	}()
+
+	if err := f.Chmod(0o600); err != nil {
+		return err
+	}
+	if _, err := f.WriteString(hex.EncodeToString(k[:]) + "\n"); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+
+	return os.Rename(tmp, path)
 }
 
 // ReadKeyFile reads a key written by WriteKeyFile.

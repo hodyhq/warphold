@@ -14,10 +14,16 @@ type Plan struct {
 	Commands [][]string
 }
 
+// StartLimitIntervalSec/StartLimitBurst bound Restart=on-failure: without
+// them a unit that fails immediately on every start would be restarted
+// forever. Five starts inside ten minutes (RestartSec=30 between them) put the
+// unit into "failed", where an operator can see it.
 const unitTmpl = `[Unit]
 Description=WarpHold backup agent
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
 
 [Service]
 ExecStart=%s agent run --scope %s
