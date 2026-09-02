@@ -341,6 +341,20 @@ func (s *Server) AdminsForTesting(ctx context.Context) ([]store.Admin, error) {
 	return st.Admins(ctx)
 }
 
+// SeedGroupForTesting creates a filesystem target, a template and a group.
+func (s *Server) SeedGroupForTesting(ctx context.Context, path string, sources []string, policyJSON string) (targetID, templateID, groupID int64) {
+	targetID, _ = s.st.CreateTarget(ctx, &store.Target{Name: "local", Kind: "filesystem", Path: path})
+	templateID, _ = s.st.CreateTemplate(ctx, &store.Template{Name: "test", Sources: sources, PolicyJSON: json.RawMessage(policyJSON)})
+	groupID, _ = s.st.CreateGroup(ctx, &store.Group{Name: "Test", TargetID: targetID, TemplateID: templateID})
+	return
+}
+
+// IssueTokenForTesting issues a default token for a group.
+func (s *Server) IssueTokenForTesting(ctx context.Context, groupID int64) string {
+	plain, _, _ := s.tokens().Issue(ctx, groupID, 0, -1, 0)
+	return plain
+}
+
 // requireActivated wraps admin handlers so they 409 before activation.
 func (s *Server) requireActivated(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
