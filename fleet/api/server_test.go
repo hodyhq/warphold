@@ -4,8 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/gorilla/mux"
@@ -147,4 +153,86 @@ func TestActivationSurvivesRestart(t *testing.T) {
 	s2 := api.New(dir)
 	defer s2.Close()
 	require.True(t, s2.Activated(), "key file + db must reopen without the passphrase")
+}
+
+// TestActivateAllowsLoopback confirms the setup-token gate does not break the
+// common case: a request from loopback (as httptest.Server serves) may
+// activate without any header.
+func TestActivateAllowsLoopback(t *testing.T) {
+	h := newHarness(t)
+	resp, _ := h.do("POST", "/api/v1/fleet/activate", map[string]string{"passphrase": "seal-me!", "email": "hody@hody.dev", "password": "pw12345678"})
+	require.Equal(t, 201, resp.StatusCode)
+}
+
+// TestActivateRequiresLoopbackOrToken drives the mux directly (rather than
+// through a real TCP httptest.Server) so RemoteAddr can be forged to a
+// non-loopback address, and checks the setup-token file bridges the gate.
+func TestActivateRequiresLoopbackOrToken(t *testing.T) {
+	dir := t.TempDir()
+	s := api.New(dir)
+	t.Cleanup(func() { s.Close() })
+	m := mux.NewRouter()
+	s.Mount(m)
+
+	body := func() *bytes.Buffer {
+		b, _ := json.Marshal(map[string]string{"passphrase": "seal-me!", "email": "hody@hody.dev", "password": "pw12345678"})
+		return bytes.NewBuffer(b)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/fleet/activate", body())
+	req.RemoteAddr = "203.0.113.5:1234"
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	m.ServeHTTP(rr, req)
+	require.Equal(t, 403, rr.Code)
+
+	tokBytes, err := os.ReadFile(filepath.Join(dir, "setup-token"))
+	require.NoError(t, err)
+	tok := strings.TrimSpace(string(tokBytes))
+
+	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/fleet/activate", body())
+	req2.RemoteAddr = "203.0.113.5:1234"
+	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("X-WarpHold-Setup-Token", tok)
+	rr2 := httptest.NewRecorder()
+	m.ServeHTTP(rr2, req2)
+	require.Equal(t, 201, rr2.Code)
+}
+
+// TestActivateIsExclusive fires Activate concurrently and checks the
+// activateMu-guarded check-then-write leaves exactly one winner.
+func TestActivateIsExclusive(t *testing.T) {
+	dir := t.TempDir()
+	s := api.New(dir)
+	t.Cleanup(func() { s.Close() })
+
+	const n = 5
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = s.Activate(context.Background(), "seal-me!", fmt.Sprintf("admin%d@hody.dev", i), "pw12345678")
+		}(i)
+	}
+	wg.Wait()
+
+	var successes, conflicts int
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, api.ErrAlreadyActivated):
+			conflicts++
+		default:
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+	require.Equal(t, 1, successes)
+	require.Equal(t, n-1, conflicts)
+
+	admins, err := s.AdminsForTesting(context.Background())
+	require.NoError(t, err)
+	require.Len(t, admins, 1)
 }
