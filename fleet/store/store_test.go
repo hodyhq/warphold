@@ -309,10 +309,10 @@ func TestAdminPasswordUpdateAndDelete(t *testing.T) {
 	require.ErrorIs(t, s.DeleteAdmin(ctx, 9999), store.ErrNotFound)
 }
 
-// TestReportsSince pins the window query the overview endpoint builds its
+// TestReportsBetween pins the window query the overview endpoint builds its
 // 30-day strips and 24 h buckets from: everything finished at or after the
 // cutoff, oldest first, and nothing older.
-func TestReportsSince(t *testing.T) {
+func TestReportsBetween(t *testing.T) {
 	s := openTemp(t)
 	ctx := context.Background()
 	now := clock.Now().UTC().Truncate(time.Second)
@@ -328,18 +328,19 @@ func TestReportsSince(t *testing.T) {
 		{AgentID: "ag_1", TaskID: "edge", Kind: "snapshot", StartedAt: cutoff, FinishedAt: cutoff, Status: "ok"},
 		{AgentID: "ag_1", TaskID: "mid", Kind: "snapshot", StartedAt: now.Add(-48 * time.Hour), FinishedAt: now.Add(-47 * time.Hour), Status: "error"},
 		{AgentID: "ag_1", TaskID: "new", Kind: "snapshot", StartedAt: now.Add(-time.Minute), FinishedAt: now, Status: "ok"},
+		{AgentID: "ag_1", TaskID: "future", Kind: "snapshot", StartedAt: now, FinishedAt: now.Add(2 * time.Hour), Status: "ok"},
 	} {
 		_, err := s.AddReport(ctx, r)
 		require.NoError(t, err)
 	}
 
-	got, err := s.ReportsBetween(ctx, cutoff, time.Now().Add(time.Hour))
+	got, err := s.ReportsBetween(ctx, cutoff, now.Add(5*time.Minute))
 	require.NoError(t, err)
 	ids := make([]string, 0, len(got))
 	for _, r := range got {
 		ids = append(ids, r.TaskID)
 	}
-	require.Equal(t, []string{"edge", "mid", "new"}, ids, "inclusive cutoff, oldest first, nothing older")
+	require.Equal(t, []string{"edge", "mid", "new"}, ids, "inclusive cutoff, oldest first, nothing older, nothing future-dated")
 }
 
 // TestReportJSONWireShape pins the wire names the Fleet UI reads (they match
