@@ -86,6 +86,7 @@ func TestEnrollShIsServed(t *testing.T) {
 	// The prompt is skipped rather than run in the clear when the echo cannot
 	// be turned off, and Ctrl-C restores the terminal on the way out.
 	require.Contains(t, script, "if stty -echo < /dev/tty 2>/dev/null; then")
+	require.Contains(t, script, "trap 'stty echo < /dev/tty 2>/dev/null' EXIT")
 	require.Contains(t, script, "trap 'stty echo < /dev/tty 2>/dev/null; exit 130' INT HUP TERM")
 }
 

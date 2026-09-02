@@ -31,12 +31,15 @@ if [ -z "$TOKEN" ] && (: < /dev/tty) 2>/dev/null; then
   # Fail closed on the echo: if it cannot be turned off, the token would be
   # typed in the clear and left in the terminal's scrollback, so do not ask.
   if stty -echo < /dev/tty 2>/dev/null; then
-    # Ctrl-C at the prompt must not leave the terminal with its echo off.
+    # Nothing between here and the restore may leave the terminal with its
+    # echo off: EXIT covers a failed write or a "set -e" abort, the signals
+    # cover Ctrl-C and a hangup.
+    trap 'stty echo < /dev/tty 2>/dev/null' EXIT
     trap 'stty echo < /dev/tty 2>/dev/null; exit 130' INT HUP TERM
     printf 'Enrollment token: ' > /dev/tty
     IFS= read -r TOKEN < /dev/tty || TOKEN=""
     stty echo < /dev/tty 2>/dev/null || true
-    trap - INT HUP TERM
+    trap - INT HUP TERM EXIT
     printf '\n' > /dev/tty
   else
     echo "cannot turn off the terminal echo; supply the token in WARPHOLD_ENROLL_TOKEN instead" >&2
