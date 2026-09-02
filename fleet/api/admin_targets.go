@@ -32,7 +32,7 @@ func (s *Server) handleTargetCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "name and kind are required")
 		return
 	}
-	t := &store.Target{Name: in.Name, Kind: in.Kind, Bucket: in.Bucket, Region: in.Region, Path: in.Path}
+	t := &store.Target{Name: in.Name, Kind: in.Kind, Bucket: in.Bucket, Region: in.Region, Path: in.Path, CreatedAt: s.now()}
 	verified := false
 	switch in.Kind {
 	case "filesystem":
@@ -71,7 +71,7 @@ func (s *Server) handleTargetCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "kind must be b2 or filesystem")
 		return
 	}
-	id, err := s.st.CreateTarget(r.Context(), t)
+	id, err := s.store().CreateTarget(r.Context(), t)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -80,7 +80,7 @@ func (s *Server) handleTargetCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTargetList(w http.ResponseWriter, r *http.Request) {
-	ts, err := s.st.Targets(r.Context())
+	ts, err := s.store().Targets(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

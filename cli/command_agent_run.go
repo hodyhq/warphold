@@ -55,7 +55,7 @@ func (c *commandAgentRun) run(ctx context.Context) error {
 		return err
 	}
 
-	local, err := engine.NewLocal(api)
+	local, err := engine.NewLocal(ctx, api)
 	if err != nil {
 		return err
 	}

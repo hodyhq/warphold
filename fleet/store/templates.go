@@ -1,9 +1,14 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"time"
+
+	"github.com/kopia/kopia/snapshot/policy"
 )
 
 type Template struct {
@@ -16,14 +21,53 @@ type Template struct {
 
 const templateCols = `id,name,sources,policy_json,created_at`
 
+// ErrBadPolicyJSON is returned when a template's PolicyJSON is not a Kopia policy object.
+var ErrBadPolicyJSON = errors.New("policy_json must be a Kopia policy object")
+
+// normalizePolicyJSON mirrors the API layer's validation (templateIn.validate)
+// at the store boundary, so no caller can persist a policy_json that the list
+// endpoint would later stream out as malformed JSON: empty means "no
+// overrides", anything else must unmarshal into a policy object.
+func normalizePolicyJSON(raw json.RawMessage) (json.RawMessage, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return json.RawMessage(`{}`), nil
+	}
+
+	if !bytes.HasPrefix(trimmed, []byte("{")) {
+		return nil, ErrBadPolicyJSON
+	}
+
+	var p policy.Policy
+	if err := json.Unmarshal(trimmed, &p); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrBadPolicyJSON, err)
+	}
+
+	return trimmed, nil
+}
+
 func (s *Store) CreateTemplate(ctx context.Context, t *Template) (int64, error) {
-	src, _ := json.Marshal(t.Sources)
-	return s.exec(ctx, `INSERT INTO policy_templates(name,sources,policy_json,created_at) VALUES(?,?,?,?)`, t.Name, string(src), string(t.PolicyJSON), ts(time.Now()))
+	src, err := json.Marshal(t.Sources)
+	if err != nil {
+		return 0, err
+	}
+	pol, err := normalizePolicyJSON(t.PolicyJSON)
+	if err != nil {
+		return 0, err
+	}
+	return s.exec(ctx, `INSERT INTO policy_templates(name,sources,policy_json,created_at) VALUES(?,?,?,?)`, t.Name, string(src), string(pol), ts(t.CreatedAt))
 }
 
 func (s *Store) UpdateTemplate(ctx context.Context, t *Template) error {
-	src, _ := json.Marshal(t.Sources)
-	_, err := s.db.ExecContext(ctx, `UPDATE policy_templates SET name=?,sources=?,policy_json=? WHERE id=?`, t.Name, string(src), string(t.PolicyJSON), t.ID)
+	src, err := json.Marshal(t.Sources)
+	if err != nil {
+		return err
+	}
+	pol, err := normalizePolicyJSON(t.PolicyJSON)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `UPDATE policy_templates SET name=?,sources=?,policy_json=? WHERE id=?`, t.Name, string(src), string(pol), t.ID)
 	return err
 }
 

@@ -98,10 +98,22 @@ func newLimiter(max int, per time.Duration) *limiter {
 	return &limiter{max: max, per: per, hits: map[string][]time.Time{}, now: time.Now}
 }
 
+// maxLimiterKeys caps the login limiter's map. Without it every client IP
+// that ever logged in keeps an entry forever, because allow only prunes the
+// key it is called with.
+const maxLimiterKeys = 10000
+
 func (l *limiter) allow(key string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
+	if len(l.hits) > maxLimiterKeys {
+		for k, hits := range l.hits {
+			if len(hits) == 0 || now.Sub(hits[len(hits)-1]) >= l.per {
+				delete(l.hits, k)
+			}
+		}
+	}
 	var keep []time.Time
 	for _, t := range l.hits[key] {
 		if now.Sub(t) < l.per {
@@ -137,7 +149,12 @@ func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 			writeErr(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
-		if _, ok := s.sess.verify(c.Value); !ok {
+		sess := s.signer()
+		if sess == nil {
+			writeErr(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		if _, ok := sess.verify(c.Value); !ok {
 			writeErr(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}

@@ -45,7 +45,7 @@ func (s *Server) healthOf(a store.Agent, latest *store.Report) string {
 	if latest != nil {
 		in.LastRunFailed = latest.Status == "error"
 	}
-	if ok, err := s.st.LastOKReport(context.Background(), a.ID); err == nil && ok != nil {
+	if ok, err := s.store().LastOKReport(context.Background(), a.ID); err == nil && ok != nil {
 		t := ok.FinishedAt
 		in.LastOK = &t
 	}
@@ -53,12 +53,12 @@ func (s *Server) healthOf(a store.Agent, latest *store.Report) string {
 }
 
 func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
-	as, err := s.st.Agents(r.Context())
+	as, err := s.store().Agents(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	latest, _ := s.st.LatestReports(r.Context())
+	latest, _ := s.store().LatestReports(r.Context())
 	out := make([]agentOut, 0, len(as))
 	for _, a := range as {
 		var lr *store.Report
@@ -71,12 +71,12 @@ func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAgentGet(w http.ResponseWriter, r *http.Request) {
-	a, err := s.st.Agent(r.Context(), mux.Vars(r)["id"])
+	a, err := s.store().Agent(r.Context(), mux.Vars(r)["id"])
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "agent not found")
 		return
 	}
-	reports, _ := s.st.ReportsForAgent(r.Context(), a.ID, 20)
+	reports, _ := s.store().ReportsForAgent(r.Context(), a.ID, 20)
 	var lr *store.Report
 	if len(reports) > 0 {
 		lr = &reports[0]
@@ -90,16 +90,16 @@ func (s *Server) handleAgentGet(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAgentRevoke(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	a, err := s.st.Agent(ctx, mux.Vars(r)["id"])
+	a, err := s.store().Agent(ctx, mux.Vars(r)["id"])
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "agent not found")
 		return
 	}
 	// best effort; keys may already be gone. Each lookup step logs and skips
 	// cleanup on its own failure rather than aborting the revoke below.
-	if g, err := s.st.Group(ctx, a.GroupID); err != nil {
+	if g, err := s.store().Group(ctx, a.GroupID); err != nil {
 		log.Printf("warphold fleet: revoke %s: b2 key cleanup skipped: %v", a.ID, err)
-	} else if t, err := s.st.Target(ctx, g.TargetID); err != nil {
+	} else if t, err := s.store().Target(ctx, g.TargetID); err != nil {
 		log.Printf("warphold fleet: revoke %s: b2 key cleanup skipped: %v", a.ID, err)
 	} else if spec, err := s.specFor(ctx, t); err != nil {
 		log.Printf("warphold fleet: revoke %s: b2 key cleanup skipped: %v", a.ID, err)
@@ -108,7 +108,7 @@ func (s *Server) handleAgentRevoke(w http.ResponseWriter, r *http.Request) {
 	} else if err := s.provisioner().Revoke(ctx, spec, b); err != nil {
 		log.Printf("warphold fleet: revoke %s: b2 key cleanup skipped: %v", a.ID, err)
 	}
-	if err := s.st.RevokeAgent(ctx, a.ID, s.now()); err != nil {
+	if err := s.store().RevokeAgent(ctx, a.ID, s.now()); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -121,12 +121,12 @@ func (s *Server) handleAgentCommand(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "kind must be one of snapshot-now, pause, resume, verify")
 		return
 	}
-	a, err := s.st.Agent(r.Context(), mux.Vars(r)["id"])
+	a, err := s.store().Agent(r.Context(), mux.Vars(r)["id"])
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "agent not found")
 		return
 	}
-	id, err := s.st.AddCommand(r.Context(), &store.Command{AgentID: a.ID, Kind: in.Kind, Source: in.Source})
+	id, err := s.store().AddCommand(r.Context(), &store.Command{AgentID: a.ID, Kind: in.Kind, Source: in.Source, CreatedAt: s.now()})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

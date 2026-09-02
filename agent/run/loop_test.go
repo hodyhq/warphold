@@ -14,6 +14,7 @@ import (
 	"github.com/kopia/kopia/agent/poll"
 	"github.com/kopia/kopia/agent/run"
 	"github.com/kopia/kopia/agent/state"
+	"github.com/kopia/kopia/internal/clock"
 	"github.com/kopia/kopia/internal/uitask"
 )
 
@@ -51,9 +52,12 @@ func (f *fakeLocal) TaskLog(context.Context, string) (string, error) { return "l
 func (f *fakeLocal) Status(context.Context) (string, bool)           { return "idle", true }
 
 func TestPollAppliesOnNewEtagAndRunsCommands(t *testing.T) {
+	var mu sync.Mutex
 	var reports []poll.Report
 	polls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
 		switch r.URL.Path {
 		case "/api/v1/fleet/agent/poll":
 			polls++
@@ -62,7 +66,7 @@ func TestPollAppliesOnNewEtagAndRunsCommands(t *testing.T) {
 			}
 			json.NewDecoder(r.Body).Decode(&in)
 			if in.ETag == "e1" && polls > 1 {
-				w.WriteHeader(304)
+				w.WriteHeader(http.StatusNotModified)
 				return
 			}
 			json.NewEncoder(w).Encode(poll.PolicyDoc{ETag: "e1", Name: "fw13", Sources: []poll.Source{{Path: "/data", Policy: json.RawMessage(`{}`)}}, Commands: []poll.Command{{ID: 7, Kind: "snapshot-now", Source: "/data"}}, PollIntervalSeconds: 300})
@@ -70,7 +74,7 @@ func TestPollAppliesOnNewEtagAndRunsCommands(t *testing.T) {
 			var rep poll.Report
 			json.NewDecoder(r.Body).Decode(&rep)
 			reports = append(reports, rep)
-			w.WriteHeader(204)
+			w.WriteHeader(http.StatusNoContent)
 		}
 	}))
 	defer srv.Close()
@@ -82,9 +86,11 @@ func TestPollAppliesOnNewEtagAndRunsCommands(t *testing.T) {
 	require.NoError(t, l.PollOnce(context.Background()))
 	require.Len(t, fl.applied, 1)
 	require.Equal(t, []string{"/data"}, fl.snapshot)
+	mu.Lock()
 	require.Len(t, reports, 1)
 	require.EqualValues(t, 7, reports[0].CommandID)
 	require.Equal(t, "ok", reports[0].Status)
+	mu.Unlock()
 	saved, _ := state.Load("user")
 	require.Equal(t, "e1", saved.ETag)
 
@@ -93,15 +99,18 @@ func TestPollAppliesOnNewEtagAndRunsCommands(t *testing.T) {
 }
 
 func TestWatchReportsFinishedTasksOnce(t *testing.T) {
+	var mu sync.Mutex
 	var reports []poll.Report
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var rep poll.Report
 		json.NewDecoder(r.Body).Decode(&rep)
+		mu.Lock()
 		reports = append(reports, rep)
-		w.WriteHeader(204)
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
-	end := time.Now()
+	end := clock.Now()
 	fl := &fakeLocal{tasks: []uitask.Info{
 		{TaskID: "t1", Kind: "Snapshot", Description: "Snapshot hody@fw13:/data", StartTime: end.Add(-time.Minute), EndTime: &end, Status: uitask.StatusSuccess},
 		{TaskID: "t2", Kind: "Snapshot", Description: "Snapshot hody@fw13:/data", StartTime: end, Status: uitask.StatusRunning},
@@ -110,6 +119,7 @@ func TestWatchReportsFinishedTasksOnce(t *testing.T) {
 	}}
 	l := run.New(run.Deps{Fleet: &poll.Client{Server: srv.URL, Bearer: "wa_1"}, Local: fl, State: &state.Config{Scope: "user"}, Now: time.Now, Log: t.Logf})
 	require.NoError(t, l.WatchOnce(context.Background()))
+	mu.Lock()
 	require.Len(t, reports, 3)
 	require.Equal(t, "/data", reports[0].Source)
 	require.Equal(t, "error", reports[1].Status)
@@ -117,25 +127,33 @@ func TestWatchReportsFinishedTasksOnce(t *testing.T) {
 	require.Equal(t, "/data2", reports[2].Source, "real 'user@host:path at <timestamp>' description parsed")
 	require.Equal(t, "error", reports[2].Status)
 	require.Equal(t, "log", reports[2].Stderr, "empty ErrorMessage falls back to the task log")
+	mu.Unlock()
 	require.NoError(t, l.WatchOnce(context.Background()))
+	mu.Lock()
+	defer mu.Unlock()
 	require.Len(t, reports, 3, "already reported")
 }
 
 func TestWatchParsesRealSnapshotDescriptionFormat(t *testing.T) {
+	var mu sync.Mutex
 	var reports []poll.Report
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var rep poll.Report
 		json.NewDecoder(r.Body).Decode(&rep)
+		mu.Lock()
 		reports = append(reports, rep)
-		w.WriteHeader(204)
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
-	end := time.Now()
+	end := clock.Now()
 	fl := &fakeLocal{tasks: []uitask.Info{
 		{TaskID: "t1", Kind: "Snapshot", Description: "hody@fw13:/data at 2026-09-01T23:00:00.123456789Z", StartTime: end.Add(-time.Minute), EndTime: &end, Status: uitask.StatusSuccess},
 	}}
 	l := run.New(run.Deps{Fleet: &poll.Client{Server: srv.URL, Bearer: "wa_1"}, Local: fl, State: &state.Config{Scope: "user"}, Now: time.Now, Log: t.Logf})
 	require.NoError(t, l.WatchOnce(context.Background()))
+	mu.Lock()
+	defer mu.Unlock()
 	require.Len(t, reports, 1)
 	require.Equal(t, "/data", reports[0].Source)
 }
@@ -155,7 +173,7 @@ func TestRestartedAgentReportsUniqueTaskIDs(t *testing.T) {
 		mu.Lock()
 		reports = append(reports, rep)
 		mu.Unlock()
-		w.WriteHeader(204)
+		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
 
@@ -170,10 +188,12 @@ func TestRestartedAgentReportsUniqueTaskIDs(t *testing.T) {
 		require.NoError(t, l.WatchOnce(context.Background()))
 	}
 
-	first := time.Now().Add(-time.Hour)
+	first := clock.Now().Add(-time.Hour)
 	report(first)
 	report(first.Add(30 * time.Minute)) // restart: same local task id, later start
 
+	mu.Lock()
+	defer mu.Unlock()
 	require.Len(t, reports, 2)
 	require.NotEqual(t, reports[0].TaskID, reports[1].TaskID, "wire task id must be unique per engine lifetime")
 	require.Contains(t, reports[0].TaskID, "-1")

@@ -46,7 +46,7 @@ func (s *Server) handleTemplateCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	id, err := s.st.CreateTemplate(r.Context(), &store.Template{Name: in.Name, Sources: in.Sources, PolicyJSON: in.Policy})
+	id, err := s.store().CreateTemplate(r.Context(), &store.Template{Name: in.Name, Sources: in.Sources, PolicyJSON: in.Policy, CreatedAt: s.now()})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -69,11 +69,11 @@ func (s *Server) handleTemplateUpdate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if _, err := s.st.Template(r.Context(), id); err != nil {
+	if _, err := s.store().Template(r.Context(), id); err != nil {
 		writeErr(w, http.StatusNotFound, "template not found")
 		return
 	}
-	if err := s.st.UpdateTemplate(r.Context(), &store.Template{ID: id, Name: in.Name, Sources: in.Sources, PolicyJSON: in.Policy}); err != nil {
+	if err := s.store().UpdateTemplate(r.Context(), &store.Template{ID: id, Name: in.Name, Sources: in.Sources, PolicyJSON: in.Policy}); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -81,7 +81,7 @@ func (s *Server) handleTemplateUpdate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTemplateList(w http.ResponseWriter, r *http.Request) {
-	ts, err := s.st.Templates(r.Context())
+	ts, err := s.store().Templates(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

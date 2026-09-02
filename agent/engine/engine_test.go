@@ -46,7 +46,7 @@ func TestApplySnapshotAndReport(t *testing.T) {
 	defer h.Stop(ctx)
 	api, err := h.Client()
 	require.NoError(t, err)
-	l, err := engine.NewLocal(api)
+	l, err := engine.NewLocal(context.Background(), api)
 	require.NoError(t, err)
 	require.NotEmpty(t, l.Host)
 
@@ -102,7 +102,7 @@ func TestStatus(t *testing.T) {
 	defer h.Stop(ctx)
 	api, err := h.Client()
 	require.NoError(t, err)
-	l, err := engine.NewLocal(api)
+	l, err := engine.NewLocal(context.Background(), api)
 	require.NoError(t, err)
 
 	// no sources yet: connected, idle (not vacuously "paused").

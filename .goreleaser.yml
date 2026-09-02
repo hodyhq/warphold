@@ -2,7 +2,12 @@
 # Make sure to check the documentation at http://goreleaser.com
 project_name: warphold   # warphold: renamed fork of kopia
 builds:
-- binary: warphold       # warphold:
+# warphold: the build id and binary name stay "kopia" so the artifact lands in
+# dist/kopia_<os>_<arch>/kopia, which is where the (upstream) Makefile's
+# kopia_ui_embedded_exe target looks. The fork's own binary is built by the
+# `warphold-build` target, not by goreleaser.
+- id: kopia
+  binary: kopia
   env:
   - CGO_ENABLED=0
   goos:

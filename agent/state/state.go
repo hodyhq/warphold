@@ -93,5 +93,30 @@ func Save(scope string, c *Config) error {
 		return err
 	}
 
-	return os.WriteFile(file(scope), b, 0o600)
+	// Write-then-rename: run/loop.go saves on every policy ETag change, and a
+	// truncated agent.json would cost the agent its server, bearer and id.
+	tmp, err := os.CreateTemp(Dir(scope), "agent-*.json")
+	if err != nil {
+		return err
+	}
+
+	defer os.Remove(tmp.Name()) //nolint:errcheck
+
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close() //nolint:errcheck,gosec
+
+		return err
+	}
+
+	if _, err := tmp.Write(b); err != nil {
+		tmp.Close() //nolint:errcheck,gosec
+
+		return err
+	}
+
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+
+	return os.Rename(tmp.Name(), file(scope))
 }

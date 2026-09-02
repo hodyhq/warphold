@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 )
 
 // BucketInfo is what Fleet needs to know about a bucket.
@@ -47,10 +48,15 @@ type Client struct {
 
 var _ API = (*Client)(nil)
 
-// New returns a Client; nil h uses http.DefaultClient.
+// defaultTimeout bounds a B2 request when the caller supplies neither its own
+// client nor a deadline; http.DefaultClient has no timeout, so a stalled
+// connection would otherwise block an admin or enrollment request forever.
+const defaultTimeout = 30 * time.Second
+
+// New returns a Client; nil h uses a client with defaultTimeout.
 func New(h *http.Client) *Client {
 	if h == nil {
-		h = http.DefaultClient
+		h = &http.Client{Timeout: defaultTimeout}
 	}
 	return &Client{http: h, base: "https://api.backblazeb2.com"}
 }

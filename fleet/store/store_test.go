@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kopia/kopia/fleet/store"
+	"github.com/kopia/kopia/internal/clock"
 )
 
 func openTemp(t *testing.T) *store.Store {
@@ -33,7 +34,8 @@ func TestOpenIsIdempotent(t *testing.T) {
 func TestAdminsRoundTrip(t *testing.T) {
 	s := openTemp(t)
 	ctx := context.Background()
-	id, err := s.CreateAdmin(ctx, "hody@hody.dev", "argon2id$fake")
+	now := clock.Now()
+	id, err := s.CreateAdmin(ctx, "hody@hody.dev", "argon2id$fake", now)
 	require.NoError(t, err)
 	a, err := s.AdminByEmail(ctx, "hody@hody.dev")
 	require.NoError(t, err)
@@ -41,21 +43,21 @@ func TestAdminsRoundTrip(t *testing.T) {
 	require.Equal(t, "owner", a.Role)
 	_, err = s.AdminByEmail(ctx, "nobody@x")
 	require.ErrorIs(t, err, store.ErrNotFound)
-	_, err = s.CreateAdmin(ctx, "hody@hody.dev", "x")
+	_, err = s.CreateAdmin(ctx, "hody@hody.dev", "x", now)
 	require.Error(t, err, "email must be unique")
 }
 
 func TestGroupChainAndAgents(t *testing.T) {
 	s := openTemp(t)
 	ctx := context.Background()
-	tid, err := s.CreateTarget(ctx, &store.Target{Name: "b2", Kind: "b2", Bucket: "hody-backups", SealedAdminKey: []byte("sealed")})
+	now := clock.Now().UTC().Truncate(time.Second)
+	tid, err := s.CreateTarget(ctx, &store.Target{Name: "b2", Kind: "b2", Bucket: "hody-backups", SealedAdminKey: []byte("sealed"), CreatedAt: now})
 	require.NoError(t, err)
-	tpl, err := s.CreateTemplate(ctx, &store.Template{Name: "Home default", Sources: []string{"~"}, PolicyJSON: json.RawMessage(`{"retention":{"keepHourly":24}}`)})
+	tpl, err := s.CreateTemplate(ctx, &store.Template{Name: "Home default", Sources: []string{"~"}, PolicyJSON: json.RawMessage(`{"retention":{"keepHourly":24}}`), CreatedAt: now})
 	require.NoError(t, err)
-	gid, err := s.CreateGroup(ctx, &store.Group{Name: "Laptops", TargetID: tid, TemplateID: tpl})
+	gid, err := s.CreateGroup(ctx, &store.Group{Name: "Laptops", TargetID: tid, TemplateID: tpl, CreatedAt: now})
 	require.NoError(t, err)
 
-	now := time.Now().UTC().Truncate(time.Second)
 	require.NoError(t, s.CreateAgent(ctx, &store.Agent{ID: "ag_1", Name: "hody-fw13", Hostname: "fw13", OS: "linux", Arch: "amd64", Scope: "user", GroupID: gid, BearerHash: []byte("h"), SealedBundle: []byte("b"), EnrolledAt: now}))
 	a, err := s.AgentByBearerHash(ctx, []byte("h"))
 	require.NoError(t, err)
@@ -75,12 +77,12 @@ func TestGroupChainAndAgents(t *testing.T) {
 func TestReportsDedupeAndLatest(t *testing.T) {
 	s := openTemp(t)
 	ctx := context.Background()
-	now := time.Now().UTC().Truncate(time.Second)
+	now := clock.Now().UTC().Truncate(time.Second)
 
 	// Setup: create target, template, group, and agent
-	tid, _ := s.CreateTarget(ctx, &store.Target{Name: "b2", Kind: "b2", Bucket: "hody-backups", SealedAdminKey: []byte("sealed")})
-	tpl, _ := s.CreateTemplate(ctx, &store.Template{Name: "Home", Sources: []string{"~"}, PolicyJSON: []byte(`{}`)})
-	gid, _ := s.CreateGroup(ctx, &store.Group{Name: "Laptops", TargetID: tid, TemplateID: tpl})
+	tid, _ := s.CreateTarget(ctx, &store.Target{Name: "b2", Kind: "b2", Bucket: "hody-backups", SealedAdminKey: []byte("sealed"), CreatedAt: now})
+	tpl, _ := s.CreateTemplate(ctx, &store.Template{Name: "Home", Sources: []string{"~"}, PolicyJSON: []byte(`{}`), CreatedAt: now})
+	gid, _ := s.CreateGroup(ctx, &store.Group{Name: "Laptops", TargetID: tid, TemplateID: tpl, CreatedAt: now})
 	s.CreateAgent(ctx, &store.Agent{ID: "ag_1", Name: "hody", Hostname: "fw13", OS: "linux", Arch: "amd64", Scope: "user", GroupID: gid, BearerHash: []byte("h"), SealedBundle: []byte("b"), EnrolledAt: now})
 
 	r := &store.Report{AgentID: "ag_1", TaskID: "t1", Kind: "snapshot", Source: "/home/hody", StartedAt: now.Add(-time.Minute), FinishedAt: now, Status: "ok", Bytes: 10, Files: 2, SnapshotID: "k1"}
@@ -103,43 +105,69 @@ func TestReportsDedupeAndLatest(t *testing.T) {
 func TestTokensAndCommandsAndSettings(t *testing.T) {
 	s := openTemp(t)
 	ctx := context.Background()
-	now := time.Now().UTC().Truncate(time.Second)
+	now := clock.Now().UTC().Truncate(time.Second)
 
 	// Setup: create target, template, group, and agent
-	tid, _ := s.CreateTarget(ctx, &store.Target{Name: "b2", Kind: "b2", Bucket: "hody-backups", SealedAdminKey: []byte("sealed")})
-	tpl, _ := s.CreateTemplate(ctx, &store.Template{Name: "Home", Sources: []string{"~"}, PolicyJSON: []byte(`{}`)})
-	gid, _ := s.CreateGroup(ctx, &store.Group{Name: "Laptops", TargetID: tid, TemplateID: tpl})
+	tid, _ := s.CreateTarget(ctx, &store.Target{Name: "b2", Kind: "b2", Bucket: "hody-backups", SealedAdminKey: []byte("sealed"), CreatedAt: now})
+	tpl, _ := s.CreateTemplate(ctx, &store.Template{Name: "Home", Sources: []string{"~"}, PolicyJSON: []byte(`{}`), CreatedAt: now})
+	gid, _ := s.CreateGroup(ctx, &store.Group{Name: "Laptops", TargetID: tid, TemplateID: tpl, CreatedAt: now})
 	s.CreateAgent(ctx, &store.Agent{ID: "ag_1", Name: "hody", Hostname: "fw13", OS: "linux", Arch: "amd64", Scope: "user", GroupID: gid, BearerHash: []byte("h"), SealedBundle: []byte("b"), EnrolledAt: now})
 
-	exp := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
-	id, err := s.CreateToken(ctx, &store.Token{Hash: []byte("th"), GroupID: gid, ExpiresAt: exp, MaxUses: 1})
+	exp := clock.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	id, err := s.CreateToken(ctx, &store.Token{Hash: []byte("th"), GroupID: gid, ExpiresAt: exp, MaxUses: 1, CreatedAt: now})
 	require.NoError(t, err)
 	tok, err := s.TokenByHash(ctx, []byte("th"))
 	require.NoError(t, err)
 	require.Equal(t, id, tok.ID)
-	ok, err := s.ConsumeToken(ctx, id, time.Now())
+	ok, err := s.ConsumeToken(ctx, id, clock.Now())
 	require.NoError(t, err)
 	require.True(t, ok)
 	tok, _ = s.TokenByHash(ctx, []byte("th"))
 	require.Equal(t, 1, tok.Uses)
-	ok, err = s.ConsumeToken(ctx, id, time.Now())
+	ok, err = s.ConsumeToken(ctx, id, clock.Now())
 	require.NoError(t, err)
 	require.False(t, ok, "max_uses=1 token is spent")
 
-	cid, err := s.AddCommand(ctx, &store.Command{AgentID: "ag_1", Kind: "snapshot-now", Source: "/home/hody"})
+	cid, err := s.AddCommand(ctx, &store.Command{AgentID: "ag_1", Kind: "snapshot-now", Source: "/home/hody", CreatedAt: now})
 	require.NoError(t, err)
 	pend, err := s.PendingCommands(ctx, "ag_1")
 	require.NoError(t, err)
 	require.Len(t, pend, 1)
-	require.ErrorIs(t, s.AckCommand(ctx, cid, "ag_wrong", time.Now()), store.ErrNotFound, "ack scoped to the wrong agent must not apply")
-	require.NoError(t, s.AckCommand(ctx, cid, "ag_1", time.Now()))
+	require.ErrorIs(t, s.AckCommand(ctx, cid, "ag_wrong", clock.Now()), store.ErrNotFound, "ack scoped to the wrong agent must not apply")
+	require.NoError(t, s.AckCommand(ctx, cid, "ag_1", clock.Now()))
 	pend, _ = s.PendingCommands(ctx, "ag_1")
 	require.Empty(t, pend)
 
 	v, err := s.Setting(ctx, "poll_interval")
 	require.NoError(t, err)
-	require.Equal(t, "", v)
+	require.Empty(t, v)
 	require.NoError(t, s.SetSetting(ctx, "poll_interval", "300"))
 	v, _ = s.Setting(ctx, "poll_interval")
 	require.Equal(t, "300", v)
+}
+
+// TestTemplatePolicyJSONIsValidatedAtTheStore pins that CreateTemplate and
+// UpdateTemplate refuse a policy_json that is not a policy object, and
+// normalize an empty one, so no caller can persist a value the list endpoint
+// would then stream out as malformed JSON.
+func TestTemplatePolicyJSONIsValidatedAtTheStore(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+
+	id, err := s.CreateTemplate(ctx, &store.Template{Name: "empty", Sources: []string{"~"}})
+	require.NoError(t, err)
+	got, err := s.Template(ctx, id)
+	require.NoError(t, err)
+	require.JSONEq(t, `{}`, string(got.PolicyJSON), "empty policy normalizes to an object")
+
+	for _, bad := range []string{`[1,2]`, `"nope"`, `{`, `null`} {
+		_, err := s.CreateTemplate(ctx, &store.Template{Name: "bad", Sources: []string{"~"}, PolicyJSON: []byte(bad)})
+		require.ErrorIs(t, err, store.ErrBadPolicyJSON, bad)
+		require.ErrorIs(t, s.UpdateTemplate(ctx, &store.Template{ID: id, Name: "bad", Sources: []string{"~"}, PolicyJSON: []byte(bad)}), store.ErrBadPolicyJSON, bad)
+	}
+
+	require.NoError(t, s.UpdateTemplate(ctx, &store.Template{ID: id, Name: "ok", Sources: []string{"~"}, PolicyJSON: []byte(`{"retention":{"keepLatest":3}}`)}))
+	got, err = s.Template(ctx, id)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"retention":{"keepLatest":3}}`, string(got.PolicyJSON))
 }

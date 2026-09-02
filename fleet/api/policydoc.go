@@ -13,11 +13,11 @@ import (
 
 // policyDocFor renders the agent's group template into the wire document (commands are added by the caller).
 func (s *Server) policyDocFor(ctx context.Context, a *store.Agent) (*poll.PolicyDoc, error) {
-	g, err := s.st.Group(ctx, a.GroupID)
+	g, err := s.store().Group(ctx, a.GroupID)
 	if err != nil {
 		return nil, err
 	}
-	tpl, err := s.st.Template(ctx, g.TemplateID)
+	tpl, err := s.store().Template(ctx, g.TemplateID)
 	if err != nil {
 		return nil, err
 	}
@@ -27,7 +27,12 @@ func (s *Server) policyDocFor(ctx context.Context, a *store.Agent) (*poll.Policy
 	srcJSON, _ := json.Marshal(tpl.Sources)
 	h.Write(srcJSON)
 	h.Write([]byte(a.Name))
-	doc := &poll.PolicyDoc{ETag: hex.EncodeToString(h.Sum(nil))[:16], Name: a.Name, Commands: []poll.Command{}, PollIntervalSeconds: s.pollInterval(ctx)}
+	// The interval is part of the document, so it must be part of the hash:
+	// otherwise handlePoll answers 304 after an admin changes it and the new
+	// interval never reaches an enrolled agent.
+	interval := s.pollInterval(ctx)
+	h.Write([]byte(strconv.Itoa(interval)))
+	doc := &poll.PolicyDoc{ETag: hex.EncodeToString(h.Sum(nil))[:16], Name: a.Name, Commands: []poll.Command{}, PollIntervalSeconds: interval}
 	for _, p := range tpl.Sources {
 		doc.Sources = append(doc.Sources, poll.Source{Path: p, Policy: tpl.PolicyJSON})
 	}

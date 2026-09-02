@@ -13,8 +13,8 @@ type Admin struct {
 	CreatedAt time.Time
 }
 
-func (s *Store) CreateAdmin(ctx context.Context, email, pwHash string) (int64, error) {
-	return s.exec(ctx, `INSERT INTO admins(email,pw_hash,role,created_at) VALUES(?,?,'owner',?)`, email, pwHash, ts(time.Now()))
+func (s *Store) CreateAdmin(ctx context.Context, email, pwHash string, at time.Time) (int64, error) {
+	return s.exec(ctx, `INSERT INTO admins(email,pw_hash,role,created_at) VALUES(?,?,'owner',?)`, email, pwHash, ts(at))
 }
 
 const adminCols = `id,email,pw_hash,role,created_at`

@@ -62,8 +62,8 @@ func TestProvisionB2UsesWriterKeyInTokenAndReaderKeyInBundle(t *testing.T) {
 	ci, _, err := repo.DecodeToken(b.ConnectToken)
 	require.NoError(t, err)
 	require.Equal(t, "b2", ci.Type)
-	require.Equal(t, b.WriterKeyID, "kid-warphold-ag_9-writer")
-	require.Equal(t, b.ReaderKeyID, "kid-warphold-ag_9-reader")
+	require.Equal(t, "kid-warphold-ag_9-writer", b.WriterKeyID)
+	require.Equal(t, "kid-warphold-ag_9-reader", b.ReaderKeyID)
 
 	require.NoError(t, p.Revoke(ctx, enroll.TargetSpec{Kind: "b2", AdminKeyID: "adm", AdminKey: "sec"}, b))
 	require.ElementsMatch(t, []string{b.WriterKeyID, b.ReaderKeyID}, fake.deleted)

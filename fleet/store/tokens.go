@@ -14,13 +14,14 @@ type Token struct {
 	MaxUses, Uses int
 	RevokedAt     *time.Time
 	CreatedBy     int64
+	CreatedAt     time.Time
 }
 
 const tokenCols = `id,token_hash,group_id,expires_at,max_uses,uses,revoked_at,created_by`
 
 func (s *Store) CreateToken(ctx context.Context, t *Token) (int64, error) {
 	return s.exec(ctx, `INSERT INTO enrollment_tokens(token_hash,group_id,expires_at,max_uses,uses,revoked_at,created_by,created_at) VALUES(?,?,?,?,0,NULL,?,?)`,
-		t.Hash, t.GroupID, ts(t.ExpiresAt), t.MaxUses, t.CreatedBy, ts(time.Now()))
+		t.Hash, t.GroupID, ts(t.ExpiresAt), t.MaxUses, t.CreatedBy, ts(t.CreatedAt))
 }
 
 func scanToken(row interface{ Scan(...any) error }) (*Token, error) {

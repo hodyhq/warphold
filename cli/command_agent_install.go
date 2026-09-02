@@ -26,7 +26,7 @@ func (c *commandAgentInstall) setup(svc advancedAppServices, parent commandParen
 	cmd.Action(svc.noRepositoryAction(c.run))
 }
 
-func (c *commandAgentInstall) run(_ context.Context) error {
+func (c *commandAgentInstall) run(ctx context.Context) error {
 	bin, err := os.Executable()
 	if err != nil {
 		return err
@@ -47,7 +47,7 @@ func (c *commandAgentInstall) run(_ context.Context) error {
 	}
 
 	return install.Apply(p, func(name string, args ...string) error {
-		cmd := exec.Command(name, args...) //nolint:gosec
+		cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec
 		cmd.Stdout, cmd.Stderr = c.out.stdout(), c.out.stderr()
 
 		return cmd.Run()

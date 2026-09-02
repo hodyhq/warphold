@@ -23,15 +23,15 @@ func (s *Server) handleGroupCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "name, target_id and template_id are required")
 		return
 	}
-	if _, err := s.st.Target(r.Context(), in.TargetID); err != nil {
+	if _, err := s.store().Target(r.Context(), in.TargetID); err != nil {
 		writeErr(w, http.StatusBadRequest, "unknown target_id")
 		return
 	}
-	if _, err := s.st.Template(r.Context(), in.TemplateID); err != nil {
+	if _, err := s.store().Template(r.Context(), in.TemplateID); err != nil {
 		writeErr(w, http.StatusBadRequest, "unknown template_id")
 		return
 	}
-	id, err := s.st.CreateGroup(r.Context(), &store.Group{Name: in.Name, TargetID: in.TargetID, TemplateID: in.TemplateID})
+	id, err := s.store().CreateGroup(r.Context(), &store.Group{Name: in.Name, TargetID: in.TargetID, TemplateID: in.TemplateID, CreatedAt: s.now()})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -40,7 +40,7 @@ func (s *Server) handleGroupCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGroupList(w http.ResponseWriter, r *http.Request) {
-	gs, err := s.st.Groups(r.Context())
+	gs, err := s.store().Groups(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

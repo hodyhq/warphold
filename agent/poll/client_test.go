@@ -15,28 +15,30 @@ import (
 
 func TestPollEtagAndRevoked(t *testing.T) {
 	var gotBody map[string]any
+	var gotAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "Bearer wa_1", r.Header.Get("Authorization"))
+		gotAuth = r.Header.Get("Authorization")
 		switch r.URL.Path {
 		case "/api/v1/fleet/agent/poll":
 			json.NewDecoder(r.Body).Decode(&gotBody)
 			if gotBody["etag"] == "e1" {
-				w.WriteHeader(304)
+				w.WriteHeader(http.StatusNotModified)
 				return
 			}
 			if gotBody["etag"] == "revoked" {
-				w.WriteHeader(401)
+				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
 			json.NewEncoder(w).Encode(map[string]any{"etag": "e1", "name": "fw13", "sources": []map[string]any{{"path": "/home/hody", "policy": map[string]any{}}}, "commands": []any{}, "poll_interval_seconds": 300})
 		case "/api/v1/fleet/agent/report":
-			w.WriteHeader(204)
+			w.WriteHeader(http.StatusNoContent)
 		}
 	}))
 	defer srv.Close()
 	c := &poll.Client{Server: srv.URL, Bearer: "wa_1"}
 	doc, err := c.Poll(context.Background(), poll.Heartbeat{Version: "0.1.0"}, "")
 	require.NoError(t, err)
+	require.Equal(t, "Bearer wa_1", gotAuth)
 	require.Equal(t, "e1", doc.ETag)
 	require.Equal(t, "/home/hody", doc.Sources[0].Path)
 	require.Equal(t, "0.1.0", gotBody["heartbeat"].(map[string]any)["version"])

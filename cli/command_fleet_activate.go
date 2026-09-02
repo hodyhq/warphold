@@ -34,6 +34,15 @@ func (c *commandFleetActivate) run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		// Activation happens once and this passphrase seals every escrowed
+		// secret; a typo here is only discovered when unsealing later fails.
+		again, err := askPass(c.out.stdout(), "Confirm sealing passphrase: ")
+		if err != nil {
+			return err
+		}
+		if p != again {
+			return errors.New("passphrases do not match")
+		}
 		c.passphrase = p
 	}
 	if c.password == "" {

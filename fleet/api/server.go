@@ -63,6 +63,11 @@ type Server struct {
 	login *limiter
 	now   func() time.Time
 	b2    b2api.API
+	// closed is set by Close instead of nilling st: handlers read st through
+	// store() and would otherwise have to re-check for nil between every
+	// call. A closed *sql.DB returns "database is closed" from each query,
+	// which the handlers already surface as an error.
+	closed bool
 
 	// setupTokenPath and setupToken gate POST /activate before the Fleet is
 	// activated (see handleActivate); both are cleared once activation succeeds.
@@ -126,7 +131,7 @@ func (s *Server) load() error {
 		return errors.New("session secret missing")
 	}
 	s.mu.Lock()
-	s.key, s.st, s.sess = key, st, newSessions([]byte(secret), sessionTTL)
+	s.key, s.st, s.sess, s.closed = key, st, newSessions([]byte(secret), sessionTTL), false
 	s.mu.Unlock()
 	return nil
 }
@@ -135,19 +140,41 @@ func (s *Server) load() error {
 func (s *Server) Activated() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.st != nil
+	return s.st != nil && !s.closed
 }
 
 // Close closes the store.
 func (s *Server) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.st == nil {
+	if s.st == nil || s.closed {
 		return nil
 	}
-	err := s.st.Close()
-	s.st = nil
-	return err
+	s.closed = true
+	return s.st.Close()
+}
+
+// store returns the active store, or nil before activation. load and Close
+// write s.st under s.mu, so every handler must read it through this accessor
+// rather than touching the field.
+func (s *Server) store() *store.Store {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.st
+}
+
+// signer returns the session signer, or nil before activation.
+func (s *Server) signer() *sessions {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.sess
+}
+
+// sealKey returns the sealing key; the zero Key before activation.
+func (s *Server) sealKey() seal.Key {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.key
 }
 
 // Activate creates the DB, seals with a key derived from passphrase, and creates the first admin.
@@ -173,10 +200,22 @@ func (s *Server) Activate(ctx context.Context, passphrase, email, password strin
 	if err != nil {
 		return err
 	}
-	key := seal.Derive(passphrase, salt)
-	if err := seal.WriteKeyFile(s.paths.KeyFile, key); err != nil {
+	if err := s.writeActivation(ctx, salt, passphrase, email, password); err != nil {
+		// Activation is not atomic, so a partial run must not leave a seal.key
+		// or a half-built DB behind: the guard above keys on exactly those two
+		// files and would reject every retry with "state exists but could not
+		// be loaded" until an operator cleared the directory by hand.
+		s.removePartialState()
 		return err
 	}
+	s.clearSetupToken()
+	return nil
+}
+
+// writeActivation performs the write half of Activate: the DB, the first
+// admin and the settings first, then - last - the seal.key that Activate's
+// overwrite guard keys on, then loads the result.
+func (s *Server) writeActivation(ctx context.Context, salt []byte, passphrase, email, password string) error {
 	st, err := store.Open(s.paths.DB)
 	if err != nil {
 		return err
@@ -193,12 +232,7 @@ func (s *Server) Activate(ctx context.Context, passphrase, email, password strin
 	// Admin insert happens before the settings writes: if it fails (e.g. a
 	// duplicate email on retry), no settings are touched, so a retry with a
 	// fresh email starts from a clean slate.
-	//
-	// ponytail: this doesn't make the whole activation atomic — a settings
-	// write failing right after a successful insert still leaves a stray
-	// admin row that blocks a same-email retry. A real fix needs a
-	// transaction exposed by fleet/store; out of scope for this pass.
-	if _, err := st.CreateAdmin(ctx, email, pwHash); err != nil {
+	if _, err := st.CreateAdmin(ctx, email, pwHash, s.now()); err != nil {
 		return err
 	}
 	secret := make([]byte, 32)
@@ -215,11 +249,19 @@ func (s *Server) Activate(ctx context.Context, passphrase, email, password strin
 		return err
 	}
 	st = nil
-	if err := s.load(); err != nil {
+	// seal.key goes last, once the DB and the admin row exist.
+	if err := seal.WriteKeyFile(s.paths.KeyFile, seal.Derive(passphrase, salt)); err != nil {
 		return err
 	}
-	s.clearSetupToken()
-	return nil
+	return s.load()
+}
+
+// removePartialState deletes whatever a failed activation created, so the next
+// attempt starts from "never activated" instead of tripping Activate's guard.
+func (s *Server) removePartialState() {
+	for _, p := range []string{s.paths.KeyFile, s.paths.DB, s.paths.DB + "-wal", s.paths.DB + "-shm"} {
+		_ = os.Remove(p)
+	}
 }
 
 // clearSetupToken deletes the one-time setup token file once activation succeeds.
@@ -294,7 +336,7 @@ func (s *Server) handleActivate(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	a, err := s.st.AdminByEmail(r.Context(), in.Email)
+	a, err := s.store().AdminByEmail(r.Context(), in.Email)
 	if err != nil {
 		log.Printf("warphold fleet: activated but admin lookup failed: %v", err)
 		writeErr(w, http.StatusInternalServerError, "activation failed")
@@ -328,12 +370,17 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "malformed body")
 		return
 	}
-	a, err := s.st.AdminByEmail(r.Context(), in.Email)
+	st, sess := s.store(), s.signer()
+	if st == nil || sess == nil {
+		writeErr(w, http.StatusConflict, "fleet is not activated")
+		return
+	}
+	a, err := st.AdminByEmail(r.Context(), in.Email)
 	if err != nil || !VerifyPassword(in.Password, a.PWHash) {
 		writeErr(w, http.StatusUnauthorized, "wrong email or password")
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: s.sess.issue(a.ID), Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil, MaxAge: int(sessionTTL.Seconds())})
+	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: sess.issue(a.ID), Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil, MaxAge: int(sessionTTL.Seconds())})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -355,9 +402,7 @@ func (s *Server) SetB2ForTesting(b b2api.API) { s.b2 = b }
 
 // AdminsForTesting exposes the admin list for tests.
 func (s *Server) AdminsForTesting(ctx context.Context) ([]store.Admin, error) {
-	s.mu.RLock()
-	st := s.st
-	s.mu.RUnlock()
+	st := s.store()
 	if st == nil {
 		return nil, errors.New("fleet is not activated")
 	}
@@ -366,9 +411,10 @@ func (s *Server) AdminsForTesting(ctx context.Context) ([]store.Admin, error) {
 
 // SeedGroupForTesting creates a filesystem target, a template and a group.
 func (s *Server) SeedGroupForTesting(ctx context.Context, path string, sources []string, policyJSON string) (targetID, templateID, groupID int64) {
-	targetID, _ = s.st.CreateTarget(ctx, &store.Target{Name: "local", Kind: "filesystem", Path: path})
-	templateID, _ = s.st.CreateTemplate(ctx, &store.Template{Name: "test", Sources: sources, PolicyJSON: json.RawMessage(policyJSON)})
-	groupID, _ = s.st.CreateGroup(ctx, &store.Group{Name: "Test", TargetID: targetID, TemplateID: templateID})
+	st, now := s.store(), s.now()
+	targetID, _ = st.CreateTarget(ctx, &store.Target{Name: "local", Kind: "filesystem", Path: path, CreatedAt: now})
+	templateID, _ = st.CreateTemplate(ctx, &store.Template{Name: "test", Sources: sources, PolicyJSON: json.RawMessage(policyJSON), CreatedAt: now})
+	groupID, _ = st.CreateGroup(ctx, &store.Group{Name: "Test", TargetID: targetID, TemplateID: templateID, CreatedAt: now})
 	return
 }
 
@@ -380,7 +426,7 @@ func (s *Server) IssueTokenForTesting(ctx context.Context, groupID int64) string
 
 // AgentForTesting exposes one agent's stored record for tests, or nil if it does not exist.
 func (s *Server) AgentForTesting(ctx context.Context, id string) *store.Agent {
-	a, err := s.st.Agent(ctx, id)
+	a, err := s.store().Agent(ctx, id)
 	if err != nil {
 		return nil
 	}

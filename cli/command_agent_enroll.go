@@ -64,7 +64,38 @@ func (c *commandAgentEnroll) run(ctx context.Context) error {
 		return err
 	}
 
-	ci, password, err := repo.DecodeToken(er.ConnectToken)
+	name := c.name
+	if name == "" {
+		name = er.Name
+	}
+
+	// The server has already spent the one-time token, so the agent's identity
+	// is written before any local step that can fail. Re-running enroll with a
+	// fresh token overwrites it, which is the documented recovery.
+	if err := state.Save(c.scope, &state.Config{
+		Server:       strings.TrimRight(c.server, "/"),
+		AgentID:      er.AgentID,
+		Bearer:       er.Bearer,
+		Name:         name,
+		PollInterval: er.PollInterval,
+		Scope:        c.scope,
+	}); err != nil {
+		return errors.Wrapf(err, "enrolled with the Fleet server as %s but cannot save agent state to %s; re-enroll with a fresh token", er.AgentID, state.Dir(c.scope))
+	}
+
+	if err := c.connectRepo(ctx, er.ConnectToken); err != nil {
+		return errors.Wrapf(err, "enrolled with the Fleet server as %s but this machine is not connected to its repository; the connect token is single-use, so re-enroll with a fresh token", er.AgentID)
+	}
+
+	c.out.printStdout("Enrolled as %s (%s).\n", name, er.AgentID)
+
+	return nil
+}
+
+// connectRepo connects the agent's scope to the repository named by the
+// single-use connect token and persists the repository password.
+func (c *commandAgentEnroll) connectRepo(ctx context.Context, connectToken string) error {
+	ci, password, err := repo.DecodeToken(connectToken)
 	if err != nil {
 		return errors.Wrap(err, "malformed connect token")
 	}
@@ -73,6 +104,7 @@ func (c *commandAgentEnroll) run(ctx context.Context) error {
 	if err != nil {
 		return errors.Wrap(err, "cannot open repository storage")
 	}
+
 	defer st.Close(ctx) //nolint:errcheck
 
 	if err := os.MkdirAll(state.CacheDir(c.scope), 0o700); err != nil {
@@ -83,29 +115,8 @@ func (c *commandAgentEnroll) run(ctx context.Context) error {
 	connectErr := repo.Connect(ctx, configFile, st, password, &repo.ConnectOptions{
 		CachingOptions: content.CachingOptions{CacheDirectory: state.CacheDir(c.scope)},
 	})
-	if err := passwordpersist.OnSuccess(ctx, connectErr, c.svc.passwordPersistenceStrategy(), configFile, password); err != nil {
-		return errors.Wrap(err, "cannot connect to repository")
-	}
 
-	name := c.name
-	if name == "" {
-		name = er.Name
-	}
-
-	if err := state.Save(c.scope, &state.Config{
-		Server:       strings.TrimRight(c.server, "/"),
-		AgentID:      er.AgentID,
-		Bearer:       er.Bearer,
-		Name:         name,
-		PollInterval: er.PollInterval,
-		Scope:        c.scope,
-	}); err != nil {
-		return errors.Wrap(err, "cannot save agent state")
-	}
-
-	c.out.printStdout("Enrolled as %s (%s).\n", name, er.AgentID)
-
-	return nil
+	return errors.Wrap(passwordpersist.OnSuccess(ctx, connectErr, c.svc.passwordPersistenceStrategy(), configFile, password), "cannot connect to repository")
 }
 
 // callEnroll exchanges the enrollment token for the agent's credentials and

@@ -35,7 +35,7 @@ type targetCreds struct {
 
 func (s *Server) sealCreds(c targetCreds) ([]byte, error) {
 	b, _ := json.Marshal(c)
-	return s.key.Seal(b)
+	return s.sealKey().Seal(b)
 }
 
 // targetCreds unseals the admin credentials of a target.
@@ -43,7 +43,7 @@ func (s *Server) targetCreds(_ context.Context, t *store.Target) (string, string
 	if len(t.SealedAdminKey) == 0 {
 		return "", "", nil
 	}
-	b, err := s.key.Open(t.SealedAdminKey)
+	b, err := s.sealKey().Open(t.SealedAdminKey)
 	if err != nil {
 		return "", "", err
 	}

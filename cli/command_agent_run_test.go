@@ -54,6 +54,7 @@ func TestAgentRunOnceAppliesPolicyAndReports(t *testing.T) {
 	for _, p := range pols {
 		if p.Target().Path == home {
 			found = true
+			require.NotNil(t, p.RetentionPolicy.KeepLatest)
 			require.EqualValues(t, 3, *p.RetentionPolicy.KeepLatest)
 		}
 	}

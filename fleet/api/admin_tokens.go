@@ -33,7 +33,7 @@ func (s *Server) handleTokenCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "malformed body")
 		return
 	}
-	if _, err := s.st.Group(r.Context(), in.GroupID); err != nil {
+	if _, err := s.store().Group(r.Context(), in.GroupID); err != nil {
 		writeErr(w, http.StatusBadRequest, "unknown group_id")
 		return
 	}
@@ -43,7 +43,7 @@ func (s *Server) handleTokenCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	// requireAdmin already verified the session cookie, so it is present here.
 	c, _ := r.Cookie(sessionCookie)
-	adminID, _ := s.sess.verify(c.Value)
+	adminID, _ := s.signer().verify(c.Value)
 	plain, tok, err := s.tokens().Issue(r.Context(), in.GroupID, time.Duration(in.TTLSeconds)*time.Second, maxUses, adminID)
 	if err != nil {
 		if errors.Is(err, enroll.ErrTTLTooLong) {
@@ -62,7 +62,7 @@ func (s *Server) handleTokenList(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad id")
 		return
 	}
-	ts, err := s.st.TokensForGroup(r.Context(), id)
+	ts, err := s.store().TokensForGroup(r.Context(), id)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -80,7 +80,7 @@ func (s *Server) handleTokenRevoke(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad id")
 		return
 	}
-	if err := s.st.RevokeToken(r.Context(), id, s.now()); err != nil {
+	if err := s.store().RevokeToken(r.Context(), id, s.now()); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}

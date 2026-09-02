@@ -25,9 +25,9 @@ type Local struct {
 }
 
 // NewLocal learns the local host/user identity from the server.
-func NewLocal(api *apiclient.KopiaAPIClient) (*Local, error) {
+func NewLocal(ctx context.Context, api *apiclient.KopiaAPIClient) (*Local, error) {
 	var sr serverapi.SourcesResponse
-	if err := api.Get(context.Background(), "sources", nil, &sr); err != nil {
+	if err := api.Get(ctx, "sources", nil, &sr); err != nil {
 		return nil, errors.Wrap(err, "sources")
 	}
 	return &Local{API: api, Host: sr.LocalHost, User: sr.LocalUsername}, nil

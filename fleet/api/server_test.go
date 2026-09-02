@@ -306,3 +306,28 @@ func TestActivateRefusesToOverwriteUnloadableState(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, before, after, "seal.key must be byte-identical")
 }
+
+// TestFailedActivationLeavesNoStateBehind pins the ordering of Activate: the
+// seal.key is written last and a failure rolls the state directory back, so a
+// retry is not rejected by the "state exists but could not be loaded" guard.
+func TestFailedActivationLeavesNoStateBehind(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores file permissions")
+	}
+
+	dir := t.TempDir()
+	s := api.New(dir)
+	t.Cleanup(func() { s.Close() }) //nolint:errcheck
+
+	// A read-only state directory fails store.Open, which stands in for any
+	// step after the key derivation.
+	require.NoError(t, os.Chmod(dir, 0o500))
+	require.Error(t, s.Activate(t.Context(), "seal-me!", "hody@hody.dev", "pw12345678"))
+	require.NoError(t, os.Chmod(dir, 0o700))
+
+	_, err := os.Stat(filepath.Join(dir, "seal.key"))
+	require.ErrorIs(t, err, os.ErrNotExist, "a failed activation must not leave seal.key behind")
+
+	require.NoError(t, s.Activate(t.Context(), "seal-me!", "hody@hody.dev", "pw12345678"), "retry after a failed activation")
+	require.True(t, s.Activated())
+}

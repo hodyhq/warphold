@@ -14,7 +14,7 @@ type Command struct {
 }
 
 func (s *Store) AddCommand(ctx context.Context, c *Command) (int64, error) {
-	return s.exec(ctx, `INSERT INTO commands(agent_id,kind,source,created_at) VALUES(?,?,?,?)`, c.AgentID, c.Kind, c.Source, ts(time.Now()))
+	return s.exec(ctx, `INSERT INTO commands(agent_id,kind,source,created_at) VALUES(?,?,?,?)`, c.AgentID, c.Kind, c.Source, ts(c.CreatedAt))
 }
 
 func (s *Store) PendingCommands(ctx context.Context, agentID string) ([]Command, error) {

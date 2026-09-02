@@ -70,7 +70,8 @@ func (t *Tokens) Issue(ctx context.Context, groupID int64, ttl time.Duration, ma
 	if err != nil {
 		return "", nil, err
 	}
-	tok := &store.Token{Hash: hash, GroupID: groupID, ExpiresAt: t.now().Add(ttl), MaxUses: maxUses, CreatedBy: by}
+	now := t.now()
+	tok := &store.Token{Hash: hash, GroupID: groupID, ExpiresAt: now.Add(ttl), MaxUses: maxUses, CreatedBy: by, CreatedAt: now}
 	id, err := t.st.CreateToken(ctx, tok)
 	if err != nil {
 		return "", nil, err

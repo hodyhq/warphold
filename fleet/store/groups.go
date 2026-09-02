@@ -13,7 +13,7 @@ type Group struct {
 }
 
 func (s *Store) CreateGroup(ctx context.Context, g *Group) (int64, error) {
-	return s.exec(ctx, `INSERT INTO groups(name,target_id,template_id,created_at) VALUES(?,?,?,?)`, g.Name, g.TargetID, g.TemplateID, ts(time.Now()))
+	return s.exec(ctx, `INSERT INTO groups(name,target_id,template_id,created_at) VALUES(?,?,?,?)`, g.Name, g.TargetID, g.TemplateID, ts(g.CreatedAt))
 }
 
 func scanGroup(row interface{ Scan(...any) error }) (*Group, error) {

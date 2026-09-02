@@ -6,6 +6,7 @@ import (
 	"encoding/base32"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -58,7 +59,7 @@ func (s *Server) specFor(ctx context.Context, t *store.Target) (enroll.TargetSpe
 }
 
 func (s *Server) bundleFor(_ context.Context, a *store.Agent) (*enroll.Bundle, error) {
-	raw, err := s.key.Open(a.SealedBundle)
+	raw, err := s.sealKey().Open(a.SealedBundle)
 	if err != nil {
 		return nil, err
 	}
@@ -81,12 +82,12 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, err.Error())
 		return
 	}
-	group, err := s.st.Group(ctx, tok.GroupID)
+	group, err := s.store().Group(ctx, tok.GroupID)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "token's group is gone")
 		return
 	}
-	target, err := s.st.Target(ctx, group.TargetID)
+	target, err := s.store().Target(ctx, group.TargetID)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "group's target is gone")
 		return
@@ -101,14 +102,27 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	bundle, err := s.provisioner().Provision(ctx, spec, id)
+	prov := s.provisioner()
+	bundle, err := prov.Provision(ctx, spec, id)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, "provisioning failed: "+err.Error())
 		return
 	}
+	// Provision has already created the agent's B2 keys. Every failure from
+	// here on must hand them back, or the keys outlive an enrollment that
+	// never completed while the one-shot token is already spent.
+	enrolled := false
+	defer func() {
+		if enrolled {
+			return
+		}
+		if err := prov.Revoke(ctx, spec, bundle); err != nil {
+			log.Printf("warphold fleet: enroll %s failed and its b2 keys could not be revoked: %v", id, err)
+		}
+	}()
 	sealedBundle, err := json.Marshal(bundle)
 	if err == nil {
-		sealedBundle, err = s.key.Seal(sealedBundle)
+		sealedBundle, err = s.sealKey().Seal(sealedBundle)
 	}
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -120,10 +134,11 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a := &store.Agent{ID: id, Name: in.Hostname, Hostname: in.Hostname, OS: in.OS, Arch: in.Arch, Version: in.Version, Scope: in.Scope, GroupID: group.ID, BearerHash: bearerHash, SealedBundle: sealedBundle, EnrolledAt: s.now()}
-	if err := s.st.CreateAgent(ctx, a); err != nil {
+	if err := s.store().CreateAgent(ctx, a); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	enrolled = true
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"agent_id": id, "bearer": bearer, "name": a.Name,
 		"connect_token": bundle.ConnectToken, "poll_interval_seconds": s.pollInterval(ctx),
@@ -131,7 +146,7 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) pollInterval(ctx context.Context) int {
-	v, _ := s.st.Setting(ctx, "poll_interval")
+	v, _ := s.store().Setting(ctx, "poll_interval")
 	if n, err := strconv.Atoi(v); err == nil && n > 0 {
 		return n
 	}
@@ -153,7 +168,7 @@ func (s *Server) requireAgent(next http.HandlerFunc) http.HandlerFunc {
 			writeErr(w, http.StatusUnauthorized, "missing bearer token")
 			return
 		}
-		a, err := s.st.AgentByBearerHash(r.Context(), enroll.HashToken(bearer))
+		a, err := s.store().AgentByBearerHash(r.Context(), enroll.HashToken(bearer))
 		if err != nil || a.RevokedAt != nil {
 			writeErr(w, http.StatusUnauthorized, "unknown or revoked agent")
 			return
@@ -184,8 +199,8 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 	if version == "" {
 		version = a.Version
 	}
-	_ = s.st.TouchAgent(ctx, a.ID, s.now(), version, doc.ETag)
-	pending, _ := s.st.PendingCommands(ctx, a.ID)
+	_ = s.store().TouchAgent(ctx, a.ID, s.now(), version, doc.ETag)
+	pending, _ := s.store().PendingCommands(ctx, a.ID)
 	for _, c := range pending {
 		doc.Commands = append(doc.Commands, poll.Command{ID: c.ID, Kind: c.Kind, Source: c.Source})
 	}
@@ -205,19 +220,19 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	if in.CommandID != 0 {
-		owner, err := s.st.CommandAgentID(ctx, in.CommandID)
+		owner, err := s.store().CommandAgentID(ctx, in.CommandID)
 		if err != nil || owner != a.ID {
 			writeErr(w, http.StatusBadRequest, "command_id does not belong to this agent")
 			return
 		}
 	}
-	if _, err := s.st.AddReport(ctx, &store.Report{AgentID: a.ID, TaskID: in.TaskID, Kind: in.Kind, Source: in.Source, StartedAt: in.StartedAt, FinishedAt: in.FinishedAt, Status: in.Status, Bytes: in.Bytes, Files: in.Files, SnapshotID: in.SnapshotID, Stderr: in.Stderr}); err != nil {
+	if _, err := s.store().AddReport(ctx, &store.Report{AgentID: a.ID, TaskID: in.TaskID, Kind: in.Kind, Source: in.Source, StartedAt: in.StartedAt, FinishedAt: in.FinishedAt, Status: in.Status, Bytes: in.Bytes, Files: in.Files, SnapshotID: in.SnapshotID, Stderr: in.Stderr}); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if in.CommandID != 0 {
-		_ = s.st.AckCommand(ctx, in.CommandID, a.ID, s.now())
+		_ = s.store().AckCommand(ctx, in.CommandID, a.ID, s.now())
 	}
-	_ = s.st.TouchAgent(ctx, a.ID, s.now(), a.Version, a.PolicyETag)
+	_ = s.store().TouchAgent(ctx, a.ID, s.now(), a.Version, a.PolicyETag)
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -19,7 +19,7 @@ const targetCols = `id,name,kind,bucket,region,path,sealed_admin_key,object_lock
 
 func (s *Store) CreateTarget(ctx context.Context, t *Target) (int64, error) {
 	return s.exec(ctx, `INSERT INTO targets(name,kind,bucket,region,path,sealed_admin_key,object_lock_verified_at,created_at) VALUES(?,?,?,?,?,?,?,?)`,
-		t.Name, t.Kind, t.Bucket, t.Region, t.Path, t.SealedAdminKey, tsp(t.ObjectLockVerifiedAt), ts(time.Now()))
+		t.Name, t.Kind, t.Bucket, t.Region, t.Path, t.SealedAdminKey, tsp(t.ObjectLockVerifiedAt), ts(t.CreatedAt))
 }
 
 func scanTarget(row interface{ Scan(...any) error }) (*Target, error) {

@@ -38,7 +38,7 @@ func TestLimiter(t *testing.T) {
 	l := newLimiter(3, time.Minute)
 	now := time.Unix(0, 0)
 	l.now = func() time.Time { return now }
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		require.True(t, l.allow("1.2.3.4"))
 	}
 	require.False(t, l.allow("1.2.3.4"))

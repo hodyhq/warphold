@@ -186,9 +186,16 @@ func (l *Loop) Run(ctx context.Context, once bool) error {
 		return l.WatchOnce(ctx)
 	}
 
-	interval := time.Duration(l.d.State.PollInterval) * time.Second
-	if interval <= 0 {
-		interval = 5 * time.Minute
+	// Recomputed on every reset: State.PollInterval is 0 until a poll actually
+	// returns a document, so a fixed initial value would leave the agent on
+	// Jitter's 30s floor after a failed or 304 first poll.
+	pollInterval := func() time.Duration {
+		d := time.Duration(l.d.State.PollInterval) * time.Second
+		if d <= 0 {
+			d = 5 * time.Minute
+		}
+
+		return d
 	}
 
 	pollT := time.NewTimer(0)
@@ -210,8 +217,7 @@ func (l *Loop) Run(ctx context.Context, once bool) error {
 				l.d.Log("poll: %v", err)
 			}
 
-			interval = time.Duration(l.d.State.PollInterval) * time.Second
-			pollT.Reset(poll.Jitter(interval))
+			pollT.Reset(poll.Jitter(pollInterval()))
 		case <-watchT.C:
 			if err := l.WatchOnce(ctx); err != nil {
 				if errors.Is(err, poll.ErrRevoked) {
