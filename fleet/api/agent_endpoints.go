@@ -209,7 +209,7 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) pollInterval(ctx context.Context) int {
-	v, _ := s.store().Setting(ctx, "poll_interval")
+	v, _ := s.store().Setting(ctx, pollIntervalSetting)
 	if n, err := strconv.Atoi(v); err == nil && n > 0 {
 		return n
 	}
