@@ -73,12 +73,11 @@ func (l *Local) Apply(ctx context.Context, sources []poll.Source) error {
 				return errors.Wrapf(err, "policy for %s", s.Path)
 			}
 		}
+		// handleSourcesCreate already calls policy.SetPolicy with req.Policy,
+		// so no separate PUT /policy is needed.
 		var resp serverapi.CreateSnapshotSourceResponse
 		if err := l.API.Post(ctx, "sources", &serverapi.CreateSnapshotSourceRequest{Path: path, CreateSnapshot: false, Policy: &pol}, &resp); err != nil {
 			return errors.Wrapf(err, "add source %s", path)
-		}
-		if err := l.API.Put(ctx, "policy?"+l.sourceQuery(path), &pol, &serverapi.Empty{}); err != nil {
-			return errors.Wrapf(err, "set policy %s", path)
 		}
 	}
 	existing, err := l.Sources(ctx)

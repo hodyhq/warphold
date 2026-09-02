@@ -41,7 +41,7 @@ func randomHex(n int) string {
 }
 
 // StartHeadless opens the repository at configFile and serves the control + UI API on 127.0.0.1:0.
-func StartHeadless(ctx context.Context, configFile, repoPassword, prefsDir string) (*Headless, error) {
+func StartHeadless(ctx context.Context, configFile, repoPassword, prefsDir string) (_ *Headless, retErr error) {
 	h := &Headless{User: headlessUser, Password: randomHex(32)}
 	srv, err := server.New(ctx, &server.Options{
 		ConfigFile:             configFile,
@@ -66,6 +66,15 @@ func StartHeadless(ctx context.Context, configFile, repoPassword, prefsDir strin
 	if _, err := srv.InitRepositoryAsync(ctx, "Open", open, true); err != nil {
 		return nil, errors.Wrap(err, "open repository")
 	}
+
+	// From here on the repository is open and background goroutines are running:
+	// release it on any subsequent failure so we don't leak them.
+	defer func() {
+		if retErr != nil {
+			_ = srv.SetRepository(ctx, nil)
+		}
+	}()
+
 	m := mux.NewRouter()
 	srv.SetupControlAPIHandlers(m)
 	srv.SetupHTMLUIAPIHandlers(m)
