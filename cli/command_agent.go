@@ -7,6 +7,7 @@ type commandAgent struct {
 	run     commandAgentRun     // Task 16
 	install commandAgentInstall // Task 17
 	status  commandAgentStatus
+	tray    commandAgentTray
 }
 
 func (c *commandAgent) setup(svc advancedAppServices, parent commandParent) {
@@ -15,4 +16,5 @@ func (c *commandAgent) setup(svc advancedAppServices, parent commandParent) {
 	c.run.setup(svc, cmd)
 	c.install.setup(svc, cmd)
 	c.status.setup(svc, cmd)
+	c.tray.setup(svc, cmd)
 }
