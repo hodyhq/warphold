@@ -3,7 +3,10 @@ package engine
 import (
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
+
+	"github.com/kopia/kopia/agent/state"
 )
 
 // localSessionPath is the tray's one-URL handoff into the engine's web UI:
@@ -17,6 +20,11 @@ const localSessionPath = "/local/session"
 // in the cookie jar.
 const localCookieName = "wh_local"
 
+// localInfoPath serves the agent page's vault label. It is the one thing the
+// page needs that Kopia's own API does not know: which enrollment this engine
+// belongs to.
+const localInfoPath = "/local/info"
+
 // localAuth converts a valid wh_local cookie into the HTTP basic auth Kopia's
 // own handlers require (internal/server checks r.BasicAuth()). A request that
 // already carries an Authorization header is passed through untouched, so the
@@ -26,14 +34,17 @@ type localAuth struct {
 	token  string
 	cookie string
 	basic  string
+	// scope selects the state directory /local/info reads agent.json from.
+	scope string
 }
 
-func newLocalAuth(next http.Handler, token, user, password string) *localAuth {
+func newLocalAuth(next http.Handler, token, user, password, scope string) *localAuth {
 	return &localAuth{
 		next:   next,
 		token:  token,
 		cookie: randomHex(32),
 		basic:  "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+password)),
+		scope:  scope,
 	}
 }
 
@@ -66,8 +77,12 @@ func sameOrigin(r *http.Request) bool {
 }
 
 func (a *localAuth) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == localSessionPath {
+	switch r.URL.Path {
+	case localSessionPath:
 		a.handoff(w, r)
+		return
+	case localInfoPath:
+		a.info(w, r)
 		return
 	}
 
@@ -105,4 +120,52 @@ func (a *localAuth) handoff(w http.ResponseWriter, r *http.Request) {
 	})
 
 	http.Redirect(w, r, "/", http.StatusFound)
+}
+
+// localInfo is the agent page's vault label: a display name and the Fleet
+// group it was enrolled into. Deliberately nothing else - the target, its
+// bucket and its keys live in the same state directory and are never served.
+type localInfo struct {
+	Name string `json:"name"`
+	// Group is empty for now: the enroll response carries the agent's name
+	// only (see fleet/api handleEnroll), so agent.json has no group to read.
+	// It is served anyway so the label has one shape whether or not the
+	// enrollment ever grows one.
+	Group string `json:"group"`
+}
+
+// info answers with the label. It is not sensitive, but it is guarded exactly
+// like the handoff - cookie plus same origin - so the engine's local surface
+// has one rule rather than a per-endpoint judgement call.
+func (a *localAuth) info(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed\n", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if !sameOrigin(r) {
+		http.Error(w, "forbidden\n", http.StatusForbidden)
+		return
+	}
+
+	c, err := r.Cookie(localCookieName)
+	if err != nil || !constantTimeEqual(c.Value, a.cookie) {
+		http.Error(w, "unauthorized\n", http.StatusUnauthorized)
+		return
+	}
+
+	// A missing agent.json is not an error here: an engine can run before (or
+	// without) enrollment, and the page falls back to its own default label
+	// rather than showing a failure where a name belongs.
+	var out localInfo
+
+	if cfg, err := state.Load(a.scope); err == nil {
+		out.Name = cfg.Name
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	// The response is already committed by the time an encode can fail, so
+	// there is nothing left to tell the client.
+	_ = json.NewEncoder(w).Encode(out)
 }

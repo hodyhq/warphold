@@ -130,7 +130,7 @@ func StartHeadless(ctx context.Context, configFile, repoPassword, scope string) 
 	}
 
 	h.http = &http.Server{
-		Handler:           newLocalAuth(m, h.LocalToken, h.User, h.Password),
+		Handler:           newLocalAuth(m, h.LocalToken, h.User, h.Password, scope),
 		ReadHeaderTimeout: 15 * time.Second,
 		BaseContext:       func(net.Listener) context.Context { return ctx },
 	}

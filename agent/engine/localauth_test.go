@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kopia/kopia/agent/engine"
+	"github.com/kopia/kopia/agent/state"
 	"github.com/kopia/kopia/internal/apiclient"
 	"github.com/kopia/kopia/internal/serverapi"
 )
@@ -174,4 +176,113 @@ func TestLocalSessionHandoff(t *testing.T) {
 	stopped = true
 
 	require.NoFileExists(t, filepath.Join(stateDir, "engine.json"), "Stop removes the info file")
+}
+
+// TestLocalInfo pins the one thing the agent page cannot learn from Kopia's
+// own API: what to call this vault. The endpoint is a label, not a secret, but
+// it sits behind the same cookie and same-origin guard as /local/session so
+// the engine's local surface has one rule rather than two.
+func TestLocalInfo(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("WARPHOLD_STATE_DIR", t.TempDir())
+
+	require.NoError(t, state.Save("user", &state.Config{Name: "laptop-1", Scope: "user"}))
+
+	cfg, pw := provisionedRepo(t)
+
+	h, err := engine.StartHeadless(ctx, cfg, pw, "user")
+	require.NoError(t, err)
+
+	defer h.Stop(ctx) //nolint:errcheck
+
+	info, err := engine.ReadInfo("user")
+	require.NoError(t, err)
+
+	cl := noRedirect()
+
+	// no cookie: the endpoint is not readable by anything that has not been
+	// through the handoff.
+	require.Equal(t, http.StatusUnauthorized, doGet(t, cl, h.BaseURL+"/local/info").StatusCode)
+
+	session := doGet(t, cl, h.BaseURL+"/local/session?t="+info.LocalToken)
+	require.Equal(t, http.StatusFound, session.StatusCode)
+
+	var c *http.Cookie
+
+	for _, ck := range session.Cookies() {
+		if ck.Name == "wh_local" {
+			c = ck
+		}
+	}
+
+	require.NotNil(t, c, "wh_local cookie")
+
+	// a forged cookie is rejected the same way a missing one is.
+	require.Equal(t, http.StatusUnauthorized,
+		doGet(t, cl, h.BaseURL+"/local/info", &http.Cookie{Name: "wh_local", Value: "nope"}).StatusCode)
+
+	// SameSite=Strict does not isolate ports, so a page on another loopback
+	// port carries the cookie; only the fetch-metadata headers stop it.
+	require.Equal(t, http.StatusForbidden,
+		doGetWithHeaders(t, cl, h.BaseURL+"/local/info", map[string]string{"Sec-Fetch-Site": "cross-site"}, c).StatusCode)
+	require.Equal(t, http.StatusForbidden,
+		doGetWithHeaders(t, cl, h.BaseURL+"/local/info", map[string]string{"Origin": "http://127.0.0.1:9999"}, c).StatusCode)
+
+	// the engine's own page: the label it needs, and nothing else.
+	ok := doGetWithHeaders(t, cl, h.BaseURL+"/local/info", map[string]string{"Sec-Fetch-Site": "same-origin"}, c)
+	require.Equal(t, http.StatusOK, ok.StatusCode)
+	require.Equal(t, "application/json", ok.Header.Get("Content-Type"))
+
+	body, err := io.ReadAll(ok.Body)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"name":"laptop-1","group":""}`, string(body))
+
+	// POST is not an action, so it is not one here either.
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.BaseURL+"/local/info", nil)
+	require.NoError(t, err)
+	req.AddCookie(c)
+
+	posted, err := cl.Do(req)
+	require.NoError(t, err)
+
+	defer posted.Body.Close() //nolint:errcheck
+
+	require.Equal(t, http.StatusMethodNotAllowed, posted.StatusCode)
+}
+
+// TestLocalInfoWithoutEnrollment covers an engine running before (or without)
+// enrollment: no agent.json means no name, not an error page where a label
+// goes.
+func TestLocalInfoWithoutEnrollment(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("WARPHOLD_STATE_DIR", t.TempDir())
+
+	cfg, pw := provisionedRepo(t)
+
+	h, err := engine.StartHeadless(ctx, cfg, pw, "user")
+	require.NoError(t, err)
+
+	defer h.Stop(ctx) //nolint:errcheck
+
+	info, err := engine.ReadInfo("user")
+	require.NoError(t, err)
+
+	cl := noRedirect()
+
+	var c *http.Cookie
+
+	for _, ck := range doGet(t, cl, h.BaseURL+"/local/session?t="+info.LocalToken).Cookies() {
+		if ck.Name == "wh_local" {
+			c = ck
+		}
+	}
+
+	require.NotNil(t, c, "wh_local cookie")
+
+	resp := doGet(t, cl, h.BaseURL+"/local/info", c)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"name":"","group":""}`, string(body))
 }
