@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS reports (
   bytes INTEGER NOT NULL DEFAULT 0, files INTEGER NOT NULL DEFAULT 0, snapshot_id TEXT NOT NULL DEFAULT '',
   stderr TEXT NOT NULL DEFAULT '', UNIQUE(agent_id, task_id));
 CREATE INDEX IF NOT EXISTS reports_agent_finished ON reports(agent_id, finished_at DESC);
+CREATE INDEX IF NOT EXISTS reports_finished ON reports(finished_at);
 CREATE TABLE IF NOT EXISTS commands (
   id INTEGER PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES agents(id), kind TEXT NOT NULL,
   source TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, acked_at TEXT);
