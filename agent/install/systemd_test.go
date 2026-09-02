@@ -17,7 +17,7 @@ func TestSystemdPlans(t *testing.T) {
 	require.NoError(t, err)
 	unit, ok := p.Files["/home/hody/.config/systemd/user/warphold-agent.service"]
 	require.True(t, ok)
-	require.Contains(t, unit, "ExecStart=/home/hody/.local/bin/warphold agent run --scope user")
+	require.Contains(t, unit, "ExecStart=\"/home/hody/.local/bin/warphold\" agent run --scope user")
 	require.Contains(t, unit, "RestartPreventExitStatus=3")
 	require.Contains(t, unit, "StartLimitIntervalSec=600")
 	require.Contains(t, unit, "StartLimitBurst=5")

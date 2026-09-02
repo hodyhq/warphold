@@ -30,7 +30,7 @@ StartLimitIntervalSec=600
 StartLimitBurst=5
 
 [Service]
-ExecStart=%s agent run --scope %s
+ExecStart="%s" agent run --scope %s
 Restart=on-failure
 RestartSec=30
 RestartPreventExitStatus=3
