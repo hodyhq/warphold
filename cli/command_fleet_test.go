@@ -69,6 +69,15 @@ func fleetSeamRoundTrip(t *testing.T) {
 	var body map[string]any
 	require.NoError(t, json.NewDecoder(res.Body).Decode(&body))
 	require.Equal(t, true, body["activated"], "fleet routes must be mounted and see the activated state dir")
+
+	// --no-ui must also disable the public SPA bundle: the deep-link handler
+	// probes for upstream's static catch-all and serves nothing without it.
+	for _, p := range []string{"/", "/fleet", "/fleet/login", "/agent", "/assets/"} {
+		r, err := http.Get(sp.BaseURL + p) //nolint:noctx
+		require.NoError(t, err)
+		r.Body.Close()
+		require.Equal(t, http.StatusNotFound, r.StatusCode, "%s must be 404 under --no-ui", p)
+	}
 }
 
 // TestFleetSeamSurvivesRepeatedAppSetup runs the whole round trip twice in one
