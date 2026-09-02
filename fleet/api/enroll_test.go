@@ -50,10 +50,12 @@ func TestEnrollHappyPathAndRevoke(t *testing.T) {
 	require.NotNil(t, detail["revoked_at"])
 }
 
+const wellFormedEnrollToken = "wh_deadbeefdeadbeefdead1234"
+
 func TestEnrollShIsServed(t *testing.T) {
 	h := newHarness(t)
 	h.activateAndLogin()
-	res, err := http.Get(h.srv.URL + "/enroll.sh?token=wh_abc")
+	res, err := http.Get(h.srv.URL + "/enroll.sh?token=" + wellFormedEnrollToken)
 	require.NoError(t, err)
 	defer res.Body.Close()
 	require.Equal(t, 200, res.StatusCode)
@@ -61,5 +63,26 @@ func TestEnrollShIsServed(t *testing.T) {
 	buf := make([]byte, 4096)
 	n, _ := res.Body.Read(buf)
 	require.Contains(t, string(buf[:n]), "warphold agent enroll")
-	require.Contains(t, string(buf[:n]), "--token wh_abc")
+	require.Contains(t, string(buf[:n]), "--token "+wellFormedEnrollToken)
+}
+
+func TestEnrollShRejectsUnsafeToken(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+	res, err := http.Get(h.srv.URL + "/enroll.sh?token=wh_abc%22%3B%20echo%20pwned")
+	require.NoError(t, err)
+	defer res.Body.Close()
+	require.Equal(t, 400, res.StatusCode)
+}
+
+func TestEnrollShRejectsUnsafeHost(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+	req, err := http.NewRequest(http.MethodGet, h.srv.URL+"/enroll.sh?token="+wellFormedEnrollToken, nil)
+	require.NoError(t, err)
+	req.Host = "evil.example; echo pwned"
+	res, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer res.Body.Close()
+	require.Equal(t, 400, res.StatusCode)
 }

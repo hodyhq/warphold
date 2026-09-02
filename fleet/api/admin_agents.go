@@ -1,6 +1,7 @@
 package api
 
 import (
+	"log"
 	"net/http"
 	"time"
 
@@ -83,15 +84,18 @@ func (s *Server) handleAgentRevoke(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "agent not found")
 		return
 	}
-	g, err := s.st.Group(ctx, a.GroupID)
-	if err == nil {
-		if t, err := s.st.Target(ctx, g.TargetID); err == nil {
-			if spec, err := s.specFor(ctx, t); err == nil {
-				if b, err := s.bundleFor(ctx, a); err == nil {
-					_ = s.provisioner().Revoke(ctx, spec, b) // best effort; keys may already be gone
-				}
-			}
-		}
+	// best effort; keys may already be gone. Each lookup step logs and skips
+	// cleanup on its own failure rather than aborting the revoke below.
+	if g, err := s.st.Group(ctx, a.GroupID); err != nil {
+		log.Printf("warphold fleet: revoke %s: b2 key cleanup skipped: %v", a.ID, err)
+	} else if t, err := s.st.Target(ctx, g.TargetID); err != nil {
+		log.Printf("warphold fleet: revoke %s: b2 key cleanup skipped: %v", a.ID, err)
+	} else if spec, err := s.specFor(ctx, t); err != nil {
+		log.Printf("warphold fleet: revoke %s: b2 key cleanup skipped: %v", a.ID, err)
+	} else if b, err := s.bundleFor(ctx, a); err != nil {
+		log.Printf("warphold fleet: revoke %s: b2 key cleanup skipped: %v", a.ID, err)
+	} else if err := s.provisioner().Revoke(ctx, spec, b); err != nil {
+		log.Printf("warphold fleet: revoke %s: b2 key cleanup skipped: %v", a.ID, err)
 	}
 	if err := s.st.RevokeAgent(ctx, a.ID, s.now()); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
