@@ -154,6 +154,9 @@ func (t *tray) loop(ctx context.Context) {
 	m, paused, _ := t.poll(ctx) //nolint:errcheck
 
 	t.render(m)
+	// A tray started beside an already-failing agent must notify on that first
+	// poll, not on the second.
+	t.maybeNotify(m)
 
 	interval := t.opts.Poll
 	timer := time.NewTimer(interval)

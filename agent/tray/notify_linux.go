@@ -3,13 +3,18 @@
 package tray
 
 import (
+	"context"
 	"github.com/godbus/dbus/v5"
 	"github.com/pkg/errors"
+	"time"
 )
 
 // notifyTimeout lets the server pick its own expiry (-1), so a failure
 // notification follows the desktop's own policy for critical messages.
 const notifyTimeout = int32(-1)
+
+// notifyCallTimeout bounds the D-Bus round-trip itself.
+const notifyCallTimeout = 5 * time.Second
 
 // notify raises a desktop notification over org.freedesktop.Notifications. It
 // carries a summary and a body only: no path from engine.json, no local
@@ -25,7 +30,11 @@ func notify(summary, body string) error {
 
 	obj := conn.Object("org.freedesktop.Notifications", "/org/freedesktop/Notifications")
 
-	call := obj.Call("org.freedesktop.Notifications.Notify", 0,
+	// A wedged notification daemon must not stall the poll loop.
+	ctx, cancel := context.WithTimeout(context.Background(), notifyCallTimeout)
+	defer cancel()
+
+	call := obj.CallWithContext(ctx, "org.freedesktop.Notifications.Notify", 0,
 		"WarpHold",     // app_name
 		uint32(0),      // replaces_id: 0, never replace an unrelated notification
 		"dialog-error", // app_icon
