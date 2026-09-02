@@ -1,0 +1,11 @@
+WarpHold
+Copyright 2026 Hodahel Moinzadeh
+
+This product is a fork of Kopia (https://github.com/kopia/kopia),
+Copyright the Kopia Authors, licensed under the Apache License, Version 2.0.
+The original LICENSE is retained in this repository. Files modified in the
+fork are marked with "warphold:" comments; all new code lives under
+fleet/, agent/, and cli/command_fleet_*.go / cli/command_agent_*.go.
+
+"Kopia" and the Kopia logo are trademarks of the Kopia project and are not
+used to brand WarpHold. WarpHold's own mark lives under icons/warphold*.

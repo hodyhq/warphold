@@ -12,3 +12,5 @@ Plus `go.mod` / `go.sum`: the fork adds its own dependencies (modernc.org/sqlite
 friends) while upstream bumps versions in the same hunks, so both conflict routinely.
 Resolve by keeping both sides' requirements, then `go mod tidy`.
 After resolving: `CGO_ENABLED=0 go build ./... && go test ./fleet/... ./agent/... ./cli/...`.
+
+The Electron packaging under app/ and tools/docker-publish.sh are upstream-only and untouched; they still reference dist/kopia_* and are not part of WarpHold releases.
