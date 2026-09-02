@@ -33,10 +33,15 @@ func (c *commandFleet) setup(svc advancedAppServices, parent commandParent) {
 			fs.Mount(m)
 
 			// This hook is the one place that runs before setupHandlers
-			// registers the UI's "/" catch-all, so WarpHold's client-side
-			// routes are made refresh-safe here rather than in upstream's
-			// isKnownUIRoute allowlist.
-			server.ServeSPADeepLinks(m)
+			// registers the UI's "/" catch-all, so the SPA bundle is served
+			// here - unauthenticated, and refresh-safe on WarpHold's own
+			// client-side routes - rather than from upstream's UI-auth-gated
+			// file server and its isKnownUIRoute allowlist.
+			//
+			// The bundle is always the embedded one: this hook cannot see
+			// `server start --html-path`, which only redirects upstream's
+			// (still registered, still authenticated) file server.
+			srv.ServeSPAPublic(m, server.AssetFile())
 
 			// The closure runs once per `server start`, and the in-process
 			// test runner starts several servers in the same process, so the

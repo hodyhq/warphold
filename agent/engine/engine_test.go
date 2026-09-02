@@ -208,11 +208,25 @@ func TestHeadlessServesUI(t *testing.T) {
 
 	require.Equal(t, http.StatusNotFound, fleet.StatusCode)
 
-	// unauthenticated requests still don't get the page.
-	anon, err := http.Get(h.BaseURL + "/") //nolint:noctx
+	// the bundle itself is public - it is static code, and the tray hands the
+	// browser a URL that has to render before the session cookie exists.
+	for _, p := range []string{"/", "/agent"} {
+		anon, err := http.Get(h.BaseURL + p) //nolint:noctx
+		require.NoError(t, err)
+
+		anonBody, err := io.ReadAll(anon.Body)
+		anon.Body.Close() //nolint:errcheck,gosec
+		require.NoError(t, err)
+
+		require.Equal(t, http.StatusOK, anon.StatusCode, p)
+		require.Contains(t, string(anonBody), "<title>WarpHold", p)
+	}
+
+	// ... while the API behind it still is not.
+	anonAPI, err := http.Get(h.BaseURL + "/api/v1/sources") //nolint:noctx
 	require.NoError(t, err)
 
-	defer anon.Body.Close() //nolint:errcheck
+	defer anonAPI.Body.Close() //nolint:errcheck
 
-	require.Equal(t, http.StatusUnauthorized, anon.StatusCode)
+	require.Equal(t, http.StatusUnauthorized, anonAPI.StatusCode)
 }

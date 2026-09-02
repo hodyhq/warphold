@@ -105,9 +105,9 @@ func StartHeadless(ctx context.Context, configFile, repoPassword, scope string) 
 	srv.SetupControlAPIHandlers(m)
 	srv.SetupHTMLUIAPIHandlers(m)
 	// Serve the SPA itself so the tray's handoff URL lands on a real page.
-	// Deep links first (they must precede the "/" catch-all), then the static
-	// files, which must come after the API handlers.
-	server.ServeSPADeepLinks(m)
+	// The public bundle first (it must precede the "/" catch-all), then the
+	// static files, which must come after the API handlers.
+	srv.ServeSPAPublic(m, server.AssetFile())
 	srv.ServeStaticFiles(m, server.AssetFile())
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
