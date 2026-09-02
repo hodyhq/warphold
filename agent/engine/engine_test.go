@@ -40,8 +40,9 @@ func provisionedRepo(t *testing.T) (configFile, password string) {
 
 func TestApplySnapshotAndReport(t *testing.T) {
 	ctx := context.Background()
+	t.Setenv("WARPHOLD_STATE_DIR", t.TempDir())
 	cfg, pw := provisionedRepo(t)
-	h, err := engine.StartHeadless(ctx, cfg, pw, t.TempDir())
+	h, err := engine.StartHeadless(ctx, cfg, pw, "user")
 	require.NoError(t, err)
 	defer h.Stop(ctx)
 	api, err := h.Client()
@@ -84,6 +85,16 @@ func TestApplySnapshotAndReport(t *testing.T) {
 	require.Equal(t, src, rep.Source)
 	require.Greater(t, rep.Files, int64(0))
 
+	// the manifest written by that task is findable from the task's start time
+	id, err := l.LatestSnapshotID(ctx, src, done[0].StartTime, *done[0].EndTime)
+	require.NoError(t, err)
+	require.NotEmpty(t, id)
+	// ...but not from a window that starts after it finished
+	later := done[0].EndTime.Add(time.Hour)
+	id, err = l.LatestSnapshotID(ctx, src, later, later.Add(time.Minute))
+	require.NoError(t, err)
+	require.Empty(t, id, "no matching manifest yields an empty id, never a wrong one")
+
 	// removing the source deletes its policy
 	require.NoError(t, l.Apply(ctx, nil))
 	r, _ = repo.Open(ctx, cfg, pw, nil)
@@ -96,8 +107,9 @@ func TestApplySnapshotAndReport(t *testing.T) {
 
 func TestStatus(t *testing.T) {
 	ctx := context.Background()
+	t.Setenv("WARPHOLD_STATE_DIR", t.TempDir())
 	cfg, pw := provisionedRepo(t)
-	h, err := engine.StartHeadless(ctx, cfg, pw, t.TempDir())
+	h, err := engine.StartHeadless(ctx, cfg, pw, "user")
 	require.NoError(t, err)
 	defer h.Stop(ctx)
 	api, err := h.Client()

@@ -30,7 +30,7 @@ StartLimitIntervalSec=600
 StartLimitBurst=5
 
 [Service]
-ExecStart="%s" agent run --scope %s
+%sExecStart="%s" agent run --scope %s
 Restart=on-failure
 RestartSec=30
 RestartPreventExitStatus=3
@@ -48,8 +48,13 @@ WantedBy=%s
 // never find it.
 func Systemd(scope, binary string) (Plan, error) {
 	if scope == "system" {
+		u, err := unit(binary, "system", "multi-user.target")
+		if err != nil {
+			return Plan{}, err
+		}
+
 		return Plan{
-			Files:    map[string]string{"/etc/systemd/system/warphold-agent.service": unit(binary, "system", "multi-user.target")},
+			Files:    map[string]string{"/etc/systemd/system/warphold-agent.service": u},
 			Commands: [][]string{{"systemctl", "daemon-reload"}, {"systemctl", "enable", "--now", "warphold-agent"}},
 		}, nil
 	}
@@ -82,14 +87,38 @@ func Systemd(scope, binary string) (Plan, error) {
 
 	cfg = filepath.Clean(cfg)
 
+	u, err := unit(binary, "user", "default.target")
+	if err != nil {
+		return Plan{}, err
+	}
+
 	return Plan{
-		Files:    map[string]string{filepath.Join(cfg, "systemd", "user", "warphold-agent.service"): unit(binary, "user", "default.target")},
+		Files:    map[string]string{filepath.Join(cfg, "systemd", "user", "warphold-agent.service"): u},
 		Commands: [][]string{{"systemctl", "--user", "daemon-reload"}, {"systemctl", "--user", "enable", "--now", "warphold-agent"}, {"loginctl", "enable-linger"}},
 	}, nil
 }
 
-func unit(binary, scope, wantedBy string) string {
-	return strings.TrimSpace(fmt.Sprintf(unitTmpl, binary, scope, wantedBy)) + "\n"
+// unit renders the service file. A WARPHOLD_STATE_DIR set at install time is
+// carried into the unit: systemd starts services in a clean environment, so
+// without it the installed service would look for agent.json in the default
+// directory and report itself unenrolled.
+func unit(binary, scope, wantedBy string) (string, error) {
+	env := ""
+
+	if d := os.Getenv("WARPHOLD_STATE_DIR"); d != "" {
+		// A newline would let the value append arbitrary directives to the
+		// unit (ExecStartPre=, User=root); a double quote would break out of
+		// the quoted value it lands in.
+		if strings.ContainsAny(d, "\"\n\r") {
+			return "", errors.Errorf("WARPHOLD_STATE_DIR %q must not contain quotes or newlines", d)
+		}
+
+		// Quoted, so a directory containing spaces survives systemd's word
+		// splitting; "%" doubled, because systemd expands "%x" specifiers.
+		env = fmt.Sprintf("Environment=\"WARPHOLD_STATE_DIR=%s\"\n", strings.ReplaceAll(d, "%", "%%"))
+	}
+
+	return strings.TrimSpace(fmt.Sprintf(unitTmpl, env, binary, scope, wantedBy)) + "\n", nil
 }
 
 // Apply writes the files then runs the commands.

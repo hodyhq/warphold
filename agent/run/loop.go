@@ -24,6 +24,7 @@ type LocalEngine interface {
 	Resume(ctx context.Context, path string) error
 	Tasks(ctx context.Context) ([]uitask.Info, error)
 	TaskLog(ctx context.Context, id string) (string, error)
+	LatestSnapshotID(ctx context.Context, path string, notBefore, notAfter time.Time) (string, error)
 	Status(ctx context.Context) (engineStatus string, repoConnected bool)
 }
 
@@ -149,6 +150,21 @@ func (l *Loop) WatchOnce(ctx context.Context) error {
 		}
 
 		rep := engine.ToReport(t, source)
+
+		// The manifest id lets Fleet offer a restore straight from the report.
+		// Only successful snapshots have one: a failed task wrote no manifest,
+		// and looking one up anyway would attach an unrelated earlier snapshot.
+		// An empty id is a normal outcome (omitempty on the wire), not a
+		// reason to withhold the report: the snapshot did happen, and holding
+		// it back would retry the same task forever.
+		if rep.Kind == "snapshot" && rep.Status == "ok" && source != "" {
+			id, err := l.d.Local.LatestSnapshotID(ctx, source, t.StartTime, *t.EndTime)
+			if err != nil {
+				l.d.Log("snapshot id for %s: %v", source, err)
+			} else {
+				rep.SnapshotID = id
+			}
+		}
 
 		// Kopia numbers tasks from a per-process counter
 		// (internal/uitask.Manager.nextTaskID), so after every agent restart

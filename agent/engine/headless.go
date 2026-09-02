@@ -8,14 +8,17 @@ import (
 	stderrors "errors"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/pkg/errors"
 
+	"github.com/kopia/kopia/agent/state"
 	"github.com/kopia/kopia/internal/apiclient"
 	"github.com/kopia/kopia/internal/auth"
+	"github.com/kopia/kopia/internal/clock"
 	"github.com/kopia/kopia/internal/passwordpersist"
 	"github.com/kopia/kopia/internal/server"
 	"github.com/kopia/kopia/repo"
@@ -25,13 +28,18 @@ const headlessUser = "warphold-agent"
 
 // Headless is Kopia's engine on loopback: scheduler, uploads, tasks; no static UI.
 type Headless struct {
-	BaseURL  string
-	User     string
-	Password string
+	BaseURL string
+	User    string
+	// Password authenticates API clients; LocalToken is the value the tray puts
+	// in a /local/session URL to obtain a browser session. Both are generated
+	// per process, expire with it, and also live in engine.json.
+	Password   string
+	LocalToken string
 
-	srv  *server.Server
-	http *http.Server
-	ln   net.Listener
+	scope string
+	srv   *server.Server
+	http  *http.Server
+	ln    net.Listener
 }
 
 func randomHex(n int) string {
@@ -40,9 +48,12 @@ func randomHex(n int) string {
 	return hex.EncodeToString(b)
 }
 
-// StartHeadless opens the repository at configFile and serves the control + UI API on 127.0.0.1:0.
-func StartHeadless(ctx context.Context, configFile, repoPassword, prefsDir string) (_ *Headless, retErr error) {
-	h := &Headless{User: headlessUser, Password: randomHex(32)}
+// StartHeadless opens the repository at configFile and serves the control +
+// UI API on 127.0.0.1:0. scope selects the state directory (see state.Dir),
+// which holds the UI preferences and the engine.json written once the engine
+// is listening; Stop removes that file.
+func StartHeadless(ctx context.Context, configFile, repoPassword, scope string) (_ *Headless, retErr error) {
+	h := &Headless{User: headlessUser, Password: randomHex(32), LocalToken: randomHex(32), scope: scope}
 	srv, err := server.New(ctx, &server.Options{
 		ConfigFile:             configFile,
 		ConnectOptions:         &repo.ConnectOptions{},
@@ -52,7 +63,7 @@ func StartHeadless(ctx context.Context, configFile, repoPassword, prefsDir strin
 		PasswordPersist:        passwordpersist.None(),
 		UIUser:                 h.User,
 		ServerControlUser:      h.User,
-		UIPreferencesFile:      filepath.Join(prefsDir, "ui-preferences.json"),
+		UIPreferencesFile:      filepath.Join(state.Dir(scope), "ui-preferences.json"),
 		DisableCSRFTokenChecks: true, // loopback + random per-process password; CSRF is for browsers
 		MinMaintenanceInterval: 24 * time.Hour,
 	})
@@ -84,8 +95,27 @@ func StartHeadless(ctx context.Context, configFile, repoPassword, prefsDir strin
 	}
 	h.ln = ln
 	h.BaseURL = "http://" + ln.Addr().String()
-	h.http = &http.Server{Handler: m, ReadHeaderTimeout: 15 * time.Second, BaseContext: func(net.Listener) context.Context { return ctx }}
+
+	if err := WriteInfo(scope, Info{
+		BaseURL:    h.BaseURL,
+		User:       h.User,
+		Password:   h.Password,
+		LocalToken: h.LocalToken,
+		PID:        os.Getpid(),
+		StartedAt:  clock.Now(),
+	}); err != nil {
+		ln.Close() //nolint:errcheck,gosec
+
+		return nil, errors.Wrap(err, "write engine info")
+	}
+
+	h.http = &http.Server{
+		Handler:           newLocalAuth(m, h.LocalToken, h.User, h.Password),
+		ReadHeaderTimeout: 15 * time.Second,
+		BaseContext:       func(net.Listener) context.Context { return ctx },
+	}
 	go func() { _ = h.http.Serve(ln) }()
+
 	return h, nil
 }
 
@@ -99,5 +129,6 @@ func (h *Headless) Stop(ctx context.Context) error {
 	ctx2, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	err := h.http.Shutdown(ctx2)
-	return stderrors.Join(err, h.srv.SetRepository(ctx, nil))
+
+	return stderrors.Join(err, h.srv.SetRepository(ctx, nil), RemoveInfo(h.scope))
 }
