@@ -114,11 +114,21 @@ func (p *Provisioner) Provision(ctx context.Context, t TargetSpec, agentID strin
 	}
 
 	if err := initFn(ctx, adminCI, password); err != nil {
+		// Both B2 keys already exist as live credentials at this point; revoke
+		// them rather than leaking scoped keys nobody else will clean up.
+		if t.Kind == "b2" {
+			_ = p.Revoke(ctx, t, b)
+		}
+
 		return nil, err
 	}
 
 	tok, err := repo.EncodeToken(password, agentCI)
 	if err != nil {
+		if t.Kind == "b2" {
+			_ = p.Revoke(ctx, t, b)
+		}
+
 		return nil, err
 	}
 

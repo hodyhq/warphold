@@ -2,6 +2,7 @@ package enroll_test
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -68,6 +69,18 @@ func TestProvisionB2UsesWriterKeyInTokenAndReaderKeyInBundle(t *testing.T) {
 	require.ElementsMatch(t, []string{b.WriterKeyID, b.ReaderKeyID}, fake.deleted)
 }
 
+func TestProvisionB2CleansUpKeysWhenInitializeFails(t *testing.T) {
+	ctx := context.Background()
+	fake := &fakeB2{}
+	wantErr := errors.New("boom")
+	p := &enroll.Provisioner{B2: fake, Owner: "fleet@test", InitializeForTesting: func(context.Context, blob.ConnectionInfo, string) error { return wantErr }}
+	_, err := p.Provision(ctx, enroll.TargetSpec{Kind: "b2", Bucket: "hody-backups", AdminKeyID: "adm", AdminKey: "sec"}, "ag_9")
+	require.ErrorIs(t, err, wantErr)
+	require.Len(t, fake.created, 2)
+	require.ElementsMatch(t, []string{fake.created[0].Name, fake.created[1].Name}, []string{"warphold-ag_9-writer", "warphold-ag_9-reader"})
+	require.ElementsMatch(t, []string{"kid-warphold-ag_9-writer", "kid-warphold-ag_9-reader"}, fake.deleted)
+}
+
 type fakeB2 struct {
 	created []b2api.KeyRequest
 	deleted []string
@@ -80,4 +93,7 @@ func (f *fakeB2) CreateKey(_ context.Context, _, _ string, r b2api.KeyRequest) (
 	f.created = append(f.created, r)
 	return b2api.CreatedKey{KeyID: "kid-" + r.Name, Key: "sec-" + r.Name}, nil
 }
-func (f *fakeB2) DeleteKey(_ context.Context, _, _, id string) error { f.deleted = append(f.deleted, id); return nil }
+func (f *fakeB2) DeleteKey(_ context.Context, _, _, id string) error {
+	f.deleted = append(f.deleted, id)
+	return nil
+}
