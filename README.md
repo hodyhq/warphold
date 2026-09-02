@@ -26,7 +26,7 @@ export KOPIA_SERVER_PASSWORD="$(head -c 32 /dev/urandom | base64)"          # ke
 warphold --config-file /var/lib/warphold/repository.config fleet activate --email admin@example.com
 warphold --config-file /var/lib/warphold/repository.config server start \
   --server-username admin --no-ui --no-grpc \
-  --address 127.0.0.1:51515
+  --insecure --address http://127.0.0.1:51515   # --insecure = plain HTTP; put TLS on the reverse proxy
 
 # on the device being enrolled, with a token from the Fleet admin API/UI
 read -rs -p "Enrollment token: " WARPHOLD_ENROLL_TOKEN; echo
