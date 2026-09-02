@@ -1,6 +1,11 @@
 package api
 
-import "github.com/gorilla/mux"
+import (
+	"net/http"
 
-func (s *Server) mountAdmin(_ *mux.Router) {}
+	"github.com/gorilla/mux"
+)
+
 func (s *Server) mountAgent(_ *mux.Router) {}
+
+func (s *Server) mountAdminEnrollment(_ *mux.Router, _ func(http.HandlerFunc) http.HandlerFunc) {} // Task 9 replaces

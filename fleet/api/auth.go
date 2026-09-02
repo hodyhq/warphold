@@ -32,6 +32,7 @@ func HashPassword(pw string) (string, error) {
 		base64.RawStdEncoding.EncodeToString(salt), base64.RawStdEncoding.EncodeToString(h)), nil
 }
 
+// Parameters are fixed (t=3, m=64MiB, p=4) and not read back from the PHC string; bump both HashPassword and here together if they ever change.
 // VerifyPassword checks pw against a HashPassword string in constant time.
 func VerifyPassword(pw, encoded string) bool {
 	parts := strings.Split(encoded, "$")
@@ -106,6 +107,9 @@ func (l *limiter) allow(key string) bool {
 		if now.Sub(t) < l.per {
 			keep = append(keep, t)
 		}
+	}
+	if len(keep) == 0 {
+		delete(l.hits, key)
 	}
 	if len(keep) >= l.max {
 		l.hits[key] = keep
