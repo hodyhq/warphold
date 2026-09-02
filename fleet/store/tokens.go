@@ -17,7 +17,7 @@ type Token struct {
 	CreatedAt     time.Time
 }
 
-const tokenCols = `id,token_hash,group_id,expires_at,max_uses,uses,revoked_at,created_by`
+const tokenCols = `id,token_hash,group_id,expires_at,max_uses,uses,revoked_at,created_by,created_at`
 
 func (s *Store) CreateToken(ctx context.Context, t *Token) (int64, error) {
 	return s.exec(ctx, `INSERT INTO enrollment_tokens(token_hash,group_id,expires_at,max_uses,uses,revoked_at,created_by,created_at) VALUES(?,?,?,?,0,NULL,?,?)`,
@@ -26,12 +26,13 @@ func (s *Store) CreateToken(ctx context.Context, t *Token) (int64, error) {
 
 func scanToken(row interface{ Scan(...any) error }) (*Token, error) {
 	var t Token
-	var exp string
+	var exp, created string
 	var rev sql.NullString
-	if err := row.Scan(&t.ID, &t.Hash, &t.GroupID, &exp, &t.MaxUses, &t.Uses, &rev, &t.CreatedBy); err != nil {
+	if err := row.Scan(&t.ID, &t.Hash, &t.GroupID, &exp, &t.MaxUses, &t.Uses, &rev, &t.CreatedBy, &created); err != nil {
 		return nil, notFound(err)
 	}
 	t.ExpiresAt = parseTS(exp)
+	t.CreatedAt = parseTS(created)
 	t.RevokedAt = parseTSP(rev)
 	return &t, nil
 }

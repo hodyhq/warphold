@@ -113,6 +113,28 @@ func (l *limiter) allow(key string) bool {
 				delete(l.hits, k)
 			}
 		}
+		// Expiry alone does not bound the map: a distributed flood keeps every
+		// entry active. Evict least-recently-used keys until back under the cap.
+		// ponytail: linear scan per eviction; the map grows one key per call, so
+		// at most one eviction runs per call. Use a heap only if that changes.
+		for len(l.hits) > maxLimiterKeys {
+			var lruKey string
+			var lru time.Time
+			found := false
+			for k, hits := range l.hits {
+				var last time.Time
+				if len(hits) > 0 {
+					last = hits[len(hits)-1]
+				}
+				if !found || last.Before(lru) {
+					lruKey, lru, found = k, last, true
+				}
+			}
+			if !found {
+				break
+			}
+			delete(l.hits, lruKey)
+		}
 	}
 	var keep []time.Time
 	for _, t := range l.hits[key] {

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"strconv"
 	"testing"
 	"time"
 
@@ -45,4 +46,19 @@ func TestLimiter(t *testing.T) {
 	require.True(t, l.allow("5.6.7.8"))
 	now = now.Add(61 * time.Second)
 	require.True(t, l.allow("1.2.3.4"))
+}
+
+// Cleanup used to drop only expired keys, so a flood of still-active keys grew
+// the map without bound.
+func TestLimiterEvictsWhenEveryKeyIsActive(t *testing.T) {
+	l := newLimiter(3, time.Hour)
+	now := time.Unix(0, 0)
+	l.now = func() time.Time { return now }
+	for i := range maxLimiterKeys + 50 {
+		require.True(t, l.allow(strconv.Itoa(i)))
+		now = now.Add(time.Millisecond)
+	}
+	require.LessOrEqual(t, len(l.hits), maxLimiterKeys+1)
+	_, oldestKept := l.hits["0"]
+	require.False(t, oldestKept, "least recently used key was evicted first")
 }

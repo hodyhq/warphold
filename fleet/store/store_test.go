@@ -119,6 +119,7 @@ func TestTokensAndCommandsAndSettings(t *testing.T) {
 	tok, err := s.TokenByHash(ctx, []byte("th"))
 	require.NoError(t, err)
 	require.Equal(t, id, tok.ID)
+	require.Equal(t, now, tok.CreatedAt, "created_at round-trips")
 	ok, err := s.ConsumeToken(ctx, id, clock.Now())
 	require.NoError(t, err)
 	require.True(t, ok)

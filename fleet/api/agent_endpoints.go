@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gorilla/mux"
 
@@ -20,6 +21,17 @@ import (
 )
 
 const defaultPollSeconds = 300
+
+// revokeTimeout bounds the detached B2 key hand-back after a failed enrollment.
+const revokeTimeout = 30 * time.Second
+
+// enrollFailed answers an unauthenticated enroller with a fixed message and
+// keeps the real cause in the server log. The endpoint runs before the agent
+// has any credential, so internal error text must not reach it.
+func enrollFailed(w http.ResponseWriter, status int, public, stage string, err error) {
+	log.Printf("warphold fleet: enroll failed at %s: %v", stage, err)
+	writeErr(w, status, public)
+}
 
 func (s *Server) mountAgent(m *mux.Router) {
 	m.HandleFunc("/api/v1/fleet/enroll", s.requireActivated(s.handleEnroll)).Methods(http.MethodPost)
@@ -79,7 +91,7 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	tok, err := s.tokens().Consume(ctx, in.Token)
 	if err != nil {
-		writeErr(w, http.StatusForbidden, err.Error())
+		enrollFailed(w, http.StatusForbidden, "invalid or expired token", "token consume", err)
 		return
 	}
 	group, err := s.store().Group(ctx, tok.GroupID)
@@ -94,18 +106,18 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	}
 	spec, err := s.specFor(ctx, target)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		enrollFailed(w, http.StatusInternalServerError, "enrollment failed", "target spec", err)
 		return
 	}
 	id, err := newID()
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		enrollFailed(w, http.StatusInternalServerError, "enrollment failed", "id", err)
 		return
 	}
 	prov := s.provisioner()
 	bundle, err := prov.Provision(ctx, spec, id)
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, "provisioning failed: "+err.Error())
+		enrollFailed(w, http.StatusBadGateway, "provisioning failed", "provision", err)
 		return
 	}
 	// Provision has already created the agent's B2 keys. Every failure from
@@ -116,7 +128,11 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		if enrolled {
 			return
 		}
-		if err := prov.Revoke(ctx, spec, bundle); err != nil {
+		// Detached from the request: a client that hangs up mid-enrollment
+		// cancels ctx, and that is precisely when the keys need handing back.
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), revokeTimeout)
+		defer cancel()
+		if err := prov.Revoke(rctx, spec, bundle); err != nil {
 			log.Printf("warphold fleet: enroll %s failed and its b2 keys could not be revoked: %v", id, err)
 		}
 	}()
@@ -125,17 +141,17 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		sealedBundle, err = s.sealKey().Seal(sealedBundle)
 	}
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		enrollFailed(w, http.StatusInternalServerError, "enrollment failed", "seal bundle", err)
 		return
 	}
 	bearer, bearerHash, err := NewBearer()
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		enrollFailed(w, http.StatusInternalServerError, "enrollment failed", "bearer", err)
 		return
 	}
 	a := &store.Agent{ID: id, Name: in.Hostname, Hostname: in.Hostname, OS: in.OS, Arch: in.Arch, Version: in.Version, Scope: in.Scope, GroupID: group.ID, BearerHash: bearerHash, SealedBundle: sealedBundle, EnrolledAt: s.now()}
 	if err := s.store().CreateAgent(ctx, a); err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		enrollFailed(w, http.StatusInternalServerError, "enrollment failed", "create agent", err)
 		return
 	}
 	enrolled = true
