@@ -65,13 +65,15 @@ func TestOverviewCountsBucketsAndDays(t *testing.T) {
 	_, greenBearer := enrollInto(t, h, gid, "laptop-1")
 	redID, redBearer := enrollInto(t, h, gid, "media-nuc")
 	_, quietBearer := enrollInto(t, h, gid, "never-ran")
+	_, skewBearer := enrollInto(t, h, gid, "skewed-clock")
 
 	now := time.Now().UTC()
 	// Pin the server clock so hour/day bucket boundaries cannot drift between
 	// the fixtures and the request.
 	h.s.SetNowForTesting(func() time.Time { return now })
-	// A future-dated report (skewed agent clock) must stay out of the window.
-	report(t, h, greenBearer, "future", "snapshot", now.Add(2*time.Hour), "ok", "")
+	// A future-dated report (skewed agent clock) must stay out of the window
+	// and cannot vouch for health: the agent stays unknown.
+	report(t, h, skewBearer, "future", "snapshot", now.Add(2*time.Hour), "ok", "")
 	report(t, h, greenBearer, "g1", "snapshot", now.Add(-30*time.Minute), "ok", "")
 	report(t, h, greenBearer, "g2", "snapshot", now.Add(-3*time.Hour), "ok", "")
 	report(t, h, greenBearer, "g3", "snapshot", now.Add(-3*24*time.Hour), "ok", "")
@@ -83,11 +85,11 @@ func TestOverviewCountsBucketsAndDays(t *testing.T) {
 	_, body := h.do("GET", "/api/v1/fleet/overview", nil)
 
 	counts := body["counts"].(map[string]any)
-	require.Equal(t, float64(3), counts["agents"])
+	require.Equal(t, float64(4), counts["agents"])
 	require.Equal(t, float64(1), counts["green"])
 	require.Equal(t, float64(0), counts["yellow"])
 	require.Equal(t, float64(1), counts["red"])
-	require.Equal(t, float64(1), counts["unknown"])
+	require.Equal(t, float64(2), counts["unknown"])
 	require.Equal(t, float64(1), counts["targets"])
 
 	last24h := body["last24h"].(map[string]any)
@@ -119,7 +121,7 @@ func TestOverviewCountsBucketsAndDays(t *testing.T) {
 	require.Contains(t, fail["stderr"], "unable to write blob")
 
 	devices := body["devices"].([]any)
-	require.Len(t, devices, 3)
+	require.Len(t, devices, 4)
 	first := devices[0].(map[string]any)
 	require.Equal(t, "laptop-1", first["name"])
 	require.Equal(t, "Laptops", first["group"])
@@ -136,6 +138,12 @@ func TestOverviewCountsBucketsAndDays(t *testing.T) {
 	require.Equal(t, "bad", second["days"].([]any)[29], "errors only that day")
 	require.Equal(t, "never", second["last"], "never had a good snapshot")
 
+	skewed := devices[3].(map[string]any)
+	require.Equal(t, "unknown", skewed["health"], "a future-dated OK cannot vouch for health")
+	for _, d := range skewed["days"].([]any) {
+		require.Equal(t, "none", d, "future-dated report stays out of the strip")
+	}
+
 	third := devices[2].(map[string]any)
 	require.Equal(t, "unknown", third["health"], "a command ack is not a backup")
 	require.Equal(t, "none", third["days"].([]any)[29])
@@ -144,7 +152,7 @@ func TestOverviewCountsBucketsAndDays(t *testing.T) {
 	resp, _ := h.do("POST", "/api/v1/fleet/agents/"+redID+"/revoke", nil)
 	require.Equal(t, 204, resp.StatusCode)
 	_, body = h.do("GET", "/api/v1/fleet/overview", nil)
-	require.Equal(t, float64(2), body["counts"].(map[string]any)["agents"])
-	require.Len(t, body["devices"], 2)
+	require.Equal(t, float64(3), body["counts"].(map[string]any)["agents"])
+	require.Len(t, body["devices"], 3)
 	require.Nil(t, body["latest_failure"], "its failure goes with it")
 }
