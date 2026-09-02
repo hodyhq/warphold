@@ -282,7 +282,14 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if in.CommandID != 0 {
-		_ = s.store().AckCommand(ctx, in.CommandID, a.ID, s.now())
+		// The report is already stored above; a retried report for an
+		// already-acked command hits ErrNotFound here and that is fine
+		// (idempotent). Any other error means the command stays pending and
+		// gets redelivered, so the agent must not see a success response.
+		if err := s.store().AckCommand(ctx, in.CommandID, a.ID, s.now()); err != nil && !errors.Is(err, store.ErrNotFound) {
+			agentFailed(w, "ack command", err)
+			return
+		}
 	}
 	_ = s.store().TouchAgent(ctx, a.ID, s.now(), a.Version, a.PolicyETag)
 	w.WriteHeader(http.StatusNoContent)

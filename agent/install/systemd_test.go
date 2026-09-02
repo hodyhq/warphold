@@ -50,3 +50,14 @@ func TestSystemdRejectsRelativeConfigDir(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not absolute")
 }
+
+// TestSystemdRejectsTraversalInConfigDir pins the fix for an XDG_CONFIG_HOME
+// that is absolute but escapes its own directory via "..": IsAbs alone would
+// accept it, and the unit would land wherever filepath.Join resolves it to
+// (e.g. /etc) rather than under the user's config directory.
+func TestSystemdRejectsTraversalInConfigDir(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "/home/hody/../../etc")
+	_, err := install.Systemd("user", "/home/hody/.local/bin/warphold")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "not a clean path")
+}

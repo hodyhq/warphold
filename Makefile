@@ -193,9 +193,9 @@ ifneq ($(MACOS_SIGNING_IDENTITY),)
 	codesign -v --keychain $(MACOS_KEYCHAIN) -s $(MACOS_SIGNING_IDENTITY) --force dist/warphold_darwin_arm64/warphold
 	codesign -v --keychain $(MACOS_KEYCHAIN) -s $(MACOS_SIGNING_IDENTITY) --force dist/warphold_darwin_universal/warphold
 endif
-	tools/make-tgz.sh dist kopia-$(KOPIA_VERSION_NO_PREFIX)-macOS-x64 dist/warphold_darwin_amd64/warphold
-	tools/make-tgz.sh dist kopia-$(KOPIA_VERSION_NO_PREFIX)-macOS-arm64 dist/warphold_darwin_arm64/warphold
-	tools/make-tgz.sh dist kopia-$(KOPIA_VERSION_NO_PREFIX)-macOS-universal dist/warphold_darwin_universal/warphold
+	tools/make-tgz.sh dist warphold-$(KOPIA_VERSION_NO_PREFIX)-macOS-x64 dist/warphold_darwin_amd64/warphold
+	tools/make-tgz.sh dist warphold-$(KOPIA_VERSION_NO_PREFIX)-macOS-arm64 dist/warphold_darwin_arm64/warphold
+	tools/make-tgz.sh dist warphold-$(KOPIA_VERSION_NO_PREFIX)-macOS-universal dist/warphold_darwin_universal/warphold
 
 # on Windows build and sign AMD64 and *.zip file
 dist/warphold_windows_amd64/warphold.exe: $(all_go_sources)
@@ -203,10 +203,10 @@ dist/warphold_windows_amd64/warphold.exe: $(all_go_sources)
 ifneq ($(WINDOWS_SIGN_TOOL),)
 	tools/.tools/signtool.exe sign //sha1 $(WINDOWS_CERT_SHA1) //fd sha256 //tr "http://timestamp.digicert.com" //v dist/warphold_windows_amd64/warphold.exe
 endif
-	mkdir -p dist/kopia-$(KOPIA_VERSION_NO_PREFIX)-windows-x64
-	cp dist/warphold_windows_amd64/warphold.exe LICENSE README.md dist/kopia-$(KOPIA_VERSION_NO_PREFIX)-windows-x64
-	(cd dist && zip -r kopia-$(KOPIA_VERSION_NO_PREFIX)-windows-x64.zip kopia-$(KOPIA_VERSION_NO_PREFIX)-windows-x64)
-	rm -rf dist/kopia-$(KOPIA_VERSION_NO_PREFIX)-windows-x64
+	mkdir -p dist/warphold-$(KOPIA_VERSION_NO_PREFIX)-windows-x64
+	cp dist/warphold_windows_amd64/warphold.exe LICENSE README.md dist/warphold-$(KOPIA_VERSION_NO_PREFIX)-windows-x64
+	(cd dist && zip -r warphold-$(KOPIA_VERSION_NO_PREFIX)-windows-x64.zip warphold-$(KOPIA_VERSION_NO_PREFIX)-windows-x64)
+	rm -rf dist/warphold-$(KOPIA_VERSION_NO_PREFIX)-windows-x64
 
 # On Linux use use goreleaser which will build Kopia for all supported Linux architectures
 # and creates .tar.gz, rpm and deb packages.

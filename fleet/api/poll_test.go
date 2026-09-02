@@ -123,3 +123,45 @@ func TestReportRejectsOtherAgentsCommand(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, docB.Commands, 1, "B's command must still be pending; A's report must not have acked it")
 }
+
+// TestAgentPollRejectsBeforeActivation pins that a request carrying a bearer
+// token, on a server that has never been activated, is rejected with a 4xx
+// JSON error rather than panicking on a nil store: requireActivated must run
+// (and reject) before requireAgent ever calls store().
+func TestAgentPollRejectsBeforeActivation(t *testing.T) {
+	h := newHarness(t)
+	req, err := http.NewRequest(http.MethodPost, h.srv.URL+"/api/v1/fleet/agent/poll", jsonBody(map[string]any{}))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer x")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.GreaterOrEqual(t, resp.StatusCode, 400)
+	var out map[string]any
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+	require.NotEmpty(t, out["error"])
+}
+
+// TestReportAckIsIdempotentOnRetry pins the fix that ack failures other than
+// "already acked" must fail the request. A retried report for a command that
+// this same agent already acknowledged hits store.ErrNotFound on the second
+// AckCommand call; that must still be a 204 (the report itself is stored
+// either way), not a 500.
+func TestReportAckIsIdempotentOnRetry(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+	id, bearer := enrollAgent(t, h)
+	resp, cmd := h.do("POST", "/api/v1/fleet/agents/"+id+"/commands", map[string]any{"kind": "snapshot-now", "source": "~"})
+	require.Equal(t, 201, resp.StatusCode)
+	cmdID := int64(cmd["id"].(float64))
+
+	c := &poll.Client{Server: h.srv.URL, Bearer: bearer}
+	ctx := t.Context()
+	now := time.Now()
+	rep := poll.Report{TaskID: "t1", Kind: "command", CommandID: cmdID, Source: "~", StartedAt: now, FinishedAt: now, Status: "ok"}
+	require.NoError(t, c.Report(ctx, rep))
+	// Retry: the command is already acked, so AckCommand now returns
+	// ErrNotFound. That must not surface as a failed report.
+	require.NoError(t, c.Report(ctx, rep))
+}

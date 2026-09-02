@@ -96,17 +96,19 @@ func (s *Server) handleAgentRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// best effort; keys may already be gone. Each lookup step logs and skips
-	// cleanup on its own failure rather than aborting the revoke below.
+	// cleanup on its own failure rather than aborting the revoke below. Errors
+	// here can carry B2 response text or provisioning URLs, so only the safe
+	// category is logged, never err itself.
 	if g, err := s.store().Group(ctx, a.GroupID); err != nil {
-		log.Printf("warphold fleet: revoke %s: b2 key cleanup skipped: %v", a.ID, err)
+		log.Printf("warphold fleet: revoke %s: b2 key cleanup skipped (%s)", a.ID, errCategory(err))
 	} else if t, err := s.store().Target(ctx, g.TargetID); err != nil {
-		log.Printf("warphold fleet: revoke %s: b2 key cleanup skipped: %v", a.ID, err)
+		log.Printf("warphold fleet: revoke %s: b2 key cleanup skipped (%s)", a.ID, errCategory(err))
 	} else if spec, err := s.specFor(ctx, t); err != nil {
-		log.Printf("warphold fleet: revoke %s: b2 key cleanup skipped: %v", a.ID, err)
+		log.Printf("warphold fleet: revoke %s: b2 key cleanup skipped (%s)", a.ID, errCategory(err))
 	} else if b, err := s.bundleFor(ctx, a); err != nil {
-		log.Printf("warphold fleet: revoke %s: b2 key cleanup skipped: %v", a.ID, err)
+		log.Printf("warphold fleet: revoke %s: b2 key cleanup skipped (%s)", a.ID, errCategory(err))
 	} else if err := s.provisioner().Revoke(ctx, spec, b); err != nil {
-		log.Printf("warphold fleet: revoke %s: b2 key cleanup skipped: %v", a.ID, err)
+		log.Printf("warphold fleet: revoke %s: b2 key cleanup skipped (%s)", a.ID, errCategory(err))
 	}
 	if err := s.store().RevokeAgent(ctx, a.ID, s.now()); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
