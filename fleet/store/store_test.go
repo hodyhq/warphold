@@ -371,3 +371,17 @@ func TestReportJSONWireShape(t *testing.T) {
 	require.Equal(t, "snapshot", legacy.Kind, "single-word names still match case-insensitively")
 	require.Empty(t, legacy.AgentID, "PascalCase compound names no longer decode - nothing decodes a Report")
 }
+
+func TestSetSettingsIsAtomicAndReadable(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "fleet.db"))
+	require.NoError(t, err)
+	defer s.Close()
+	ctx := t.Context()
+	require.NoError(t, s.SetSettings(ctx, map[string]string{"fleet_name": "home", "poll_interval": "120"}))
+	v, err := s.Setting(ctx, "fleet_name")
+	require.NoError(t, err)
+	require.Equal(t, "home", v)
+	v, err = s.Setting(ctx, "poll_interval")
+	require.NoError(t, err)
+	require.Equal(t, "120", v)
+}

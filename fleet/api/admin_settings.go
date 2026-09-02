@@ -86,11 +86,9 @@ func (s *Server) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	for key, value := range writes {
-		if err := s.store().SetSetting(r.Context(), key, value); err != nil {
-			adminFailed(w, "write setting", err)
-			return
-		}
+	if err := s.store().SetSettings(r.Context(), writes); err != nil {
+		adminFailed(w, "write settings", err)
+		return
 	}
 	out, err := s.currentSettings(r.Context())
 	if err != nil {
