@@ -6,13 +6,25 @@ import (
 	"time"
 )
 
+// Report is one run an agent reported. The JSON tags match the column names,
+// which is what the Fleet UI reads. Nothing decodes a Report - agents post
+// agent/poll.Report, which carries its own tags - which matters because
+// compound PascalCase names such as "AgentID" no longer decode into these
+// fields: encoding/json's case-insensitive fallback does not bridge the
+// underscore in "agent_id". See TestReportJSONWireShape.
 type Report struct {
-	ID                            int64
-	AgentID, TaskID, Kind, Source string
-	StartedAt, FinishedAt         time.Time
-	Status                        string
-	Bytes, Files                  int64
-	SnapshotID, Stderr            string
+	ID         int64     `json:"id"`
+	AgentID    string    `json:"agent_id"`
+	TaskID     string    `json:"task_id"`
+	Kind       string    `json:"kind"`
+	Source     string    `json:"source"`
+	StartedAt  time.Time `json:"started_at"`
+	FinishedAt time.Time `json:"finished_at"`
+	Status     string    `json:"status"`
+	Bytes      int64     `json:"bytes"`
+	Files      int64     `json:"files"`
+	SnapshotID string    `json:"snapshot_id"`
+	Stderr     string    `json:"stderr"`
 }
 
 const reportCols = `id,agent_id,task_id,kind,source,started_at,finished_at,status,bytes,files,snapshot_id,stderr`
@@ -103,6 +115,31 @@ func (s *Store) LastOKReports(ctx context.Context) (map[string]time.Time, error)
 			return nil, err
 		}
 		out[agentID] = parseTS(fi)
+	}
+	return out, rows.Err()
+}
+
+// ReportsSince returns every report that finished at or after since, oldest
+// first. The overview endpoint reads one window (30 days) and derives the
+// per-day strips, the 24 h buckets and the latest failure from it in Go,
+// rather than issuing a query per agent or per day.
+//
+// Timestamps are stored as fixed-width RFC3339 in UTC (see store.ts), so the
+// string comparison below is a chronological one and uses the same ordering
+// as every other report query.
+func (s *Store) ReportsSince(ctx context.Context, since time.Time) ([]Report, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+reportCols+` FROM reports WHERE finished_at>=? ORDER BY finished_at, id`, ts(since))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Report
+	for rows.Next() {
+		r, err := scanReport(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *r)
 	}
 	return out, rows.Err()
 }

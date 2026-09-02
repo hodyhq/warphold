@@ -308,3 +308,66 @@ func TestAdminPasswordUpdateAndDelete(t *testing.T) {
 
 	require.ErrorIs(t, s.DeleteAdmin(ctx, 9999), store.ErrNotFound)
 }
+
+// TestReportsSince pins the window query the overview endpoint builds its
+// 30-day strips and 24 h buckets from: everything finished at or after the
+// cutoff, oldest first, and nothing older.
+func TestReportsSince(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	now := clock.Now().UTC().Truncate(time.Second)
+
+	tid, _ := s.CreateTarget(ctx, &store.Target{Name: "b2", Kind: "b2", Bucket: "hody-backups", SealedAdminKey: []byte("sealed"), CreatedAt: now})
+	tpl, _ := s.CreateTemplate(ctx, &store.Template{Name: "Home", Sources: []string{"~"}, PolicyJSON: []byte(`{}`), CreatedAt: now})
+	gid, _ := s.CreateGroup(ctx, &store.Group{Name: "Laptops", TargetID: tid, TemplateID: tpl, CreatedAt: now})
+	require.NoError(t, s.CreateAgent(ctx, &store.Agent{ID: "ag_1", Name: "fw13", Hostname: "fw13", OS: "linux", Arch: "amd64", Scope: "user", GroupID: gid, BearerHash: []byte("h"), SealedBundle: []byte("b"), EnrolledAt: now}))
+
+	cutoff := now.Add(-30 * 24 * time.Hour)
+	for _, r := range []*store.Report{
+		{AgentID: "ag_1", TaskID: "old", Kind: "snapshot", StartedAt: cutoff.Add(-time.Hour), FinishedAt: cutoff.Add(-time.Second), Status: "ok"},
+		{AgentID: "ag_1", TaskID: "edge", Kind: "snapshot", StartedAt: cutoff, FinishedAt: cutoff, Status: "ok"},
+		{AgentID: "ag_1", TaskID: "mid", Kind: "snapshot", StartedAt: now.Add(-48 * time.Hour), FinishedAt: now.Add(-47 * time.Hour), Status: "error"},
+		{AgentID: "ag_1", TaskID: "new", Kind: "snapshot", StartedAt: now.Add(-time.Minute), FinishedAt: now, Status: "ok"},
+	} {
+		_, err := s.AddReport(ctx, r)
+		require.NoError(t, err)
+	}
+
+	got, err := s.ReportsSince(ctx, cutoff)
+	require.NoError(t, err)
+	ids := make([]string, 0, len(got))
+	for _, r := range got {
+		ids = append(ids, r.TaskID)
+	}
+	require.Equal(t, []string{"edge", "mid", "new"}, ids, "inclusive cutoff, oldest first, nothing older")
+}
+
+// TestReportJSONWireShape pins the wire names the Fleet UI reads (they match
+// the column names) and records the one thing the snake_case tags gave up:
+// a payload written with the Go field names no longer decodes, because
+// encoding/json's case-insensitive fallback does not bridge the underscore
+// ("AgentID" never matches "agent_id"). That is safe only because nothing
+// decodes a store.Report - agents post agent/poll.Report, which has always
+// carried its own snake_case tags - so this endpoint stays compatible with
+// agents enrolled before the tags existed. Add a decode path and this test
+// fails you first.
+func TestReportJSONWireShape(t *testing.T) {
+	r := store.Report{
+		ID: 7, AgentID: "ag_1", TaskID: "t1", Kind: "snapshot", Source: "~",
+		StartedAt:  time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC),
+		FinishedAt: time.Date(2026, 9, 2, 0, 1, 0, 0, time.UTC),
+		Status:     "ok", Bytes: 10, Files: 2, SnapshotID: "k1", Stderr: "boom",
+	}
+	b, err := json.Marshal(r)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"id":7,"agent_id":"ag_1","task_id":"t1","kind":"snapshot","source":"~","started_at":"2026-09-02T00:00:00Z","finished_at":"2026-09-02T00:01:00Z","status":"ok","bytes":10,"files":2,"snapshot_id":"k1","stderr":"boom"}`, string(b))
+
+	var back store.Report
+	require.NoError(t, json.Unmarshal(b, &back))
+	require.Equal(t, r, back)
+
+	var legacy store.Report
+	require.NoError(t, json.Unmarshal([]byte(`{"AgentID":"ag_1","Kind":"snapshot"}`), &legacy))
+	require.Equal(t, "snapshot", legacy.Kind, "single-word names still match case-insensitively")
+	require.Empty(t, legacy.AgentID, "PascalCase compound names no longer decode - nothing decodes a Report")
+}
