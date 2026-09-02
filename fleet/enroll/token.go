@@ -88,9 +88,15 @@ func (t *Tokens) Issue(ctx context.Context, groupID int64, ttl time.Duration, ma
 func (t *Tokens) Consume(ctx context.Context, plain string) (*store.Token, error) {
 	hash := HashToken(plain)
 
+	// Only a missing row means "bad token". A dead database or a scan failure
+	// used to be reported to the enroller as an invalid token, which hides a
+	// real outage behind a 403 and sends the operator hunting the wrong bug.
 	tok, err := t.st.TokenByHash(ctx, hash)
-	if err != nil {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
 		return nil, ErrTokenInvalid
+	case err != nil:
+		return nil, err
 	}
 
 	ok, err := t.st.ConsumeToken(ctx, tok.ID, t.now())

@@ -85,3 +85,24 @@ func (s *Store) LatestReports(ctx context.Context) (map[string]Report, error) {
 	}
 	return out, rows.Err()
 }
+
+// LastOKReports returns the newest successful snapshot finish time per agent,
+// for agents that have one. Same kind='snapshot' rule as LastOKReport (a
+// pause/resume command reports ok but backs nothing up), batched: the agent
+// list renders one health value per row and must not run a query per agent.
+func (s *Store) LastOKReports(ctx context.Context) (map[string]time.Time, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT agent_id,finished_at FROM reports r WHERE id = (SELECT id FROM reports WHERE agent_id=r.agent_id AND status='ok' AND kind='snapshot' ORDER BY finished_at DESC, id DESC LIMIT 1)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]time.Time{}
+	for rows.Next() {
+		var agentID, fi string
+		if err := rows.Scan(&agentID, &fi); err != nil {
+			return nil, err
+		}
+		out[agentID] = parseTS(fi)
+	}
+	return out, rows.Err()
+}

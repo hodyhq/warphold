@@ -33,7 +33,7 @@ func (s *Server) handleGroupCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := s.store().CreateGroup(r.Context(), &store.Group{Name: in.Name, TargetID: in.TargetID, TemplateID: in.TemplateID, CreatedAt: s.now()})
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		adminFailed(w, "create group", err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
@@ -42,7 +42,7 @@ func (s *Server) handleGroupCreate(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGroupList(w http.ResponseWriter, r *http.Request) {
 	gs, err := s.store().Groups(r.Context())
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		adminFailed(w, "list groups", err)
 		return
 	}
 	out := make([]groupOut, 0, len(gs))

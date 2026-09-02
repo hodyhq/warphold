@@ -51,7 +51,7 @@ func (s *Server) handleTargetCreate(w http.ResponseWriter, r *http.Request) {
 		}
 		sealed, err := s.sealCreds(targetCreds{KeyID: in.KeyID, Key: in.Key})
 		if err != nil {
-			writeErr(w, http.StatusInternalServerError, err.Error())
+			adminFailed(w, "seal target credentials", err)
 			return
 		}
 		t.SealedAdminKey = sealed
@@ -73,7 +73,7 @@ func (s *Server) handleTargetCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := s.store().CreateTarget(r.Context(), t)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		adminFailed(w, "create target", err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id, "object_lock_verified": verified})
@@ -82,7 +82,7 @@ func (s *Server) handleTargetCreate(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleTargetList(w http.ResponseWriter, r *http.Request) {
 	ts, err := s.store().Targets(r.Context())
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		adminFailed(w, "list targets", err)
 		return
 	}
 	out := make([]targetOut, 0, len(ts))

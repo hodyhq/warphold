@@ -386,7 +386,15 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a, err := st.AdminByEmail(r.Context(), in.Email)
-	if err != nil || !VerifyPassword(in.Password, a.PWHash) {
+	hash := dummyPWHash()
+	if err == nil {
+		hash = a.PWHash
+	}
+	// VerifyPassword runs on every attempt, against a fixed dummy hash when the
+	// email is unknown. Returning early on the lookup failure skipped a 64MiB
+	// argon2id verification, so an unregistered address answered measurably
+	// faster than a wrong password and login doubled as an account enumerator.
+	if ok := VerifyPassword(in.Password, hash); !ok || err != nil {
 		writeErr(w, http.StatusUnauthorized, "wrong email or password")
 		return
 	}

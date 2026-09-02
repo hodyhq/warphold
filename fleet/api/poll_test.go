@@ -138,6 +138,7 @@ func TestAgentPollRejectsBeforeActivation(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.GreaterOrEqual(t, resp.StatusCode, 400)
+	require.Less(t, resp.StatusCode, 500, "must be a client error, not a 5xx from a nil-store panic")
 	var out map[string]any
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
 	require.NotEmpty(t, out["error"])

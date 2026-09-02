@@ -48,7 +48,7 @@ func (s *Server) handleTemplateCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := s.store().CreateTemplate(r.Context(), &store.Template{Name: in.Name, Sources: in.Sources, PolicyJSON: in.Policy, CreatedAt: s.now()})
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		adminFailed(w, "create template", err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
@@ -74,7 +74,7 @@ func (s *Server) handleTemplateUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store().UpdateTemplate(r.Context(), &store.Template{ID: id, Name: in.Name, Sources: in.Sources, PolicyJSON: in.Policy}); err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		adminFailed(w, "update template", err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -83,7 +83,7 @@ func (s *Server) handleTemplateUpdate(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleTemplateList(w http.ResponseWriter, r *http.Request) {
 	ts, err := s.store().Templates(r.Context())
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		adminFailed(w, "list templates", err)
 		return
 	}
 	out := make([]templateOut, 0, len(ts))

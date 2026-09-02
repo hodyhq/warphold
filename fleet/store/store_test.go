@@ -102,6 +102,50 @@ func TestReportsDedupeAndLatest(t *testing.T) {
 	require.Equal(t, "t2", rs[0].TaskID)
 }
 
+// TestLastOKReportsBatch pins that the batched lookup agrees with the
+// per-agent LastOKReport it replaced in the agent-list handler: newest
+// successful snapshot per agent, agents without one absent from the map, and
+// an ok command report (which backs nothing up) never counted as a backup.
+func TestLastOKReportsBatch(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	now := clock.Now().UTC().Truncate(time.Second)
+
+	tid, _ := s.CreateTarget(ctx, &store.Target{Name: "b2", Kind: "b2", Bucket: "hody-backups", SealedAdminKey: []byte("sealed"), CreatedAt: now})
+	tpl, _ := s.CreateTemplate(ctx, &store.Template{Name: "Home", Sources: []string{"~"}, PolicyJSON: []byte(`{}`), CreatedAt: now})
+	gid, _ := s.CreateGroup(ctx, &store.Group{Name: "Laptops", TargetID: tid, TemplateID: tpl, CreatedAt: now})
+	for _, id := range []string{"ag_1", "ag_2", "ag_3"} {
+		require.NoError(t, s.CreateAgent(ctx, &store.Agent{ID: id, Name: id, Hostname: id, OS: "linux", Arch: "amd64", Scope: "user", GroupID: gid, BearerHash: []byte("h_" + id), SealedBundle: []byte("b"), EnrolledAt: now}))
+	}
+
+	older, newest := now.Add(-time.Hour), now
+	for _, r := range []*store.Report{
+		{AgentID: "ag_1", TaskID: "t1", Kind: "snapshot", StartedAt: older, FinishedAt: older, Status: "ok"},
+		{AgentID: "ag_1", TaskID: "t2", Kind: "snapshot", StartedAt: newest, FinishedAt: newest, Status: "ok"},
+		{AgentID: "ag_1", TaskID: "t3", Kind: "snapshot", StartedAt: newest, FinishedAt: newest.Add(time.Minute), Status: "error"},
+		{AgentID: "ag_2", TaskID: "t4", Kind: "command", StartedAt: newest, FinishedAt: newest, Status: "ok"},
+		{AgentID: "ag_2", TaskID: "t5", Kind: "snapshot", StartedAt: newest, FinishedAt: newest, Status: "error"},
+	} {
+		_, err := s.AddReport(ctx, r)
+		require.NoError(t, err)
+	}
+
+	got, err := s.LastOKReports(ctx)
+	require.NoError(t, err)
+	require.Equal(t, map[string]time.Time{"ag_1": newest}, got)
+
+	// The batch must agree with the single-agent query it replaced.
+	for _, id := range []string{"ag_1", "ag_2", "ag_3"} {
+		one, err := s.LastOKReport(ctx, id)
+		require.NoError(t, err)
+		if one == nil {
+			require.NotContains(t, got, id)
+			continue
+		}
+		require.Equal(t, one.FinishedAt, got[id])
+	}
+}
+
 func TestTokensAndCommandsAndSettings(t *testing.T) {
 	s := openTemp(t)
 	ctx := context.Background()

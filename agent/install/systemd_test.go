@@ -11,11 +11,13 @@ import (
 )
 
 func TestSystemdPlans(t *testing.T) {
-	t.Setenv("HOME", "/home/hody")
-	t.Setenv("XDG_CONFIG_HOME", "")
+	// XDG_CONFIG_HOME, not HOME: os.UserHomeDir reads a different variable on
+	// Windows, so a HOME-only test pins a path this code never produces there.
+	cfg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfg)
 	p, err := install.Systemd("user", "/home/hody/.local/bin/warphold")
 	require.NoError(t, err)
-	unit, ok := p.Files["/home/hody/.config/systemd/user/warphold-agent.service"]
+	unit, ok := p.Files[filepath.Join(cfg, "systemd", "user", "warphold-agent.service")]
 	require.True(t, ok)
 	require.Contains(t, unit, "ExecStart=\"/home/hody/.local/bin/warphold\" agent run --scope user")
 	require.Contains(t, unit, "RestartPreventExitStatus=3")
@@ -56,8 +58,21 @@ func TestSystemdRejectsRelativeConfigDir(t *testing.T) {
 // accept it, and the unit would land wherever filepath.Join resolves it to
 // (e.g. /etc) rather than under the user's config directory.
 func TestSystemdRejectsTraversalInConfigDir(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "/home/hody/../../etc")
+	// Concatenated, not filepath.Join: Join cleans, and cleaning is exactly
+	// what this test needs Systemd to refuse to do on its behalf.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()+string(filepath.Separator)+"..")
 	_, err := install.Systemd("user", "/home/hody/.local/bin/warphold")
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "not a clean path")
+	require.Contains(t, err.Error(), `must not contain ".."`)
+}
+
+// TestSystemdAcceptsTrailingSeparatorInConfigDir pins that a trailing
+// separator is normalized rather than rejected: it escapes nothing, and
+// "XDG_CONFIG_HOME=$HOME/.config/" is a perfectly ordinary shell export.
+func TestSystemdAcceptsTrailingSeparatorInConfigDir(t *testing.T) {
+	cfg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfg+string(filepath.Separator))
+	p, err := install.Systemd("user", "/home/hody/.local/bin/warphold")
+	require.NoError(t, err)
+	require.Contains(t, p.Files, filepath.Join(cfg, "systemd", "user", "warphold-agent.service"))
 }

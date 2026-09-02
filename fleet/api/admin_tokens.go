@@ -50,7 +50,7 @@ func (s *Server) handleTokenCreate(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		adminFailed(w, "issue token", err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"id": tok.ID, "token": plain, "expires_at": tok.ExpiresAt, "max_uses": tok.MaxUses})
@@ -64,7 +64,7 @@ func (s *Server) handleTokenList(w http.ResponseWriter, r *http.Request) {
 	}
 	ts, err := s.store().TokensForGroup(r.Context(), id)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		adminFailed(w, "list tokens", err)
 		return
 	}
 	out := make([]map[string]any, 0, len(ts))
@@ -81,7 +81,7 @@ func (s *Server) handleTokenRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store().RevokeToken(r.Context(), id, s.now()); err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		adminFailed(w, "revoke token", err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

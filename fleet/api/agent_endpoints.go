@@ -61,6 +61,16 @@ func agentFailed(w http.ResponseWriter, stage string, err error) {
 	writeErr(w, http.StatusInternalServerError, "internal error")
 }
 
+// adminFailed answers a signed-in admin with a fixed message and records the
+// failing stage plus a safe error category in the server log. Store and
+// provisioning errors quote SQL, file paths, column values and B2 response
+// text; the admin UI has no use for any of it and the browser is the wrong
+// place to leak it, so the operator reads the stage out of the fleet log.
+func adminFailed(w http.ResponseWriter, stage string, err error) {
+	log.Printf("warphold fleet: admin request failed at stage %s (%s)", stage, errCategory(err))
+	writeErr(w, http.StatusInternalServerError, "internal error")
+}
+
 func (s *Server) mountAgent(m *mux.Router) {
 	m.HandleFunc("/api/v1/fleet/enroll", s.requireActivated(s.handleEnroll)).Methods(http.MethodPost)
 	m.HandleFunc("/enroll.sh", s.requireActivated(s.handleEnrollSh)).Methods(http.MethodGet)
@@ -119,7 +129,13 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	tok, err := s.tokens().Consume(ctx, in.Token)
 	if err != nil {
-		enrollFailed(w, http.StatusForbidden, "invalid or expired token", "token consume", err)
+		// Only a rejected token is the enroller's fault; a store failure is
+		// ours and must not be reported as "your token is bad".
+		if errors.Is(err, enroll.ErrTokenInvalid) {
+			enrollFailed(w, http.StatusForbidden, "invalid or expired token", "token consume", err)
+			return
+		}
+		enrollFailed(w, http.StatusInternalServerError, "enrollment failed", "token consume", err)
 		return
 	}
 	group, err := s.store().Group(ctx, tok.GroupID)
@@ -251,7 +267,14 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 	// so recording doc.ETag here would show the fleet a policy as applied that
 	// the agent may never receive (304, dropped connection, crash on apply).
 	_ = s.store().TouchAgent(ctx, a.ID, s.now(), version, in.ETag)
-	pending, _ := s.store().PendingCommands(ctx, a.ID)
+	// Before the 304 decision, not after: a failed lookup leaves pending empty,
+	// which would make an unchanged-policy poll answer 304 and silently drop
+	// the agent's queued commands until something else changed the ETag.
+	pending, err := s.store().PendingCommands(ctx, a.ID)
+	if err != nil {
+		agentFailed(w, "pending commands", err)
+		return
+	}
 	for _, c := range pending {
 		doc.Commands = append(doc.Commands, poll.Command{ID: c.ID, Kind: c.Kind, Source: c.Source})
 	}

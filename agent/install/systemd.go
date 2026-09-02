@@ -68,14 +68,19 @@ func Systemd(scope, binary string) (Plan, error) {
 		return Plan{}, errors.Errorf("config directory %q is not absolute", cfg)
 	}
 
-	// XDG_CONFIG_HOME is trusted to be absolute but not to be clean: a value
-	// containing ".." (e.g. "/home/user/../../etc") still passes IsAbs, and
-	// filepath.Join below resolves it lexically, so the unit could land
-	// outside the user's config directory entirely. Reject anything
-	// filepath.Clean would change instead of writing to wherever it resolves.
-	if clean := filepath.Clean(cfg); clean != cfg {
-		return Plan{}, errors.Errorf("config directory %q is not a clean path (did you mean %q?)", cfg, clean)
+	// XDG_CONFIG_HOME is trusted to be absolute but not to be free of "..": a
+	// value containing it (e.g. "/home/user/../../etc") still passes IsAbs and
+	// Clean resolves it lexically, so the unit could land outside the user's
+	// config directory entirely. Reject ".." explicitly rather than rejecting
+	// every path Clean would change: a trailing separator or a redundant "."
+	// is harmless and normalizing it is the whole job of Clean.
+	for _, e := range strings.Split(filepath.ToSlash(cfg), "/") {
+		if e == ".." {
+			return Plan{}, errors.Errorf("config directory %q must not contain \"..\"", cfg)
+		}
 	}
+
+	cfg = filepath.Clean(cfg)
 
 	return Plan{
 		Files:    map[string]string{filepath.Join(cfg, "systemd", "user", "warphold-agent.service"): unit(binary, "user", "default.target")},

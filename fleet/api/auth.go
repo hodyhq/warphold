@@ -183,3 +183,16 @@ func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 		next(w, r)
 	}
 }
+
+// dummyPWHash is a real argon2id hash of a fixed password, used by handleLogin
+// to spend the same verification cost on an unknown email as on a known one.
+// It is computed once, on first login rather than at init, so importing this
+// package does not cost every binary a 64MiB argon2id run at startup.
+var dummyPWHash = sync.OnceValue(func() string {
+	h, err := HashPassword("warphold-login-timing-equalizer")
+	if err != nil {
+		return ""
+	}
+
+	return h
+})

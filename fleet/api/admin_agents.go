@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"log"
 	"net/http"
 	"time"
@@ -36,56 +35,70 @@ type agentOut struct {
 	Health     string     `json:"health"`
 }
 
-func (s *Server) agentOut(a store.Agent, latest *store.Report) agentOut {
-	return agentOut{ID: a.ID, Name: a.Name, Hostname: a.Hostname, OS: a.OS, Arch: a.Arch, Version: a.Version, Scope: a.Scope, GroupID: a.GroupID, EnrolledAt: a.EnrolledAt, LastSeenAt: a.LastSeenAt, RevokedAt: a.RevokedAt, Health: s.healthOf(a, latest)}
+func (s *Server) agentOut(a store.Agent, latest *store.Report, lastOK *time.Time) agentOut {
+	return agentOut{ID: a.ID, Name: a.Name, Hostname: a.Hostname, OS: a.OS, Arch: a.Arch, Version: a.Version, Scope: a.Scope, GroupID: a.GroupID, EnrolledAt: a.EnrolledAt, LastSeenAt: a.LastSeenAt, RevokedAt: a.RevokedAt, Health: s.healthOf(a, latest, lastOK)}
 }
 
-func (s *Server) healthOf(a store.Agent, latest *store.Report) string {
-	in := health.Input{Revoked: a.RevokedAt != nil}
+// healthOf takes the last successful snapshot time rather than looking it up:
+// the list handler resolves every agent's in one batch query, and both
+// callers scope their lookup to the request context instead of the detached
+// context.Background() this used to run on.
+func (s *Server) healthOf(a store.Agent, latest *store.Report, lastOK *time.Time) string {
+	in := health.Input{Revoked: a.RevokedAt != nil, LastOK: lastOK}
 	if latest != nil {
 		in.LastRunFailed = latest.Status == "error"
-	}
-	if ok, err := s.store().LastOKReport(context.Background(), a.ID); err == nil && ok != nil {
-		t := ok.FinishedAt
-		in.LastOK = &t
 	}
 	return health.Status(in, s.now())
 }
 
 func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
-	as, err := s.store().Agents(r.Context())
+	ctx := r.Context()
+	as, err := s.store().Agents(ctx)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		adminFailed(w, "list agents", err)
 		return
 	}
-	latest, _ := s.store().LatestReports(r.Context())
+	latest, _ := s.store().LatestReports(ctx)
+	// One batch query, not one LastOKReport per agent: this endpoint renders
+	// the whole fleet and the per-row lookup made it O(agents) round trips.
+	lastOK, _ := s.store().LastOKReports(ctx)
 	out := make([]agentOut, 0, len(as))
 	for _, a := range as {
 		var lr *store.Report
 		if x, ok := latest[a.ID]; ok {
 			lr = &x
 		}
-		out = append(out, s.agentOut(a, lr))
+		var ok *time.Time
+		if t, found := lastOK[a.ID]; found {
+			ok = &t
+		}
+		out = append(out, s.agentOut(a, lr, ok))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleAgentGet(w http.ResponseWriter, r *http.Request) {
-	a, err := s.store().Agent(r.Context(), mux.Vars(r)["id"])
+	ctx := r.Context()
+	a, err := s.store().Agent(ctx, mux.Vars(r)["id"])
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "agent not found")
 		return
 	}
-	reports, _ := s.store().ReportsForAgent(r.Context(), a.ID, 20)
+	reports, _ := s.store().ReportsForAgent(ctx, a.ID, 20)
 	var lr *store.Report
 	if len(reports) > 0 {
 		lr = &reports[0]
+	}
+	var lastOK *time.Time
+	if ok, err := s.store().LastOKReport(ctx, a.ID); err == nil && ok != nil {
+		t := ok.FinishedAt
+		lastOK = &t
 	}
 	// Flatten agentOut's fields alongside reports (spec: "same object + reports:[last 20]").
 	writeJSON(w, http.StatusOK, struct {
 		agentOut
 		Reports []store.Report `json:"reports"`
-	}{s.agentOut(*a, lr), reports})
+	}{s.agentOut(*a, lr, lastOK), reports})
 }
 
 func (s *Server) handleAgentRevoke(w http.ResponseWriter, r *http.Request) {
@@ -111,7 +124,7 @@ func (s *Server) handleAgentRevoke(w http.ResponseWriter, r *http.Request) {
 		log.Printf("warphold fleet: revoke %s: b2 key cleanup skipped (%s)", a.ID, errCategory(err))
 	}
 	if err := s.store().RevokeAgent(ctx, a.ID, s.now()); err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		adminFailed(w, "revoke agent", err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -130,7 +143,7 @@ func (s *Server) handleAgentCommand(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := s.store().AddCommand(r.Context(), &store.Command{AgentID: a.ID, Kind: in.Kind, Source: in.Source, CreatedAt: s.now()})
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		adminFailed(w, "add command", err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
