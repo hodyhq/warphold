@@ -17,6 +17,12 @@ func TestPasswordHashVerify(t *testing.T) {
 	require.False(t, VerifyPassword("s3cret", "garbage"))
 }
 
+func TestDummyPWHashNeverCachesEmpty(t *testing.T) {
+	h := dummyPWHash()
+	require.NotEmpty(t, h)
+	require.False(t, VerifyPassword("x", h))
+}
+
 func TestSessionsIssueVerifyExpire(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	s := newSessions([]byte("secret"), time.Hour)
