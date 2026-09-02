@@ -134,3 +134,23 @@ func TestToneWatcherFirstPollBad(t *testing.T) {
 	require.True(t, w.Notify(tray.ToneBad))
 	require.False(t, w.Notify(tray.ToneBad))
 }
+
+// TestLastGoodSkipsIncompleteSnapshots pins that an interrupted upload does
+// not count as the last good backup: SourceStatus.LastSnapshot is the newest
+// snapshot, complete or not.
+func TestLastGoodSkipsIncompleteSnapshots(t *testing.T) {
+	done := source("/home/user", "IDLE")
+	done.LastSnapshot = &snapshot.Manifest{StartTime: fs.UTCTimestampFromTime(now.AddDate(0, 0, -1))}
+
+	partial := source("/etc", "IDLE")
+	partial.LastSnapshot = &snapshot.Manifest{
+		StartTime:        fs.UTCTimestampFromTime(now.Add(-10 * time.Minute)),
+		IncompleteReason: "canceled",
+	}
+
+	m := tray.Build(tray.Status{Running: true, Sources: []*serverapi.SourceStatus{done, partial}}, now)
+	require.Equal(t, "Last good backup: yesterday 19:30", label(t, m, tray.KindLast).Label)
+
+	only := tray.Build(tray.Status{Running: true, Sources: []*serverapi.SourceStatus{partial}}, now)
+	require.Equal(t, "Last good backup: never", label(t, only, tray.KindLast).Label)
+}

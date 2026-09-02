@@ -39,9 +39,18 @@ func Run(ctx context.Context, opts Options) error {
 
 	t := &tray{c: &client{scope: opts.Scope}, opts: opts, cancel: cancel}
 
+	// The menu is built synchronously inside onReady: the host asks for the
+	// layout as soon as onReady returns, and a menu built later from the poll
+	// goroutine would show up empty on that first GetLayout.
+	onReady := func() {
+		t.render(Build(Status{Vault: VaultLabel("", "")}, time.Now()))
+
+		go t.loop(ctx)
+	}
+
 	// systray.Run blocks on the desktop's event loop and returns once
 	// systray.Quit is called, which onExit and the loop below both trigger.
-	systray.Run(func() { go t.loop(ctx) }, cancel)
+	systray.Run(onReady, cancel)
 
 	return nil
 }
@@ -52,6 +61,7 @@ type tray struct {
 	opts   Options
 	cancel context.CancelFunc
 	items  map[Kind]*systray.MenuItem
+	last   Model
 	watch  ToneWatcher
 }
 
@@ -71,37 +81,67 @@ func (t *tray) build(m Model) {
 	}
 }
 
+// render applies only what changed since the last model. Every systray call
+// emits a LayoutUpdated signal to the host panel, so relabelling twelve
+// unchanged items every five seconds is ~30 signals a poll for nothing.
 func (t *tray) render(m Model) {
-	if t.items == nil {
+	first := t.items == nil
+	if first {
 		t.build(m)
 	}
 
-	if icon, err := Icon(m.Tone, panelIconSize); err == nil {
-		systray.SetIcon(icon)
+	if first || m.Tone != t.last.Tone {
+		if icon, err := Icon(m.Tone, panelIconSize); err == nil {
+			systray.SetIcon(icon)
+		}
 	}
 
-	systray.SetTooltip(m.Tooltip)
+	if first || m.Tooltip != t.last.Tooltip {
+		systray.SetTooltip(m.Tooltip)
+	}
 
-	for _, it := range m.Items {
+	for i, it := range m.Items {
 		mi := t.items[it.Kind]
 		if mi == nil {
 			continue
 		}
 
-		mi.SetTitle(it.Label)
+		prev, known := t.prevItem(i, it.Kind)
 
-		if it.Hidden {
-			mi.Hide()
-		} else {
-			mi.Show()
+		if !known || it.Label != prev.Label {
+			mi.SetTitle(it.Label)
 		}
 
-		if it.Enabled {
-			mi.Enable()
-		} else {
-			mi.Disable()
+		if !known || it.Hidden != prev.Hidden {
+			if it.Hidden {
+				mi.Hide()
+			} else {
+				mi.Show()
+			}
+		}
+
+		if !known || it.Enabled != prev.Enabled {
+			if it.Enabled {
+				mi.Enable()
+			} else {
+				mi.Disable()
+			}
 		}
 	}
+
+	t.last = m
+}
+
+// prevItem returns what was last rendered at this position. Build returns the
+// same kinds in the same order on every poll, so the position is enough; the
+// kind is checked anyway so a future model change degrades into a full
+// re-render rather than mislabelled items.
+func (t *tray) prevItem(i int, k Kind) (Item, bool) {
+	if i < len(t.last.Items) && t.last.Items[i].Kind == k {
+		return t.last.Items[i], true
+	}
+
+	return Item{}, false
 }
 
 // loop is the tray's only goroutine: it polls, renders, and serves the menu
@@ -212,9 +252,14 @@ func (t *tray) openDetails() error {
 		return err
 	}
 
-	if err := exec.Command("xdg-open", u).Start(); err != nil { //nolint:gosec
+	cmd := exec.Command("xdg-open", u) //nolint:gosec
+	if err := cmd.Start(); err != nil {
 		return errors.New("unable to open the details page in a browser")
 	}
+
+	// Reap xdg-open once it has handed off to the browser, so a tray that
+	// runs for weeks does not collect a zombie per click.
+	go func() { _ = cmd.Wait() }()
 
 	return nil
 }

@@ -3,8 +3,8 @@ package tray
 import (
 	"context"
 	stderrors "errors"
+	"io/fs"
 	"net/url"
-	"os"
 	"time"
 
 	"github.com/pkg/errors"
@@ -57,7 +57,7 @@ func (c *client) connect(ctx context.Context) (*engine.Local, error) {
 	if err != nil {
 		c.forget()
 
-		if os.IsNotExist(err) {
+		if stderrors.Is(err, fs.ErrNotExist) {
 			return nil, nil
 		}
 
@@ -147,6 +147,11 @@ func (c *client) recentErrors(ctx context.Context, local *engine.Local) int {
 
 // detailsURL is the one place the engine's local token is used: it goes into
 // the URL handed to the browser and is never logged or shown in the menu.
+//
+// The URL does become the argv of the xdg-open child, which is world-readable
+// in /proc for the moment it runs. That is accepted: the token only unlocks a
+// loopback engine, and any process that could read that argv could read
+// engine.json itself.
 func (c *client) detailsURL() (string, error) {
 	info, err := engine.ReadInfo(c.scope)
 	if err != nil {

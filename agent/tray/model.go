@@ -67,7 +67,6 @@ type Status struct {
 	Vault          string
 	Sources        []*serverapi.SourceStatus
 	ErrorsThisWeek int
-	Paused         bool
 }
 
 // VaultLabel renders the disabled first menu item. The group is the Fleet
@@ -213,8 +212,12 @@ func pauseLabel(s Status) string {
 func lastGood(s Status, now time.Time) string {
 	var newest time.Time
 
+	// LastSnapshot is the newest snapshot, not the newest *complete* one: a
+	// canceled or interrupted upload still lands there with an
+	// IncompleteReason, and reporting it as the last good backup would tell
+	// the user their data is safer than it is.
 	for _, src := range s.Sources {
-		if src.LastSnapshot == nil {
+		if src.LastSnapshot == nil || src.LastSnapshot.IncompleteReason != "" {
 			continue
 		}
 
