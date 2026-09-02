@@ -106,13 +106,36 @@ func TestWatchReportsFinishedTasksOnce(t *testing.T) {
 		{TaskID: "t1", Kind: "Snapshot", Description: "Snapshot hody@fw13:/data", StartTime: end.Add(-time.Minute), EndTime: &end, Status: uitask.StatusSuccess},
 		{TaskID: "t2", Kind: "Snapshot", Description: "Snapshot hody@fw13:/data", StartTime: end, Status: uitask.StatusRunning},
 		{TaskID: "t3", Kind: "Maintenance", Description: "Maintenance", StartTime: end.Add(-time.Minute), EndTime: &end, Status: uitask.StatusFailed, ErrorMessage: "kopia: error: boom"},
+		{TaskID: "t4", Kind: "Snapshot", Description: "hody@fw13:/data2 at 2026-09-01T23:00:00Z", StartTime: end.Add(-time.Minute), EndTime: &end, Status: uitask.StatusFailed},
 	}}
 	l := run.New(run.Deps{Fleet: &poll.Client{Server: srv.URL, Bearer: "wa_1"}, Local: fl, State: &state.Config{Scope: "user"}, Now: time.Now, Log: t.Logf})
 	require.NoError(t, l.WatchOnce(context.Background()))
-	require.Len(t, reports, 2)
+	require.Len(t, reports, 3)
 	require.Equal(t, "/data", reports[0].Source)
 	require.Equal(t, "error", reports[1].Status)
 	require.Equal(t, "kopia: error: boom", reports[1].Stderr)
+	require.Equal(t, "/data2", reports[2].Source, "real 'user@host:path at <timestamp>' description parsed")
+	require.Equal(t, "error", reports[2].Status)
+	require.Equal(t, "log", reports[2].Stderr, "empty ErrorMessage falls back to the task log")
 	require.NoError(t, l.WatchOnce(context.Background()))
-	require.Len(t, reports, 2, "already reported")
+	require.Len(t, reports, 3, "already reported")
+}
+
+func TestWatchParsesRealSnapshotDescriptionFormat(t *testing.T) {
+	var reports []poll.Report
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var rep poll.Report
+		json.NewDecoder(r.Body).Decode(&rep)
+		reports = append(reports, rep)
+		w.WriteHeader(204)
+	}))
+	defer srv.Close()
+	end := time.Now()
+	fl := &fakeLocal{tasks: []uitask.Info{
+		{TaskID: "t1", Kind: "Snapshot", Description: "hody@fw13:/data at 2026-09-01T23:00:00.123456789Z", StartTime: end.Add(-time.Minute), EndTime: &end, Status: uitask.StatusSuccess},
+	}}
+	l := run.New(run.Deps{Fleet: &poll.Client{Server: srv.URL, Bearer: "wa_1"}, Local: fl, State: &state.Config{Scope: "user"}, Now: time.Now, Log: t.Logf})
+	require.NoError(t, l.WatchOnce(context.Background()))
+	require.Len(t, reports, 1)
+	require.Equal(t, "/data", reports[0].Source)
 }

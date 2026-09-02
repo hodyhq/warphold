@@ -65,6 +65,11 @@ func (c *commandAgentRun) run(ctx context.Context) error {
 	err = loop.Run(ctx, c.once)
 	if errors.Is(err, poll.ErrRevoked) {
 		log(ctx).Error("this agent was revoked by the Fleet server; not restarting")
+
+		if stopErr := h.Stop(context.WithoutCancel(ctx)); stopErr != nil {
+			log(ctx).Warnf("stopping engine: %v", stopErr)
+		}
+
 		os.Exit(3) //nolint:forbidigo
 	}
 

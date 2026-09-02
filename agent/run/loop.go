@@ -120,7 +120,16 @@ func (l *Loop) PollOnce(ctx context.Context) error {
 	return nil
 }
 
-var descPath = regexp.MustCompile(`^Snapshot [^:]+:(.+)$`)
+// descPath extracts the source path from a Snapshot task's Description. The
+// real format, from internal/server.runSnapshotTask, is
+// fmt.Sprintf("%v at %v", src, time) where snapshot.SourceInfo.String()
+// renders "user@host:path" (snapshot/source.go) - e.g.
+// "hody@fw13:/home/hody at 2026-09-01T23:00:00Z". The "Snapshot " prefix and
+// " at <timestamp>" suffix are both optional so older/synthetic descriptions
+// still match.
+// ponytail: Linux-only heuristic (host has no ':'); Windows paths with a
+// drive-letter colon would need a smarter split if agents ever run there.
+var descPath = regexp.MustCompile(`^(?:Snapshot )?[^@\s]+@[^:\s]+:(.+?)(?: at \S+)?$`)
 
 // WatchOnce reports every finished task not yet reported, then remembers it.
 func (l *Loop) WatchOnce(ctx context.Context) error {
