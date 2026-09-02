@@ -152,27 +152,18 @@ ifeq ($(GOOS)/$(GOARCH),linux/amd64)
 endif
 	$(MAYBE_XVFB) $(MAKE) -C app e2e-test
 
-# use this to test htmlui changes in full build of KopiaUI, this is rarely needed
-# except when testing htmlui specific features that only light up when running under Electron.
+# warphold: the UI source and its committed build/ live in one repo
+# (github.com/hodyhq/warphold-ui), so a local UI change is just "npm run build"
+# there plus a GOWORK replace - no separate htmlui/htmluibuild pair.
 #
-# You need to have 3 repositories checked out in parallel:
+# You need both repositories checked out in parallel:
 #
-#   https://github.com/kopia/kopia
-#   https://github.com/kopia/htmlui
-#   https://github.com/kopia/htmluibuild
-
-kopia-ui-with-local-htmlui-changes:
-	(cd ../htmlui && npm run build && ./push_local.sh)
-	rm -f $(kopia_ui_embedded_exe)
-	GOWORK=$(CURDIR)/tools/localhtmlui.work $(MAKE) kopia-ui
+#   https://github.com/hodyhq/warphold
+#   https://github.com/hodyhq/warphold-ui
 
 install-with-local-htmlui-changes: export GOWORK=$(CURDIR)/tools/localhtmlui.work
 install-with-local-htmlui-changes:
-ifeq ($(GOOS),windows)
-	(cd ../htmlui && npm run build && push_local.cmd)
-else
-	(cd ../htmlui && npm run build && ./push_local.sh)
-endif
+	(cd ../warphold-ui && npm run build)
 	$(MAKE) install
 
 # build-current-os-noui compiles a binary for the current os/arch in the same location as goreleaser
@@ -412,9 +403,10 @@ htmlui-e2e-test: GOTESTSUM_FORMAT=testname
 htmlui-e2e-test:
 	HTMLUI_E2E_TEST=1 $(GO_TEST) -timeout 600s github.com/kopia/kopia/tests/htmlui_e2e_test -v $(TEST_FLAGS)
 
+# warphold: local UI checkout is ../warphold-ui.
 htmlui-e2e-test-local-htmlui-changes:
-	(cd ../htmlui && npm run build)
-	HTMLUI_E2E_TEST=1 HTMLUI_BUILD_DIR=$(CURDIR)/../htmlui/build go test -timeout 600s github.com/kopia/kopia/tests/htmlui_e2e_test -v $(TEST_FLAGS)
+	(cd ../warphold-ui && npm run build)
+	HTMLUI_E2E_TEST=1 HTMLUI_BUILD_DIR=$(CURDIR)/../warphold-ui/build go test -timeout 600s github.com/kopia/kopia/tests/htmlui_e2e_test -v $(TEST_FLAGS)
 
 godoc:
 	godoc -http=:33333
