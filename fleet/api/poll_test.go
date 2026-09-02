@@ -89,3 +89,30 @@ func TestPollReportHealth(t *testing.T) {
 	require.ErrorIs(t, err, poll.ErrRevoked)
 	_ = json.Marshal
 }
+
+// TestReportRejectsOtherAgentsCommand pins the fix for a cross-agent ack: an
+// agent must not be able to acknowledge (and so silently discard) a command
+// that was queued for a different agent, even though command ids are small
+// sequential integers an attacker could guess.
+func TestReportRejectsOtherAgentsCommand(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+	_, bearerA := enrollAgent(t, h)
+	idB, bearerB := enrollAgent(t, h)
+	ctx := t.Context()
+
+	resp, cmd := h.do("POST", "/api/v1/fleet/agents/"+idB+"/commands", map[string]any{"kind": "snapshot-now", "source": "~"})
+	require.Equal(t, 201, resp.StatusCode)
+	cmdID := int64(cmd["id"].(float64))
+
+	cA := &poll.Client{Server: h.srv.URL, Bearer: bearerA}
+	now := time.Now()
+	err := cA.Report(ctx, poll.Report{TaskID: "steal", Kind: "command", CommandID: cmdID, Source: "~", StartedAt: now, FinishedAt: now, Status: "ok"})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "400")
+
+	cB := &poll.Client{Server: h.srv.URL, Bearer: bearerB}
+	docB, err := cB.Poll(ctx, poll.Heartbeat{}, "")
+	require.NoError(t, err)
+	require.Len(t, docB.Commands, 1, "B's command must still be pending; A's report must not have acked it")
+}

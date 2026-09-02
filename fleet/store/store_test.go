@@ -126,7 +126,8 @@ func TestTokensAndCommandsAndSettings(t *testing.T) {
 	pend, err := s.PendingCommands(ctx, "ag_1")
 	require.NoError(t, err)
 	require.Len(t, pend, 1)
-	require.NoError(t, s.AckCommand(ctx, cid, time.Now()))
+	require.ErrorIs(t, s.AckCommand(ctx, cid, "ag_wrong", time.Now()), store.ErrNotFound, "ack scoped to the wrong agent must not apply")
+	require.NoError(t, s.AckCommand(ctx, cid, "ag_1", time.Now()))
 	pend, _ = s.PendingCommands(ctx, "ag_1")
 	require.Empty(t, pend)
 

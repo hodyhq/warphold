@@ -204,12 +204,19 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
+	if in.CommandID != 0 {
+		owner, err := s.st.CommandAgentID(ctx, in.CommandID)
+		if err != nil || owner != a.ID {
+			writeErr(w, http.StatusBadRequest, "command_id does not belong to this agent")
+			return
+		}
+	}
 	if _, err := s.st.AddReport(ctx, &store.Report{AgentID: a.ID, TaskID: in.TaskID, Kind: in.Kind, Source: in.Source, StartedAt: in.StartedAt, FinishedAt: in.FinishedAt, Status: in.Status, Bytes: in.Bytes, Files: in.Files, SnapshotID: in.SnapshotID, Stderr: in.Stderr}); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if in.CommandID != 0 {
-		_ = s.st.AckCommand(ctx, in.CommandID, s.now())
+		_ = s.st.AckCommand(ctx, in.CommandID, a.ID, s.now())
 	}
 	_ = s.st.TouchAgent(ctx, a.ID, s.now(), a.Version, a.PolicyETag)
 	w.WriteHeader(http.StatusNoContent)

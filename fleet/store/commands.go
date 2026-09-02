@@ -37,7 +37,30 @@ func (s *Store) PendingCommands(ctx context.Context, agentID string) ([]Command,
 	return out, rows.Err()
 }
 
-func (s *Store) AckCommand(ctx context.Context, id int64, at time.Time) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE commands SET acked_at=? WHERE id=?`, ts(at), id)
-	return err
+// CommandAgentID returns the agent_id owning command id, or ErrNotFound.
+func (s *Store) CommandAgentID(ctx context.Context, id int64) (string, error) {
+	var agentID string
+	err := s.db.QueryRowContext(ctx, `SELECT agent_id FROM commands WHERE id=?`, id).Scan(&agentID)
+	if err != nil {
+		return "", notFound(err)
+	}
+	return agentID, nil
+}
+
+// AckCommand marks command id acknowledged, scoped to agentID so one agent
+// cannot ack (and so silently discard) another agent's command. Returns
+// ErrNotFound if no matching, still-pending command exists for that agent.
+func (s *Store) AckCommand(ctx context.Context, id int64, agentID string, at time.Time) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE commands SET acked_at=? WHERE id=? AND agent_id=? AND acked_at IS NULL`, ts(at), id, agentID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
