@@ -85,6 +85,14 @@ func (h *harness) doList(method, path string) (*http.Response, []map[string]any)
 	return resp, out
 }
 
+func (h *harness) mkGroup(t *testing.T) float64 {
+	t.Helper()
+	_, tg := h.do("POST", "/api/v1/fleet/targets", map[string]any{"name": "local", "kind": "filesystem", "path": t.TempDir()})
+	_, tp := h.do("POST", "/api/v1/fleet/templates", map[string]any{"name": "Home default", "sources": []string{"~"}, "policy": map[string]any{}})
+	_, g := h.do("POST", "/api/v1/fleet/groups", map[string]any{"name": "Laptops", "target_id": tg["id"], "template_id": tp["id"]})
+	return g["id"].(float64)
+}
+
 func (h *harness) activateAndLogin() {
 	h.t.Helper()
 	resp, _ := h.do("POST", "/api/v1/fleet/activate", map[string]string{"passphrase": "seal-me!", "email": "hody@hody.dev", "password": "pw12345678"})

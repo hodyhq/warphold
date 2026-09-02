@@ -3,6 +3,7 @@ package api_test
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -57,4 +58,18 @@ func TestB2TargetVerifiesObjectLock(t *testing.T) {
 	require.Equal(t, 200, resp.StatusCode)
 	_, hasKey := list[0]["key"]
 	require.False(t, hasKey, "keys never leave the server")
+}
+
+func TestTokensDefaultsAndLimits(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+	gid := h.mkGroup(t)
+	resp, body := h.do("POST", "/api/v1/fleet/tokens", map[string]any{"group_id": gid})
+	require.Equal(t, 201, resp.StatusCode)
+	require.Equal(t, float64(1), body["max_uses"])
+	require.True(t, strings.HasPrefix(body["token"].(string), "wh_"))
+	resp, _ = h.do("POST", "/api/v1/fleet/tokens", map[string]any{"group_id": gid, "ttl_seconds": 31 * 86400})
+	require.Equal(t, 400, resp.StatusCode)
+	resp, _ = h.do("POST", "/api/v1/fleet/tokens", map[string]any{"group_id": gid, "ttl_seconds": 7 * 86400, "max_uses": 0})
+	require.Equal(t, 201, resp.StatusCode)
 }

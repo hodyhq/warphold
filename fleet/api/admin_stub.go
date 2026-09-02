@@ -8,4 +8,4 @@ import (
 
 func (s *Server) mountAgent(_ *mux.Router) {}
 
-func (s *Server) mountAdminEnrollment(_ *mux.Router, _ func(http.HandlerFunc) http.HandlerFunc) {} // Task 9 replaces
+func (s *Server) mountAdminAgents(_ *mux.Router, _ func(http.HandlerFunc) http.HandlerFunc) {} // Task 11 replaces
