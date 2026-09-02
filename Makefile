@@ -60,6 +60,10 @@ install:
 install-noui: KOPIA_BUILD_TAGS=nohtmlui
 install-noui: install
 
+# warphold: build the renamed binary for the current OS/arch.
+warphold-build:
+	CGO_ENABLED=0 go build $(KOPIA_BUILD_FLAGS) -tags "$(KOPIA_BUILD_TAGS)" -o dist/warphold$(exe_suffix) .
+
 install-race:
 	go install -race $(KOPIA_BUILD_FLAGS) -tags "$(KOPIA_BUILD_TAGS)"
 
