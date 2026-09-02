@@ -24,7 +24,9 @@ func toTargetOut(t store.Target) targetOut {
 
 func (s *Server) handleTargetCreate(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Name, Kind, Bucket, Region, Path, KeyID, Key string
+		Name, Kind, Bucket, Region, Path string
+		KeyID                            string `json:"key_id"`
+		Key                              string `json:"key"`
 	}
 	if err := decode(r, &in); err != nil || in.Name == "" {
 		writeErr(w, http.StatusBadRequest, "name and kind are required")

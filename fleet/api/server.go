@@ -207,6 +207,9 @@ func (s *Server) handleLogout(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// SetB2ForTesting swaps the B2 client.
+func (s *Server) SetB2ForTesting(b b2api.API) { s.b2 = b }
+
 // requireActivated wraps admin handlers so they 409 before activation.
 func (s *Server) requireActivated(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

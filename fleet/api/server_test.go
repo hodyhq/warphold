@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -11,11 +12,13 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kopia/kopia/fleet/api"
+	"github.com/kopia/kopia/fleet/b2api"
 )
 
 type harness struct {
 	t   *testing.T
 	srv *httptest.Server
+	s   *api.Server
 	jar []*http.Cookie
 }
 
@@ -27,8 +30,24 @@ func newHarness(t *testing.T) *harness {
 	s.Mount(m)
 	ts := httptest.NewServer(m)
 	t.Cleanup(ts.Close)
-	return &harness{t: t, srv: ts}
+	return &harness{t: t, srv: ts, s: s}
 }
+
+type fakeB2API struct {
+	lock    bool
+	created []b2api.KeyRequest
+	deleted []string
+}
+
+func (f fakeB2API) BucketInfo(_ context.Context, _, _, _ string) (b2api.BucketInfo, error) {
+	return b2api.BucketInfo{ID: "bkt1", ObjectLockEnabled: f.lock}, nil
+}
+
+func (f fakeB2API) CreateKey(_ context.Context, _, _ string, r b2api.KeyRequest) (b2api.CreatedKey, error) {
+	return b2api.CreatedKey{KeyID: "kid-" + r.Name, Key: "sec-" + r.Name}, nil
+}
+
+func (f fakeB2API) DeleteKey(_ context.Context, _, _, _ string) error { return nil }
 
 func (h *harness) do(method, path string, body any) (*http.Response, map[string]any) {
 	h.t.Helper()
@@ -48,6 +67,20 @@ func (h *harness) do(method, path string, body any) (*http.Response, map[string]
 		h.jar = cs
 	}
 	var out map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	return resp, out
+}
+
+func (h *harness) doList(method, path string) (*http.Response, []map[string]any) {
+	h.t.Helper()
+	req, _ := http.NewRequest(method, h.srv.URL+path, nil)
+	for _, c := range h.jar {
+		req.AddCookie(c)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(h.t, err)
+	defer resp.Body.Close()
+	var out []map[string]any
 	_ = json.NewDecoder(resp.Body).Decode(&out)
 	return resp, out
 }

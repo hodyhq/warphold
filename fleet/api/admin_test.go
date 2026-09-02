@@ -45,3 +45,16 @@ func TestAdminCRUDRequiresLoginAndRoundTrips(t *testing.T) {
 	require.Equal(t, "Home default", list[0]["name"])
 	require.Equal(t, []any{"~"}, list[0]["sources"])
 }
+
+func TestB2TargetVerifiesObjectLock(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+	h.s.SetB2ForTesting(fakeB2API{lock: true})
+	resp, body := h.do("POST", "/api/v1/fleet/targets", map[string]any{"name": "b2", "kind": "b2", "bucket": "hody-backups", "key_id": "k", "key": "s"})
+	require.Equal(t, 201, resp.StatusCode)
+	require.Equal(t, true, body["object_lock_verified"])
+	resp, list := h.doList("GET", "/api/v1/fleet/targets")
+	require.Equal(t, 200, resp.StatusCode)
+	_, hasKey := list[0]["key"]
+	require.False(t, hasKey, "keys never leave the server")
+}
