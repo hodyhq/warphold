@@ -24,7 +24,8 @@ func (s *Server) mountAdmin(m *mux.Router) {
 	m.HandleFunc("/api/v1/fleet/admins", adm(s.handleAdminCreate)).Methods(http.MethodPost)
 	m.HandleFunc("/api/v1/fleet/admins/me/password", adm(s.handleAdminPassword)).Methods(http.MethodPost)
 	m.HandleFunc("/api/v1/fleet/admins/{id}", adm(s.handleAdminDelete)).Methods(http.MethodDelete)
-	s.mountAdminEnrollment(m, adm) // Task 9/11: tokens + agents
+	m.HandleFunc("/api/v1/fleet/overview", adm(s.handleOverview)).Methods(http.MethodGet) // Task 12
+	s.mountAdminEnrollment(m, adm)                                                        // Task 9/11: tokens + agents
 }
 
 func pathID(r *http.Request) (int64, bool) {

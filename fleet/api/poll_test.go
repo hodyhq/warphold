@@ -71,7 +71,7 @@ func TestPollReportHealth(t *testing.T) {
 	_, detail = h.do("GET", "/api/v1/fleet/agents/"+id, nil)
 	require.Equal(t, "red", detail["health"])
 	reports := detail["reports"].([]any)
-	require.Equal(t, "kopia: error: unable to write blob", reports[0].(map[string]any)["Stderr"])
+	require.Equal(t, "kopia: error: unable to write blob", reports[0].(map[string]any)["stderr"])
 
 	// template change → new etag
 	_, tpls := h.doList("GET", "/api/v1/fleet/templates")
