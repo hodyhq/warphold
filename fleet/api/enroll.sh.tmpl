@@ -7,6 +7,7 @@ set -eu
 # or, still supported, as an argument - which is visible in "ps" for as long
 # as the script runs and is kept in shell history:
 #   curl -fsSL https://<fleet>/enroll.sh | sh -s -- --token <token>
+# With neither, the script prompts for the token on the terminal (echo off).
 TOKEN="${WARPHOLD_ENROLL_TOKEN:-}"
 SERVER="{{.Server}}"
 SCOPE="${WARPHOLD_SCOPE:-user}"
@@ -18,7 +19,30 @@ while [ $# -gt 0 ]; do
     *) echo "unknown argument $1" >&2; exit 2 ;;
   esac
 done
-[ -n "$TOKEN" ] || { echo "usage: WARPHOLD_ENROLL_TOKEN=<token> sh -c \"\$(curl -fsSL {{.Server}}/enroll.sh)\", or sh -s -- --token <token>" >&2; exit 2; }
+# With no token supplied, ask for it on the terminal with the echo off. This
+# is what makes the plain "curl ... | sh" form usable: the token never enters
+# the command line, so it stays out of shell history and out of "ps". stdin is
+# the pipe carrying this script, so the prompt reads /dev/tty directly.
+# The subshell probe is what decides there is a terminal: /dev/tty exists and
+# looks readable even with no controlling terminal (cron, CI), where opening
+# it fails - and an unguarded redirect would abort under "set -e" with an
+# obscure error instead of the usage message below.
+if [ -z "$TOKEN" ] && (: < /dev/tty) 2>/dev/null; then
+  # Fail closed on the echo: if it cannot be turned off, the token would be
+  # typed in the clear and left in the terminal's scrollback, so do not ask.
+  if stty -echo < /dev/tty 2>/dev/null; then
+    # Ctrl-C at the prompt must not leave the terminal with its echo off.
+    trap 'stty echo < /dev/tty 2>/dev/null; exit 130' INT HUP TERM
+    printf 'Enrollment token: ' > /dev/tty
+    IFS= read -r TOKEN < /dev/tty || TOKEN=""
+    stty echo < /dev/tty 2>/dev/null || true
+    trap - INT HUP TERM
+    printf '\n' > /dev/tty
+  else
+    echo "cannot turn off the terminal echo; supply the token in WARPHOLD_ENROLL_TOKEN instead" >&2
+  fi
+fi
+[ -n "$TOKEN" ] || { echo "usage: run it on a terminal and paste the token at the prompt, or put the token in WARPHOLD_ENROLL_TOKEN in the environment (see the comments at the top of this script)" >&2; exit 2; }
 ARCH="$(uname -m)"; case "$ARCH" in x86_64) ARCH=amd64 ;; aarch64|arm64) ARCH=arm64 ;; *) echo "unsupported arch $ARCH" >&2; exit 1 ;; esac
 if [ "$SCOPE" = "system" ]; then BIN=/usr/local/bin; else BIN="${HOME}/.local/bin"; fi
 mkdir -p "$BIN"
