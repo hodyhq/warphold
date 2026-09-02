@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="1024" height="1024" role="img" aria-label="WarpHold">
+  <title>WarpHold</title>
+  <rect width="24" height="24" rx="5" fill="#16181D"/>
+  <g fill="none" stroke="#FF6A1A" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3 7h13"/>
+    <path d="M3 12h18"/>
+    <path d="M3 17h10"/>
+    <path d="M19 4l2 3-2 3"/>
+  </g>
+</svg>

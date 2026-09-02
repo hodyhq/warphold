@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 168 24" width="1120" height="160" role="img" aria-label="WarpHold">
+  <title>WarpHold</title>
+  <g fill="none" stroke="#FF6A1A" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3 7h13"/><path d="M3 12h18"/><path d="M3 17h10"/><path d="M19 4l2 3-2 3"/>
+  </g>
+  <text x="30" y="17.2" font-family="Unbounded, 'Space Grotesk', system-ui, sans-serif" font-weight="800" font-size="14" letter-spacing="0.3" fill="#F2F3F5">WARPHOLD</text>
+</svg>
