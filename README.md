@@ -29,10 +29,12 @@ warphold --config-file /var/lib/warphold/repository.config server start \
   --address 127.0.0.1:51515
 
 # on the device being enrolled, with a token from the Fleet admin API/UI
-WARPHOLD_ENROLL_TOKEN=<TOKEN> sh -c "$(curl -fsSL https://<fleet-host>/enroll.sh)"
+read -rs -p "Enrollment token: " WARPHOLD_ENROLL_TOKEN; echo
+export WARPHOLD_ENROLL_TOKEN
+sh -c "$(curl -fsSL https://<fleet-host>/enroll.sh)"
 ```
 
-`sh -s -- --token <TOKEN>` still works, but it puts the token in the installer's argument list, where anyone who can run `ps` on that machine can read it while the install runs, and your shell records it in its history. The environment form keeps it out of both, and the installer passes it to `warphold agent enroll` the same way.
+The token is read from a hidden prompt so it never appears in your shell history or process list. `sh -s -- --token <TOKEN>` still works, but it puts the token in the installer's argument list, where anyone who can run `ps` on that machine can read it while the install runs, and your shell records it in its history.
 
 Set `--server-username` and export `KOPIA_SERVER_PASSWORD` so Kopia's own server API requires a login, and **always export `KOPIA_SERVER_CONTROL_PASSWORD`** too (without it the control API is open to anyone who can reach the port). Both are the environment variables behind the `--server-password` and `--server-control-password` flags, and passing them that way instead is deliberate: command arguments are visible to every user on the host in `ps` output and are recorded in shell history, while the environment of another user's process is not readable. **Bind to `127.0.0.1`** unless a TLS reverse proxy (Traefik/Caddy/nginx) is terminating in front — binding `0.0.0.0` directly puts an unencrypted control plane on the LAN, and enrollment bearer tokens and the setup token would travel in the clear.
 
@@ -98,6 +100,6 @@ Kopia is open source. For more information see the [Contribution Guidelines](htt
 
 Reporting Security Issues
 ---
-Report security issues in WarpHold's own code - Fleet, the agent, the enrollment flow - privately to WarpHold's maintainers through [GitHub Security Advisories on `hodyhq/warphold`](https://github.com/hodyhq/warphold/security/advisories/new). Issues in the upstream Kopia engine belong upstream: follow [Kopia's SECURITY.md](https://github.com/kopia/kopia/blob/master/SECURITY.md), which directs disclosures to `security@kopia.io`.
+Report security issues in WarpHold's own code - Fleet, the agent, the enrollment flow - privately to WarpHold's maintainers through [GitHub Security Advisories on `hodyhq/warphold`](https://github.com/hodyhq/warphold/security/advisories/new). Issues in the upstream Kopia engine belong upstream: follow [Kopia's contribution guidelines](https://kopia.io/docs/contribution-guidelines/), which direct security disclosures to `security@kopia.io`.
 
 [![Netlify Status](https://api.netlify.com/api/v1/badges/6b5c1fe4-a0da-4e7e-939b-ff1105251985/deploy-status)](https://app.netlify.com/sites/kopia/deploys)
