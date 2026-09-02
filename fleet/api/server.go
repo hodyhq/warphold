@@ -297,8 +297,9 @@ func (s *Server) Mount(m *mux.Router) {
 	m.HandleFunc("/api/v1/fleet/activate", s.handleActivate).Methods(http.MethodPost)
 	m.HandleFunc("/api/v1/fleet/session", s.handleLogin).Methods(http.MethodPost)
 	m.HandleFunc("/api/v1/fleet/session", s.handleLogout).Methods(http.MethodDelete)
-	s.mountAdmin(m) // Task 7
-	s.mountAgent(m) // Tasks 11, 14
+	s.mountAdmin(m)    // Task 7
+	s.mountAgent(m)    // Tasks 11, 14
+	s.mountDownload(m) // Task 2
 }
 
 func decode(r *http.Request, v any) error {

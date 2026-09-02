@@ -33,21 +33,23 @@ func jsonBody(v any) io.Reader {
 }
 
 type harness struct {
-	t   *testing.T
-	srv *httptest.Server
-	s   *api.Server
-	jar []*http.Cookie
+	t        *testing.T
+	srv      *httptest.Server
+	s        *api.Server
+	jar      []*http.Cookie
+	stateDir string
 }
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	s := api.New(t.TempDir())
+	dir := t.TempDir()
+	s := api.New(dir)
 	t.Cleanup(func() { s.Close() })
 	m := mux.NewRouter()
 	s.Mount(m)
 	ts := httptest.NewServer(m)
 	t.Cleanup(ts.Close)
-	return &harness{t: t, srv: ts, s: s}
+	return &harness{t: t, srv: ts, s: s, stateDir: dir}
 }
 
 type fakeB2API struct {

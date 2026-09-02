@@ -7,7 +7,7 @@
 WarpHold is a fork of [Kopia](https://github.com/kopia/kopia) — same engine, same repository format, same client-side encryption — with a rebuilt UI and a **Fleet** mode: enroll machines, push them a backup policy, escrow their keys, and see at a glance whether every one of them is still backing up.
 
 - **Single machine:** `warphold server start` gives you the WarpHold app for this computer.
-- **Fleet:** activate Fleet on one server, then enroll Linux laptops and servers with a one-line installer (it downloads the agent binary from your Fleet server once the `/dl/` route exists — Plan 2 Task 2; until then place the binary yourself). Windows and macOS agents are planned.
+- **Fleet:** activate Fleet on one server, then enroll Linux laptops and servers with a one-line installer that downloads the agent binary from your Fleet server. Windows and macOS agents are planned.
 - **Standalone restore, always:** a recovery kit plus stock upstream `kopia` can restore any device with WarpHold completely offline. Fleet is a control plane, never a dependency of your data.
 
 > WarpHold is not affiliated with the Kopia project. See [NOTICE](NOTICE). Upstream changes are merged regularly ([docs/superpowers/UPSTREAM.md](docs/superpowers/UPSTREAM.md)).
@@ -35,7 +35,7 @@ curl -fsSL https://<fleet-host>/enroll.sh | sh -s -- --token <TOKEN>
 
 Set `--server-username`/`--server-password` so Kopia's own server API requires a login, and **always pass `--server-control-password`** too (without it the control API is open to anyone who can reach the port). **Bind to `127.0.0.1`** unless a TLS reverse proxy (Traefik/Caddy/nginx) is terminating in front — binding `0.0.0.0` directly puts an unencrypted control plane on the LAN, and enrollment bearer tokens and the setup token would travel in the clear.
 
-**The installer does not download the binary in this version.** Put the `warphold` binary at `~/.local/bin/warphold` (or `/usr/local/bin/warphold` for `--scope system`) on the device first and `enroll.sh` will use it as-is; the download from `GET /dl/warphold-linux-<arch>` arrives in Plan 2, so without a preinstalled binary the script fails loudly instead of enrolling. With the binary in place the script enrolls it against the token and installs a `systemd --user` unit (`warphold agent install --scope user`) so the agent runs and polls automatically.
+The installer downloads the binary from your Fleet server (`/dl/warphold-linux-<arch>`). A Fleet server running on Linux offers its own binary for its own architecture; for any other architecture, or a Fleet server running on macOS or Windows, drop a Linux build into `<state dir>/binaries/warphold-linux-<arch>`. It then enrolls the binary against the token and installs a `systemd --user` unit (`warphold agent install --scope user`) so the agent runs and polls automatically.
 
 **The Fleet admin can decrypt every enrolled device's backups.** Fleet holds the admin key for every target it provisions, so it can run maintenance and generate recovery kits on agents' behalf — for a family or personal fleet that's the point, but it means Fleet's admin passphrase is the one secret that must never leak. And the per-agent B2 *writer* key is not as harmless as "writer" suggests: Kopia's B2 delete is a file *hide*, which needs only write permission; hidden versions stay recoverable while Object Lock retention holds them, so Object Lock is the real backstop.
 
