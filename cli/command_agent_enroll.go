@@ -36,7 +36,13 @@ type commandAgentEnroll struct {
 func (c *commandAgentEnroll) setup(svc advancedAppServices, parent commandParent) {
 	cmd := parent.Command("enroll", "Enroll this machine into a Fleet using an enrollment token.")
 	cmd.Flag("server", "Fleet server URL, e.g. https://fleet.example").Required().StringVar(&c.server)
-	cmd.Flag("token", "Enrollment token").Required().StringVar(&c.token)
+	// Envar, so the token need not appear in argv: command arguments are
+	// visible to every user on the host in "ps" output and are recorded in
+	// shell history. The environment is not the same as secret - /proc/<pid>/
+	// environ still exposes it to the same user and to root - it just is not
+	// world-readable the way argv is. Required() is still satisfied by the
+	// environment: kingpin's needsValue() treats an envar value as provided.
+	cmd.Flag("token", "Enrollment token (or set WARPHOLD_ENROLL_TOKEN, which keeps it off the command line)").Required().Envar(svc.EnvName("WARPHOLD_ENROLL_TOKEN")).StringVar(&c.token)
 	cmd.Flag("scope", "user (backs up $HOME) or system (root, backs up system paths)").Default("user").EnumVar(&c.scope, "user", "system")
 	cmd.Flag("name", "Display name (defaults to hostname)").StringVar(&c.name)
 	c.svc = svc

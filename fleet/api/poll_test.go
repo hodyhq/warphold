@@ -76,11 +76,7 @@ func TestPollReportHealth(t *testing.T) {
 	// template change → new etag
 	_, tpls := h.doList("GET", "/api/v1/fleet/templates")
 	tplID := tpls[0]["id"].(float64)
-	req, _ := http.NewRequest("PUT", h.srv.URL+"/api/v1/fleet/templates/"+jsonNum(tplID), jsonBody(map[string]any{"name": "Home default", "sources": []string{"~", "/etc"}, "policy": map[string]any{"retention": map[string]any{"keepLatest": 3}}}))
-	req.Header.Set("Content-Type", "application/json")
-	for _, ck := range h.jar {
-		req.AddCookie(ck)
-	}
+	req := h.newRequest("PUT", "/api/v1/fleet/templates/"+jsonNum(tplID), jsonBody(map[string]any{"name": "Home default", "sources": []string{"~", "/etc"}, "policy": map[string]any{"retention": map[string]any{"keepLatest": 3}}}))
 	res, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	require.Equal(t, 204, res.StatusCode)

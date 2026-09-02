@@ -41,10 +41,7 @@ func (s *Server) handleTokenCreate(w http.ResponseWriter, r *http.Request) {
 	if in.MaxUses != nil {
 		maxUses = *in.MaxUses
 	}
-	// requireAdmin already verified the session cookie, so it is present here.
-	c, _ := r.Cookie(sessionCookie)
-	adminID, _ := s.signer().verify(c.Value)
-	plain, tok, err := s.tokens().Issue(r.Context(), in.GroupID, time.Duration(in.TTLSeconds)*time.Second, maxUses, adminID)
+	plain, tok, err := s.tokens().Issue(r.Context(), in.GroupID, time.Duration(in.TTLSeconds)*time.Second, maxUses, adminFrom(r))
 	if err != nil {
 		if errors.Is(err, enroll.ErrTTLTooLong) {
 			writeErr(w, http.StatusBadRequest, err.Error())

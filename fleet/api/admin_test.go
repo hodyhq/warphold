@@ -34,11 +34,7 @@ func TestAdminCRUDRequiresLoginAndRoundTrips(t *testing.T) {
 	resp, _ = h.do("POST", "/api/v1/fleet/groups", map[string]any{"name": "Bad", "target_id": 999, "template_id": tpl})
 	require.Equal(t, 400, resp.StatusCode, "unknown target")
 
-	req, _ := http.NewRequest("GET", h.srv.URL+"/api/v1/fleet/templates", nil)
-	for _, c := range h.jar {
-		req.AddCookie(c)
-	}
-	res, err := http.DefaultClient.Do(req)
+	res, err := http.DefaultClient.Do(h.newRequest("GET", "/api/v1/fleet/templates", nil))
 	require.NoError(t, err)
 	var list []map[string]any
 	require.NoError(t, json.NewDecoder(res.Body).Decode(&list))

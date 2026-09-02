@@ -19,10 +19,12 @@ import (
 )
 
 type fakeLocal struct {
-	mu       sync.Mutex
-	applied  [][]poll.Source
-	snapshot []string
-	tasks    []uitask.Info
+	mu         sync.Mutex
+	applied    [][]poll.Source
+	snapshot   []string
+	tasks      []uitask.Info
+	manifestID string
+	lookups    []string
 }
 
 func (f *fakeLocal) Apply(_ context.Context, s []poll.Source) error {
@@ -47,6 +49,16 @@ func (f *fakeLocal) Tasks(context.Context) ([]uitask.Info, error) {
 	defer f.mu.Unlock()
 	return f.tasks, nil
 }
+
+func (f *fakeLocal) LatestSnapshotID(_ context.Context, path string, notBefore, notAfter time.Time) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lookups = append(f.lookups, path+"@"+stamp(notBefore)+".."+stamp(notAfter))
+
+	return f.manifestID, nil
+}
+
+func stamp(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
 
 func (f *fakeLocal) TaskLog(context.Context, string) (string, error) { return "log", nil }
 func (f *fakeLocal) Status(context.Context) (string, bool)           { return "idle", true }
@@ -198,4 +210,51 @@ func TestRestartedAgentReportsUniqueTaskIDs(t *testing.T) {
 	require.NotEqual(t, reports[0].TaskID, reports[1].TaskID, "wire task id must be unique per engine lifetime")
 	require.Contains(t, reports[0].TaskID, "-1")
 	require.Equal(t, "/data", reports[0].Source)
+}
+
+// TestWatchFillsSnapshotID pins that a finished snapshot report carries the
+// manifest id of the snapshot it created, so Fleet can offer a restore
+// without a second round trip. Only successful snapshots are looked up:
+// failed ones wrote no manifest, and a lookup would either be empty or,
+// worse, return an unrelated earlier snapshot.
+func TestWatchFillsSnapshotID(t *testing.T) {
+	var mu sync.Mutex
+
+	var reports []poll.Report
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var rep poll.Report
+
+		json.NewDecoder(r.Body).Decode(&rep) //nolint:errcheck
+		mu.Lock()
+		reports = append(reports, rep)
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	end := clock.Now()
+	start := end.Add(-time.Minute)
+	fl := &fakeLocal{
+		manifestID: "k9f1c0de",
+		tasks: []uitask.Info{
+			{TaskID: "t1", Kind: "Snapshot", Description: "hody@fw13:/data at 2026-09-01T23:00:00Z", StartTime: start, EndTime: &end, Status: uitask.StatusSuccess},
+			{TaskID: "t2", Kind: "Snapshot", Description: "hody@fw13:/data at 2026-09-01T23:00:00Z", StartTime: start, EndTime: &end, Status: uitask.StatusFailed},
+			{TaskID: "t3", Kind: "Maintenance", Description: "Maintenance", StartTime: start, EndTime: &end, Status: uitask.StatusSuccess},
+		},
+	}
+	l := run.New(run.Deps{Fleet: &poll.Client{Server: srv.URL, Bearer: "wa_1"}, Local: fl, State: &state.Config{Scope: "user"}, Now: time.Now, Log: t.Logf})
+	require.NoError(t, l.WatchOnce(context.Background()))
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, reports, 3)
+	require.Equal(t, "k9f1c0de", reports[0].SnapshotID)
+	require.Empty(t, reports[1].SnapshotID, "a failed snapshot wrote no manifest")
+	require.Empty(t, reports[2].SnapshotID, "maintenance is not a snapshot")
+
+	fl.mu.Lock()
+	defer fl.mu.Unlock()
+	require.Equal(t, []string{"/data@" + stamp(start) + ".." + stamp(end)}, fl.lookups,
+		"looked up once, for the successful snapshot, bounded by its own task window")
 }

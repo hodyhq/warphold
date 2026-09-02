@@ -1,25 +1,20 @@
 package api
 
 import (
-	"crypto/hmac"
+	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"golang.org/x/crypto/argon2"
 )
-
-const sessionCookie = "wh_session"
 
 // HashPassword hashes with argon2id in PHC string format.
 func HashPassword(pw string) (string, error) {
@@ -46,44 +41,6 @@ func VerifyPassword(pw, encoded string) bool {
 	}
 	got := argon2.IDKey([]byte(pw), salt, 3, 64*1024, 4, uint32(len(want)))
 	return subtle.ConstantTimeCompare(got, want) == 1
-}
-
-type sessions struct {
-	secret []byte
-	ttl    time.Duration
-	now    func() time.Time
-}
-
-func newSessions(secret []byte, ttl time.Duration) *sessions {
-	return &sessions{secret: secret, ttl: ttl, now: time.Now}
-}
-
-func (s *sessions) sign(body string) string {
-	m := hmac.New(sha256.New, s.secret)
-	m.Write([]byte(body))
-	return hex.EncodeToString(m.Sum(nil))
-}
-
-func (s *sessions) issue(adminID int64) string {
-	body := strconv.FormatInt(adminID, 10) + "." + strconv.FormatInt(s.now().Add(s.ttl).Unix(), 10)
-	return body + "." + s.sign(body)
-}
-
-func (s *sessions) verify(tok string) (int64, bool) {
-	parts := strings.Split(tok, ".")
-	if len(parts) != 3 {
-		return 0, false
-	}
-	body := parts[0] + "." + parts[1]
-	if !hmac.Equal([]byte(s.sign(body)), []byte(parts[2])) {
-		return 0, false
-	}
-	exp, err := strconv.ParseInt(parts[1], 10, 64)
-	if err != nil || s.now().Unix() > exp {
-		return 0, false
-	}
-	id, err := strconv.ParseInt(parts[0], 10, 64)
-	return id, err == nil
 }
 
 type limiter struct {
@@ -163,24 +120,19 @@ func writeErr(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
-// requireAdmin gates a handler behind a valid session cookie.
+// requireAdmin gates a handler behind a live server-side session and, for
+// state-changing methods, the CSRF double submit. The session is resolved
+// against the store on every request, so a revoked or deleted admin's cookie
+// fails on its very next call, and the handler reads the admin id out of the
+// request context with adminFrom.
 func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		c, err := r.Cookie(sessionCookie)
-		if err != nil {
-			writeErr(w, http.StatusUnauthorized, "unauthorized")
-			return
-		}
-		sess := s.signer()
+		sess := s.currentSession(r)
 		if sess == nil {
 			writeErr(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
-		if _, ok := sess.verify(c.Value); !ok {
-			writeErr(w, http.StatusUnauthorized, "unauthorized")
-			return
-		}
-		next(w, r)
+		requireCSRF(next)(w, r.WithContext(context.WithValue(r.Context(), sessionCtxKey, sess)))
 	}
 }
 

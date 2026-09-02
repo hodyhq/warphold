@@ -29,3 +29,8 @@ CREATE TABLE IF NOT EXISTS commands (
   id INTEGER PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES agents(id), kind TEXT NOT NULL,
   source TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, acked_at TEXT);
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS sessions (
+  id INTEGER PRIMARY KEY, token_hash BLOB NOT NULL UNIQUE,
+  admin_id INTEGER NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL, expires_at TEXT NOT NULL, revoked_at TEXT);
+CREATE INDEX IF NOT EXISTS sessions_admin ON sessions(admin_id);

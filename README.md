@@ -1,27 +1,54 @@
-Kopia
-=====
+<p align="center"><img src="icons/warphold.svg" width="96" alt="WarpHold"></p>
 
-![Kopia](icons/kopia.svg)
-[![Build Status](https://github.com/kopia/kopia/workflows/Build/badge.svg)](https://github.com/kopia/kopia/actions?query=workflow%3ABuild)
-[![GoDoc](https://godoc.org/github.com/kopia/kopia/repo?status.svg)](https://godoc.org/github.com/kopia/kopia/repo)
-[![Coverage Status](https://codecov.io/gh/kopia/kopia/branch/master/graph/badge.svg?token=CRK4RMRFSH)](https://codecov.io/gh/kopia/kopia)[![Go Report Card](https://goreportcard.com/badge/github.com/kopia/kopia)](https://goreportcard.com/report/github.com/kopia/kopia)
-[![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-v2.0%20adopted-ff69b4.svg)](CODE_OF_CONDUCT.md)
-[![Docker Pulls](https://img.shields.io/docker/pulls/kopia/kopia)](https://hub.docker.com/r/kopia/kopia/tags?page=1&ordering=name)
-[![Downloads](https://img.shields.io/github/downloads/kopia/kopia/total.svg)](https://github.com/kopia/kopia/releases)
-[![Gurubase](https://img.shields.io/badge/Gurubase-Ask%20Kopia%20Guru-006BFF)](https://gurubase.io/g/kopia)
+# WarpHold
 
-> _n._
->
-> 1. _[copy, replica](https://en.wikipedia.org/wiki/Replica) (Polish)_
-> 2. _[lance, spear](https://en.wikipedia.org/wiki/Kopia)_
-> 3. _[fast and secure backup tool](https://kopia.io)_
+**Backups that hold. For every machine you care about.**
 
+WarpHold is a fork of [Kopia](https://github.com/kopia/kopia) — same engine, same repository format, same client-side encryption — with a rebuilt UI and a **Fleet** mode: enroll machines, push them a backup policy, escrow their keys, and see at a glance whether every one of them is still backing up.
 
-Kopia is a fast and secure open-source backup/restore tool that allows you to create [encrypted](https://kopia.io/docs/features/#user-controlled-end-to-end-encryption) snapshots of your data and save the snapshots to [remote or cloud storage](https://kopia.io/docs/features/#save-snapshots-to-cloud-network-or-local-storage) of your choice, [to network-attached storage or server](https://kopia.io/docs/features/#save-snapshots-to-cloud-network-or-local-storage), or [locally on your machine](https://kopia.io/docs/features/#save-snapshots-to-cloud-network-or-local-storage). Kopia does not 'image' your whole machine. Rather, Kopia allows you to backup/restore any and all files/directories that you deem are important or critical.
+- **Single machine:** `warphold server start` gives you the WarpHold app for this computer.
+- **Fleet:** activate Fleet on one server, then enroll Linux laptops and servers with a one-line installer that downloads the agent binary from your Fleet server. Windows and macOS agents are planned.
+- **Standalone restore, always:** a recovery kit plus stock upstream `kopia` can restore any device with WarpHold completely offline. Fleet is a control plane, never a dependency of your data.
 
-Kopia has both [CLI (command-line interface)](https://kopia.io/docs/features/#both-command-line-and-graphical-user-interfaces) and [GUI (graphical user interface)](https://kopia.io/docs/features/#both-command-line-and-graphical-user-interfaces) versions, making it the perfect tool for both advanced and regular users. You can read more about Kopia's unique [features](https://kopia.io/docs/features/) -- which include [compression](https://kopia.io/docs/features/#compression), [deduplication](https://kopia.io/docs/features/#backup-files-and-directories-using-snapshots), [user-controlled end-to-end encryption](https://kopia.io/docs/features/#user-controlled-end-to-end-encryption), and [error correction](https://kopia.io/docs/features/#error-correction) -- to get a better understanding of how Kopia works.
+> WarpHold is not affiliated with the Kopia project. See [NOTICE](NOTICE). Upstream changes are merged regularly ([docs/superpowers/UPSTREAM.md](docs/superpowers/UPSTREAM.md)).
 
-When ready, head to the [installation](https://kopia.io/docs/installation/) page to download and install Kopia, and make sure to read the [Getting Started Guide](https://kopia.io/docs/getting-started/) for a step-by-step walkthrough of how to use Kopia.
+## Status
+
+Plan 1 (Fleet control plane + Linux agent) is complete and running; the WarpHold UI and tray are being built in Plan 2 (this repository's docs/superpowers/plans). Screenshots will follow the UI.
+
+## WarpHold Fleet quick start
+WarpHold adds a "Fleet" control plane and a device-side agent on top of Kopia. Activate a Fleet, start its server, and enroll a device:
+
+```bash
+# on the Fleet host
+export KOPIA_SERVER_CONTROL_PASSWORD="$(head -c 32 /dev/urandom | base64)"   # keep this secret
+export KOPIA_SERVER_PASSWORD="$(head -c 32 /dev/urandom | base64)"          # keep this secret too
+warphold --config-file /var/lib/warphold/repository.config fleet activate --email admin@example.com
+warphold --config-file /var/lib/warphold/repository.config server start \
+  --server-username admin --no-ui --no-grpc \
+  --address 127.0.0.1:51515
+
+# on the device being enrolled, with a token from the Fleet admin API/UI
+read -rs -p "Enrollment token: " WARPHOLD_ENROLL_TOKEN; echo
+export WARPHOLD_ENROLL_TOKEN
+sh -c "$(curl -fsSL https://<fleet-host>/enroll.sh)"
+```
+
+The token is read from a hidden prompt so it never appears in your shell history or process list. `sh -s -- --token <TOKEN>` still works, but it puts the token in the installer's argument list, where anyone who can run `ps` on that machine can read it while the install runs, and your shell records it in its history.
+
+Set `--server-username` and export `KOPIA_SERVER_PASSWORD` so Kopia's own server API requires a login, and **always export `KOPIA_SERVER_CONTROL_PASSWORD`** too (without it the control API is open to anyone who can reach the port). Both are the environment variables behind the `--server-password` and `--server-control-password` flags, and passing them that way instead is deliberate: command arguments are visible to every user on the host in `ps` output and are recorded in shell history, while the environment of another user's process is not readable. **Bind to `127.0.0.1`** unless a TLS reverse proxy (Traefik/Caddy/nginx) is terminating in front — binding `0.0.0.0` directly puts an unencrypted control plane on the LAN, and enrollment bearer tokens and the setup token would travel in the clear.
+
+`127.0.0.1:51515` is reachable only from the Fleet host itself, so it needs a reverse proxy **on that same host** terminating HTTPS and forwarding to it — otherwise no device can enroll. To run the proxy on a different machine, bind to the LAN address instead and firewall the port to the proxy alone; the hop from the proxy to Fleet is then unencrypted, so keep it on a trusted network.
+
+The installer downloads the binary from your Fleet server (`/dl/warphold-linux-<arch>`). A Fleet server running on Linux offers its own binary for its own architecture; for any other architecture, or a Fleet server running on macOS or Windows, drop a Linux build into `<state dir>/binaries/warphold-linux-<arch>`. It then enrolls the binary against the token and installs a `systemd --user` unit (`warphold agent install --scope user`) so the agent runs and polls automatically.
+
+**The Fleet admin can decrypt every enrolled device's backups.** Fleet holds the admin key for every target it provisions, so it can run maintenance and generate recovery kits on agents' behalf — for a family or personal fleet that's the point, but it means Fleet's admin passphrase is the one secret that must never leak. And the per-agent B2 *writer* key is not as harmless as "writer" suggests: Kopia's B2 delete is a file *hide*, which needs only write permission; hidden versions stay recoverable while Object Lock retention holds them, so Object Lock is the real backstop.
+
+### Operations notes
+- **Activation is one-shot.** If activation fails half-way (key file or DB present but unusable), make a copy of the whole state directory first (`cp -a <state dir> <state dir>.bak`), then delete `<state dir>/seal.key` and `<state dir>/fleet.db` before retrying. This is only safe when no device has been enrolled yet — after enrollment the key file protects real escrowed passwords. WarpHold refuses to overwrite an existing key file on purpose: that file unlocks every escrowed repository password.
+- **Electron desktop app (`app/`)** is upstream KopiaUI packaging and is not built or shipped by WarpHold; the WarpHold tray (`warphold agent tray`) will replace it on Linux.
+
+## About the Kopia engine
 
 Pick the Cloud Storage Provider You Want
 ---
@@ -67,35 +94,12 @@ Building Kopia
 ---
 See [Build Infrastructure](BUILD.md) for more information on building Kopia and working with the source code.
 
-WarpHold Fleet quick start
----
-WarpHold adds a "Fleet" control plane and a device-side agent on top of Kopia. Activate a Fleet, start its server, and enroll a device:
-
-```bash
-# on the Fleet host
-export KOPIA_SERVER_CONTROL_PASSWORD="$(head -c 32 /dev/urandom | base64)"   # keep this secret
-warphold --config-file /var/lib/warphold/repository.config fleet activate --email admin@example.com
-warphold --config-file /var/lib/warphold/repository.config server start \
-  --insecure --without-password --no-ui --no-grpc \
-  --address 127.0.0.1:51515 \
-  --server-control-password "$KOPIA_SERVER_CONTROL_PASSWORD"
-
-# on the device being enrolled, with a token from the Fleet admin API/UI
-curl -fsSL https://<fleet-host>/enroll.sh | sh -s -- --token <TOKEN>
-```
-
-`--without-password` leaves Kopia's own control API unauthenticated, so **always pass `--server-control-password`** (without it the control API is open to anyone who can reach the port) and **bind to `127.0.0.1`**, with a TLS reverse proxy (Traefik/Caddy/nginx) terminating in front. Binding `0.0.0.0` directly puts an unencrypted control plane on the LAN: enrollment bearer tokens and the setup token travel in the clear.
-
-**The installer does not download the binary in this version.** Put the `warphold` binary at `~/.local/bin/warphold` (or `/usr/local/bin/warphold` for `--scope system`) on the device first and `enroll.sh` will use it as-is; the download from `GET /dl/warphold-linux-<arch>` arrives in Plan 2, so without a preinstalled binary the script fails loudly instead of enrolling. With the binary in place the script enrolls it against the token and installs a `systemd --user` unit (`warphold agent install --scope user`) so the agent runs and polls automatically.
-
-**The Fleet admin can decrypt every enrolled device's backups.** Fleet holds the admin key for every target it provisions, so it can run maintenance and generate recovery kits on agents' behalf — for a family or personal fleet that's the point, but it means Fleet's admin passphrase is the one secret that must never leak. And the per-agent B2 *writer* key is not as harmless as "writer" suggests: Kopia's B2 backend implements blob deletion as `b2_hide_file`, which needs only `writeFiles`, so a compromised agent can hide every blob under its own prefix and make its repository look empty. Object Lock is what makes that recoverable — the retained versions are still there and can be un-hidden — not the key's permission set.
-
 Contribution Guidelines
 ---
 Kopia is open source. For more information see the [Contribution Guidelines](https://kopia.io/docs/contribution-guidelines/).
 
 Reporting Security Issues
 ---
-If you find a security issue you'd like to disclose privately, please contact `security@kopia.io`.
+Report security issues in WarpHold's own code - Fleet, the agent, the enrollment flow - privately to WarpHold's maintainers through [GitHub Security Advisories on `hodyhq/warphold`](https://github.com/hodyhq/warphold/security/advisories/new). Issues in the upstream Kopia engine belong upstream: follow [Kopia's contribution guidelines](https://kopia.io/docs/contribution-guidelines/), which direct security disclosures to `security@kopia.io`.
 
 [![Netlify Status](https://api.netlify.com/api/v1/badges/6b5c1fe4-a0da-4e7e-939b-ff1105251985/deploy-status)](https://app.netlify.com/sites/kopia/deploys)

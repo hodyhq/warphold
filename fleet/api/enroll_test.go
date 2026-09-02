@@ -66,11 +66,18 @@ func TestEnrollShIsServed(t *testing.T) {
 	require.NoError(t, err)
 	script := string(raw)
 	require.Contains(t, script, "warphold agent enroll")
-	require.Contains(t, script, `agent enroll --server "$SERVER" --token "$TOKEN"`)
-	// The script is static: the operator supplies the token as an argument
-	// (`sh -s -- --token <T>`), so no token material is ever in the body.
+	// The token reaches the binary through the environment, never its argv,
+	// so it is not visible in "ps" while the enroll runs.
+	require.Contains(t, script, `WARPHOLD_ENROLL_TOKEN="$TOKEN" "$BIN/warphold" agent enroll --server "$SERVER" --scope "$SCOPE"`)
+	require.NotContains(t, script, `--token "$TOKEN"`, "the token must not be passed in the child's argv")
+	// The script itself accepts the token from either the environment or the
+	// --token argument, the latter kept for compatibility.
+	require.Contains(t, script, `TOKEN="${WARPHOLD_ENROLL_TOKEN:-}"`)
+	require.Contains(t, script, "--token) TOKEN=")
+	// The script is static: the operator supplies the token at run time, so
+	// no token material is ever in the body.
 	require.NotContains(t, script, "wh_", "the served script must not carry an enrollment token")
-	require.Contains(t, script, "usage: sh -s -- --token <token>", "no token means the usage message, not a silent enroll")
+	require.Contains(t, script, "usage: WARPHOLD_ENROLL_TOKEN=", "no token means the usage message, not a silent enroll")
 }
 
 // TestEnrollShIgnoresQueryToken pins the fix for a token served back in the

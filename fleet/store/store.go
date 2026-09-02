@@ -19,6 +19,10 @@ var schema string
 // ErrNotFound is returned when a row does not exist.
 var ErrNotFound = errors.New("not found")
 
+// ErrLastAdmin is returned by DeleteAdmin when the row asked for is the only
+// admin left; removing it would leave the Fleet with no way in.
+var ErrLastAdmin = errors.New("cannot delete the last admin")
+
 // Store wraps the database.
 type Store struct{ db *sql.DB }
 

@@ -44,7 +44,7 @@ func (c *commandAgentRun) run(ctx context.Context) error {
 		return errors.Wrap(err, "repository password not found; re-enroll")
 	}
 
-	h, err := engine.StartHeadless(ctx, cfg, password, state.Dir(c.scope))
+	h, err := engine.StartHeadless(ctx, cfg, password, c.scope)
 	if err != nil {
 		return err
 	}

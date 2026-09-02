@@ -1,12 +1,62 @@
 package api
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestSessionTokenIsOpaqueAndHashed(t *testing.T) {
+	tok, hash, err := newSessionToken()
+	require.NoError(t, err)
+	require.True(t, strings.HasPrefix(tok, sessionPrefix))
+	require.Len(t, hash, 32)
+	require.Equal(t, hash, sessionTokenHash(tok))
+	require.NotContains(t, string(hash), tok, "the store never holds the token itself")
+
+	other, _, err := newSessionToken()
+	require.NoError(t, err)
+	require.NotEqual(t, tok, other)
+}
+
+func TestCSRFDoubleSubmit(t *testing.T) {
+	req := func(cookie, header string) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/", nil)
+		if cookie != "" {
+			r.AddCookie(&http.Cookie{Name: csrfCookie, Value: cookie})
+		}
+		if header != "" {
+			r.Header.Set(csrfHeader, header)
+		}
+		return r
+	}
+
+	require.True(t, csrfOK(req("tok", "tok")))
+	require.False(t, csrfOK(req("tok", "other")))
+	require.False(t, csrfOK(req("tok", "")), "cookie alone is what a cross-site form has")
+	require.False(t, csrfOK(req("", "tok")))
+	require.False(t, csrfOK(req("", "")), "two empty values must not compare equal")
+
+	// Safe methods pass through untouched; unsafe ones do not.
+	called := false
+	h := requireCSRF(func(http.ResponseWriter, *http.Request) { called = true })
+
+	rr := httptest.NewRecorder()
+	h(rr, httptest.NewRequest(http.MethodGet, "/", nil))
+	require.True(t, called)
+	require.Equal(t, 200, rr.Code)
+
+	called = false
+	rr = httptest.NewRecorder()
+	h(rr, req("tok", ""))
+	require.False(t, called)
+	require.Equal(t, http.StatusForbidden, rr.Code)
+}
 
 func TestPasswordHashVerify(t *testing.T) {
 	h, err := HashPassword("s3cret")
@@ -21,24 +71,6 @@ func TestDummyPWHashNeverCachesEmpty(t *testing.T) {
 	h := dummyPWHash()
 	require.NotEmpty(t, h)
 	require.False(t, VerifyPassword("x", h))
-}
-
-func TestSessionsIssueVerifyExpire(t *testing.T) {
-	now := time.Unix(1_800_000_000, 0)
-	s := newSessions([]byte("secret"), time.Hour)
-	s.now = func() time.Time { return now }
-	tok := s.issue(42)
-	id, ok := s.verify(tok)
-	require.True(t, ok)
-	require.EqualValues(t, 42, id)
-	_, ok = s.verify(tok + "x")
-	require.False(t, ok)
-	s.now = func() time.Time { return now.Add(2 * time.Hour) }
-	_, ok = s.verify(tok)
-	require.False(t, ok, "expired")
-	other := newSessions([]byte("other"), time.Hour)
-	_, ok = other.verify(tok)
-	require.False(t, ok, "different secret")
 }
 
 func TestLimiter(t *testing.T) {

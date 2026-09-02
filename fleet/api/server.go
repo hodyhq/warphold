@@ -59,9 +59,10 @@ type Server struct {
 	paths fleet.Paths
 	st    *store.Store
 	key   seal.Key
-	sess  *sessions
 	login *limiter
-	now   func() time.Time
+	// nowFn is the server clock, read through now() under mu so
+	// SetNowForTesting can move it between requests without racing handlers.
+	nowFn func() time.Time
 	b2    b2api.API
 	// closed is set by Close instead of nilling st: handlers read st through
 	// store() and would otherwise have to re-check for nil between every
@@ -77,7 +78,7 @@ type Server struct {
 
 // New creates a Server for stateDir; if Fleet was activated before, its state is loaded.
 func New(stateDir string) *Server {
-	s := &Server{paths: fleet.PathsFor(stateDir), login: newLimiter(loginMaxAttempts, loginWindow), now: time.Now, b2: b2api.New(nil)}
+	s := &Server{paths: fleet.PathsFor(stateDir), login: newLimiter(loginMaxAttempts, loginWindow), nowFn: time.Now, b2: b2api.New(nil)}
 	// A missing key file just means "never activated"; anything else (bad
 	// permissions, a corrupt DB) must be loud, because the server would
 	// otherwise report "not activated" and print the setup-token path while
@@ -135,15 +136,26 @@ func (s *Server) load() error {
 	if err != nil {
 		return err
 	}
-	secret, err := st.Setting(context.Background(), "session_secret")
-	if err != nil || secret == "" {
-		st.Close()
-		return errors.New("session secret missing")
-	}
 	s.mu.Lock()
-	s.key, s.st, s.sess, s.closed = key, st, newSessions([]byte(secret), sessionTTL), false
+	s.key, s.st, s.closed = key, st, false
 	s.mu.Unlock()
 	return nil
+}
+
+// now returns the server clock.
+func (s *Server) now() time.Time {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.nowFn()
+}
+
+// SetNowForTesting overrides the server clock, so a test can step past a
+// session TTL instead of sleeping for it.
+func (s *Server) SetNowForTesting(f func() time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nowFn = f
 }
 
 // Activated reports whether the store and key are loaded.
@@ -173,13 +185,6 @@ func (s *Server) store() *store.Store {
 	return s.st
 }
 
-// signer returns the session signer, or nil before activation.
-func (s *Server) signer() *sessions {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.sess
-}
-
 // sealKey returns the sealing key; the zero Key before activation.
 func (s *Server) sealKey() seal.Key {
 	s.mu.RLock()
@@ -203,6 +208,7 @@ func (s *Server) Activate(ctx context.Context, passphrase, email, password strin
 			return errors.New("fleet state exists but could not be loaded; refusing to overwrite seal.key - fix or remove " + s.paths.StateDir + " first")
 		}
 	}
+	email = normalizeEmail(email)
 	if len(passphrase) < 8 || len(password) < 8 || !strings.Contains(email, "@") {
 		return ErrInvalidActivation
 	}
@@ -245,14 +251,7 @@ func (s *Server) writeActivation(ctx context.Context, salt []byte, passphrase, e
 	if _, err := st.CreateAdmin(ctx, email, pwHash, s.now()); err != nil {
 		return err
 	}
-	secret := make([]byte, 32)
-	if _, err := io.ReadFull(rand.Reader, secret); err != nil {
-		return err
-	}
-	if err := errors.Join(
-		st.SetSetting(ctx, "seal_salt", hex.EncodeToString(salt)),
-		st.SetSetting(ctx, "session_secret", hex.EncodeToString(secret)),
-	); err != nil {
+	if err := st.SetSetting(ctx, "seal_salt", hex.EncodeToString(salt)); err != nil {
 		return err
 	}
 	if err := st.Close(); err != nil {
@@ -297,8 +296,9 @@ func (s *Server) Mount(m *mux.Router) {
 	m.HandleFunc("/api/v1/fleet/activate", s.handleActivate).Methods(http.MethodPost)
 	m.HandleFunc("/api/v1/fleet/session", s.handleLogin).Methods(http.MethodPost)
 	m.HandleFunc("/api/v1/fleet/session", s.handleLogout).Methods(http.MethodDelete)
-	s.mountAdmin(m) // Task 7
-	s.mountAgent(m) // Tasks 11, 14
+	s.mountAdmin(m)    // Task 7
+	s.mountAgent(m)    // Tasks 11, 14
+	s.mountDownload(m) // Task 2
 }
 
 func decode(r *http.Request, v any) error {
@@ -346,7 +346,7 @@ func (s *Server) handleActivate(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	a, err := s.store().AdminByEmail(r.Context(), in.Email)
+	a, err := s.store().AdminByEmail(r.Context(), normalizeEmail(in.Email))
 	if err != nil {
 		log.Printf("warphold fleet: activated but admin lookup failed: %v", err)
 		writeErr(w, http.StatusInternalServerError, "activation failed")
@@ -380,12 +380,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "malformed body")
 		return
 	}
-	st, sess := s.store(), s.signer()
-	if st == nil || sess == nil {
+	st := s.store()
+	if st == nil {
 		writeErr(w, http.StatusConflict, "fleet is not activated")
 		return
 	}
-	a, err := st.AdminByEmail(r.Context(), in.Email)
+	a, err := st.AdminByEmail(r.Context(), normalizeEmail(in.Email))
 	hash := dummyPWHash()
 	if err == nil {
 		hash = a.PWHash
@@ -398,12 +398,29 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "wrong email or password")
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: sess.issue(a.ID), Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: requestIsHTTPS(r), MaxAge: int(sessionTTL.Seconds())})
+	if err := s.startSession(r.Context(), w, r, a.ID); err != nil {
+		adminFailed(w, "create session", err)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) handleLogout(w http.ResponseWriter, _ *http.Request) {
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", HttpOnly: true, MaxAge: -1})
+// handleLogout revokes the session row behind the cookie, so the cookie is
+// dead server-side even if the client keeps a copy. Signing out is a state
+// change, so a live session must carry the CSRF token; a request with no live
+// session has nothing to revoke and just gets its cookies cleared.
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if sess := s.currentSession(r); sess != nil {
+		if !csrfOK(r) {
+			writeErr(w, http.StatusForbidden, "missing or invalid "+csrfHeader+" header")
+			return
+		}
+		if err := s.store().RevokeSession(r.Context(), sess.ID, s.now()); err != nil {
+			adminFailed(w, "revoke session", err)
+			return
+		}
+	}
+	clearAuthCookies(w, r)
 	w.WriteHeader(http.StatusNoContent)
 }
 

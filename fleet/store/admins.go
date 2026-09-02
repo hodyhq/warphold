@@ -53,3 +53,41 @@ func (s *Store) Admins(ctx context.Context) ([]Admin, error) {
 	}
 	return out, rows.Err()
 }
+
+// UpdateAdminPassword replaces one admin's password hash.
+func (s *Store) UpdateAdminPassword(ctx context.Context, id int64, pwHash string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE admins SET pw_hash=? WHERE id=?`, pwHash, id)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// DeleteAdmin removes an admin, and with it (ON DELETE CASCADE) every session
+// row of that admin, so a signed-in browser is locked out on its next request.
+// The count subquery makes "never delete the last admin" part of the statement
+// rather than a check the caller could race past.
+func (s *Store) DeleteAdmin(ctx context.Context, id int64) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM admins WHERE id=? AND (SELECT COUNT(*) FROM admins)>1`, id)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 1 {
+		return nil
+	}
+	if _, err := s.AdminByID(ctx, id); err != nil {
+		return err // ErrNotFound, or a real failure
+	}
+	return ErrLastAdmin
+}
