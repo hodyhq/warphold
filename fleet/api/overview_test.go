@@ -62,7 +62,7 @@ func TestOverviewCountsBucketsAndDays(t *testing.T) {
 	h := newHarness(t)
 	h.activateAndLogin()
 	gid := h.mkGroup(t)
-	_, greenBearer := enrollInto(t, h, gid, "hody-fw13")
+	_, greenBearer := enrollInto(t, h, gid, "laptop-1")
 	redID, redBearer := enrollInto(t, h, gid, "media-nuc")
 	_, quietBearer := enrollInto(t, h, gid, "never-ran")
 
@@ -116,7 +116,7 @@ func TestOverviewCountsBucketsAndDays(t *testing.T) {
 	devices := body["devices"].([]any)
 	require.Len(t, devices, 3)
 	first := devices[0].(map[string]any)
-	require.Equal(t, "hody-fw13", first["name"])
+	require.Equal(t, "laptop-1", first["name"])
 	require.Equal(t, "Laptops", first["group"])
 	require.Equal(t, "green", first["health"])
 	require.True(t, strings.HasSuffix(first["last"].(string), "ago"), "server formats the relative time")

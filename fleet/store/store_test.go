@@ -58,7 +58,7 @@ func TestGroupChainAndAgents(t *testing.T) {
 	gid, err := s.CreateGroup(ctx, &store.Group{Name: "Laptops", TargetID: tid, TemplateID: tpl, CreatedAt: now})
 	require.NoError(t, err)
 
-	require.NoError(t, s.CreateAgent(ctx, &store.Agent{ID: "ag_1", Name: "hody-fw13", Hostname: "fw13", OS: "linux", Arch: "amd64", Scope: "user", GroupID: gid, BearerHash: []byte("h"), SealedBundle: []byte("b"), EnrolledAt: now}))
+	require.NoError(t, s.CreateAgent(ctx, &store.Agent{ID: "ag_1", Name: "laptop-1", Hostname: "fw13", OS: "linux", Arch: "amd64", Scope: "user", GroupID: gid, BearerHash: []byte("h"), SealedBundle: []byte("b"), EnrolledAt: now}))
 	a, err := s.AgentByBearerHash(ctx, []byte("h"))
 	require.NoError(t, err)
 	require.Equal(t, "ag_1", a.ID)
