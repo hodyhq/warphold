@@ -169,6 +169,9 @@ type App struct {
 	logs         commandLogs
 	notification commandNotification
 
+	fleet commandFleet // warphold:
+	agent commandAgent // warphold:
+
 	// testability hooks
 	testonlyIgnoreMissingRequiredFeatures bool
 
@@ -316,6 +319,8 @@ func (c *App) setup(app *kingpin.Application) {
 	c.mount.setup(c, app)
 	c.maintenance.setup(c, app)
 	c.repository.setup(c, app)
+	c.fleet.setup(c, app) // warphold:
+	c.agent.setup(c, app) // warphold:
 }
 
 // commandParent is implemented by app and commands that can have sub-commands.
