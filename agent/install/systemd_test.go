@@ -126,3 +126,32 @@ func unitOf(t *testing.T, p install.Plan) string {
 
 	return ""
 }
+
+// TestSystemdWritesOnlyUnderInstallRoot pins that every file an install would
+// write stays inside its approved directory - the user's config directory, or
+// /etc/systemd/system - since the agent runs unattended and both roots are
+// derived from the environment.
+func TestSystemdWritesOnlyUnderInstallRoot(t *testing.T) {
+	cfg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+
+	p, err := install.Systemd("user", "/usr/local/bin/warphold")
+	require.NoError(t, err)
+	requireAllUnder(t, cfg, p)
+
+	s, err := install.Systemd("system", "/usr/local/bin/warphold")
+	require.NoError(t, err)
+	requireAllUnder(t, "/etc/systemd/system", s)
+}
+
+func requireAllUnder(t *testing.T, root string, p install.Plan) {
+	t.Helper()
+	require.NotEmpty(t, p.Files)
+
+	for path := range p.Files {
+		rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
+		require.NoError(t, err)
+		require.NotEqual(t, "..", rel)
+		require.False(t, strings.HasPrefix(rel, ".."+string(filepath.Separator)), "%q escapes %q", path, root)
+	}
+}

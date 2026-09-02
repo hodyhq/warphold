@@ -12,6 +12,13 @@ import (
 	"github.com/kopia/kopia/internal/ospath"
 )
 
+// unitName is the service file both scopes install; systemUnitDir is the only
+// directory a system-scope install may write to.
+const (
+	unitName      = "warphold-agent.service"
+	systemUnitDir = "/etc/systemd/system"
+)
+
 // Plan is what an install will do, so it can be printed (--dry-run) or applied.
 type Plan struct {
 	Files    map[string]string
@@ -53,10 +60,9 @@ func Systemd(scope, binary string) (Plan, error) {
 			return Plan{}, err
 		}
 
-		return Plan{
-			Files:    map[string]string{"/etc/systemd/system/warphold-agent.service": u},
-			Commands: [][]string{{"systemctl", "daemon-reload"}, {"systemctl", "enable", "--now", "warphold-agent"}},
-		}, nil
+		return planUnder(systemUnitDir, map[string]string{
+			filepath.Join(systemUnitDir, unitName): u,
+		}, [][]string{{"systemctl", "daemon-reload"}, {"systemctl", "enable", "--now", "warphold-agent"}})
 	}
 
 	cfg := os.Getenv("XDG_CONFIG_HOME")
@@ -92,10 +98,28 @@ func Systemd(scope, binary string) (Plan, error) {
 		return Plan{}, err
 	}
 
-	return Plan{
-		Files:    map[string]string{filepath.Join(cfg, "systemd", "user", "warphold-agent.service"): u},
-		Commands: [][]string{{"systemctl", "--user", "daemon-reload"}, {"systemctl", "--user", "enable", "--now", "warphold-agent"}, {"loginctl", "enable-linger"}},
-	}, nil
+	return planUnder(cfg, map[string]string{
+		filepath.Join(cfg, "systemd", "user", unitName): u,
+	}, [][]string{{"systemctl", "--user", "daemon-reload"}, {"systemctl", "--user", "enable", "--now", "warphold-agent"}, {"loginctl", "enable-linger"}})
+}
+
+// planUnder builds a plan after checking that every file it would write
+// resolves inside root - the user's config directory for a user-scope
+// install, /etc/systemd/system for a system-scope one. The agent runs
+// unattended, and both roots are partly derived from the environment
+// (XDG_CONFIG_HOME, HOME), so this is the single place that refuses to let an
+// install touch host configuration anywhere else.
+func planUnder(root string, files map[string]string, commands [][]string) (Plan, error) {
+	root = filepath.Clean(root)
+
+	for path := range files {
+		rel, err := filepath.Rel(root, filepath.Clean(path))
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return Plan{}, errors.Errorf("refusing to write %q outside the install directory %q", path, root)
+		}
+	}
+
+	return Plan{Files: files, Commands: commands}, nil
 }
 
 // unit renders the service file. A WARPHOLD_STATE_DIR set at install time is

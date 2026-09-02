@@ -25,15 +25,14 @@ export KOPIA_SERVER_CONTROL_PASSWORD="$(head -c 32 /dev/urandom | base64)"   # k
 export KOPIA_SERVER_PASSWORD="$(head -c 32 /dev/urandom | base64)"          # keep this secret too
 warphold --config-file /var/lib/warphold/repository.config fleet activate --email admin@example.com
 warphold --config-file /var/lib/warphold/repository.config server start \
-  --server-username admin --server-password "$KOPIA_SERVER_PASSWORD" --no-ui --no-grpc \
-  --address 127.0.0.1:51515 \
-  --server-control-password "$KOPIA_SERVER_CONTROL_PASSWORD"
+  --server-username admin --no-ui --no-grpc \
+  --address 127.0.0.1:51515
 
 # on the device being enrolled, with a token from the Fleet admin API/UI
 curl -fsSL https://<fleet-host>/enroll.sh | sh -s -- --token <TOKEN>
 ```
 
-Set `--server-username`/`--server-password` so Kopia's own server API requires a login, and **always pass `--server-control-password`** too (without it the control API is open to anyone who can reach the port). **Bind to `127.0.0.1`** unless a TLS reverse proxy (Traefik/Caddy/nginx) is terminating in front — binding `0.0.0.0` directly puts an unencrypted control plane on the LAN, and enrollment bearer tokens and the setup token would travel in the clear.
+Set `--server-username` and export `KOPIA_SERVER_PASSWORD` so Kopia's own server API requires a login, and **always export `KOPIA_SERVER_CONTROL_PASSWORD`** too (without it the control API is open to anyone who can reach the port). Both are the environment variables behind the `--server-password` and `--server-control-password` flags, and passing them that way instead is deliberate: command arguments are visible to every user on the host in `ps` output and are recorded in shell history, while the environment of another user's process is not readable. **Bind to `127.0.0.1`** unless a TLS reverse proxy (Traefik/Caddy/nginx) is terminating in front — binding `0.0.0.0` directly puts an unencrypted control plane on the LAN, and enrollment bearer tokens and the setup token would travel in the clear.
 
 `127.0.0.1:51515` is reachable only from the Fleet host itself, so it needs a reverse proxy **on that same host** terminating HTTPS and forwarding to it — otherwise no device can enroll. To run the proxy on a different machine, bind to the LAN address instead and firewall the port to the proxy alone; the hop from the proxy to Fleet is then unencrypted, so keep it on a trusted network.
 
@@ -97,6 +96,6 @@ Kopia is open source. For more information see the [Contribution Guidelines](htt
 
 Reporting Security Issues
 ---
-If you find a security issue you'd like to disclose privately, please contact `security@kopia.io`.
+Report security issues in WarpHold's own code - Fleet, the agent, the enrollment flow - privately to WarpHold's maintainers through [GitHub Security Advisories on `hodyhq/warphold`](https://github.com/hodyhq/warphold/security/advisories/new). Issues in the upstream Kopia engine belong upstream: follow [Kopia's SECURITY.md](https://github.com/kopia/kopia/blob/master/SECURITY.md), which directs disclosures to `security@kopia.io`.
 
 [![Netlify Status](https://api.netlify.com/api/v1/badges/6b5c1fe4-a0da-4e7e-939b-ff1105251985/deploy-status)](https://app.netlify.com/sites/kopia/deploys)
