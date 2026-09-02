@@ -244,7 +244,9 @@ func TestServerServesSPAWithoutUIAuth(t *testing.T) {
 
 	// the session the public index handed out is a working one: with it, the
 	// credentials the user can now type into the page are accepted.
-	csrfToken = regexp.MustCompile(`kopia-csrf-token" content="([a-f0-9]+)"`).FindStringSubmatch(index)[1]
+	csrfMatch := regexp.MustCompile(`kopia-csrf-token" content="([a-f0-9]+)"`).FindStringSubmatch(index)
+	require.Len(t, csrfMatch, 2, "public index must carry a CSRF token")
+	csrfToken = csrfMatch[1]
 
 	res, _ = get(t, "/api/v1/sources", true)
 	require.Equal(t, http.StatusOK, res.StatusCode)

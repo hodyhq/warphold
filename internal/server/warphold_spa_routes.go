@@ -104,6 +104,15 @@ func (s *Server) ServeSPAPublic(m *mux.Router, fsys http.FileSystem) {
 				return
 			}
 
+			// Only a file that exists gets the cache policy: an immutable header on
+			// a 404 would let a proxy pin the miss for a year.
+			f, err := fsys.Open(r.URL.Path)
+			if err != nil {
+				http.NotFound(w, r)
+				return
+			}
+			f.Close() //nolint:errcheck // read-only probe
+
 			w.Header().Set("Cache-Control", cacheControl)
 			files.ServeHTTP(w, r)
 		}
