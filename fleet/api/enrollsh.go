@@ -15,19 +15,17 @@ var enrollShSrc string
 
 var enrollSh = template.Must(template.New("enroll.sh").Parse(enrollShSrc))
 
-// enrollShToken and enrollShHost bound what handleEnrollSh will interpolate
-// into the shell script it serves: both values are attacker-controlled
-// (query string, Host header) and go straight into a POSIX-sh template, so
-// anything outside these shapes is rejected rather than escaped.
-var (
-	enrollShToken = regexp.MustCompile(`^wh_[A-Za-z0-9_-]{20,64}$`)
-	enrollShHost  = regexp.MustCompile(`^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+)(:[0-9]{1,5})?$`)
-)
+// enrollShHost bounds the one attacker-controlled value handleEnrollSh
+// interpolates into the shell script it serves: the Host header goes straight
+// into a POSIX-sh template, so anything outside this shape is rejected rather
+// than escaped. The enrollment token is deliberately NOT templated in — the
+// script is static and takes `--token` from its arguments, so the token never
+// travels in a URL or in an HTTP response body.
+var enrollShHost = regexp.MustCompile(`^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+)(:[0-9]{1,5})?$`)
 
 func (s *Server) handleEnrollSh(w http.ResponseWriter, r *http.Request) {
-	token := r.URL.Query().Get("token")
-	if !enrollShToken.MatchString(token) || !enrollShHost.MatchString(r.Host) {
-		writeErr(w, http.StatusBadRequest, "invalid token or host")
+	if !enrollShHost.MatchString(r.Host) {
+		writeErr(w, http.StatusBadRequest, "invalid host")
 		return
 	}
 	scheme := "http"
@@ -37,7 +35,6 @@ func (s *Server) handleEnrollSh(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
 	_ = enrollSh.Execute(w, map[string]string{
 		"Server":  scheme + "://" + r.Host,
-		"Token":   token,
 		"Version": repo.BuildVersion,
 	})
 }

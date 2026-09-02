@@ -102,10 +102,15 @@ func New(stateDir string) *Server {
 
 // ensureSetupToken returns the setup token in dir, creating it (32 random
 // bytes, hex-encoded, mode 0600 in a 0700 dir) if it does not already exist.
+// An existing file whose contents are empty or whitespace is regenerated: a
+// truncated write (or a hand-cleared file) would otherwise leave Fleet with an
+// empty setup token, which compares equal to an empty submission.
 func ensureSetupToken(dir string) (path, token string, err error) {
 	path = filepath.Join(dir, setupTokenFile)
 	if b, err := os.ReadFile(path); err == nil {
-		return path, strings.TrimSpace(string(b)), nil
+		if tok := strings.TrimSpace(string(b)); tok != "" {
+			return path, tok, nil
+		}
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return path, "", err

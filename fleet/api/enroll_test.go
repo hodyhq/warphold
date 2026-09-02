@@ -3,6 +3,7 @@ package api_test
 import (
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -56,7 +57,7 @@ const wellFormedEnrollToken = "wh_deadbeefdeadbeefdead1234"
 func TestEnrollShIsServed(t *testing.T) {
 	h := newHarness(t)
 	h.activateAndLogin()
-	res, err := http.Get(h.srv.URL + "/enroll.sh?token=" + wellFormedEnrollToken)
+	res, err := http.Get(h.srv.URL + "/enroll.sh")
 	require.NoError(t, err)
 	defer res.Body.Close()
 	require.Equal(t, 200, res.StatusCode)
@@ -65,26 +66,37 @@ func TestEnrollShIsServed(t *testing.T) {
 	require.NoError(t, err)
 	script := string(raw)
 	require.Contains(t, script, "warphold agent enroll")
-	require.Contains(t, script, `TOKEN="`+wellFormedEnrollToken+`"`)
 	require.Contains(t, script, `agent enroll --server "$SERVER" --token "$TOKEN"`)
-	// The script is run with `sh -s`, so anything it echoes lands in the
-	// operator's terminal and in whatever CI log captured it.
-	require.NotContains(t, script, "--token "+wellFormedEnrollToken, "the echoed command must not print the token")
+	// The script is static: the operator supplies the token as an argument
+	// (`sh -s -- --token <T>`), so no token material is ever in the body.
+	require.NotContains(t, script, "wh_", "the served script must not carry an enrollment token")
+	require.Contains(t, script, "usage: sh -s -- --token <token>", "no token means the usage message, not a silent enroll")
 }
 
-func TestEnrollShRejectsUnsafeToken(t *testing.T) {
+// TestEnrollShIgnoresQueryToken pins the fix for a token served back in the
+// response: `?token=` is not read at all any more, so a token in the URL
+// neither lands in the body (where `sh -s` echoes it into terminals and CI
+// logs) nor reaches the shell template as an injection vector.
+func TestEnrollShIgnoresQueryToken(t *testing.T) {
 	h := newHarness(t)
 	h.activateAndLogin()
-	res, err := http.Get(h.srv.URL + "/enroll.sh?token=wh_abc%22%3B%20echo%20pwned")
-	require.NoError(t, err)
-	defer res.Body.Close()
-	require.Equal(t, 400, res.StatusCode)
+
+	for _, tok := range []string{wellFormedEnrollToken, `wh_abc"; echo pwned`} {
+		res, err := http.Get(h.srv.URL + "/enroll.sh?token=" + url.QueryEscape(tok))
+		require.NoError(t, err)
+		raw, err := io.ReadAll(res.Body)
+		res.Body.Close()
+		require.NoError(t, err)
+		require.Equal(t, 200, res.StatusCode)
+		require.NotContains(t, string(raw), tok, "query token must not appear in the served script")
+		require.NotContains(t, string(raw), "pwned")
+	}
 }
 
 func TestEnrollShRejectsUnsafeHost(t *testing.T) {
 	h := newHarness(t)
 	h.activateAndLogin()
-	req, err := http.NewRequest(http.MethodGet, h.srv.URL+"/enroll.sh?token="+wellFormedEnrollToken, nil)
+	req, err := http.NewRequest(http.MethodGet, h.srv.URL+"/enroll.sh", nil)
 	require.NoError(t, err)
 	req.Host = "evil.example; echo pwned"
 	res, err := http.DefaultClient.Do(req)

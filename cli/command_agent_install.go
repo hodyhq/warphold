@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/kopia/kopia/agent/install"
 )
@@ -32,7 +33,10 @@ func (c *commandAgentInstall) run(ctx context.Context) error {
 		return err
 	}
 
-	p := install.Systemd(c.scope, bin)
+	p, err := install.Systemd(c.scope, bin)
+	if err != nil {
+		return err
+	}
 
 	if c.dryRun {
 		for path, content := range p.Files {
@@ -40,7 +44,7 @@ func (c *commandAgentInstall) run(ctx context.Context) error {
 		}
 
 		for _, cmd := range p.Commands {
-			c.out.printStdout("$ %s\n", cmd)
+			c.out.printStdout("$ %s\n", strings.Join(cmd, " "))
 		}
 
 		return nil

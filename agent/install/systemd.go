@@ -6,6 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/pkg/errors"
+
+	"github.com/kopia/kopia/internal/ospath"
 )
 
 // Plan is what an install will do, so it can be printed (--dry-run) or applied.
@@ -37,25 +41,37 @@ IOSchedulingClass=idle
 WantedBy=%s
 `
 
-// Systemd returns the plan for a scope.
-func Systemd(scope, binary string) Plan {
+// Systemd returns the plan for a scope. User scope resolves the unit
+// directory from XDG_CONFIG_HOME or the user's home directory; an
+// unresolvable or relative directory is an error rather than a unit written
+// somewhere relative to the current working directory, where systemd will
+// never find it.
+func Systemd(scope, binary string) (Plan, error) {
 	if scope == "system" {
 		return Plan{
 			Files:    map[string]string{"/etc/systemd/system/warphold-agent.service": unit(binary, "system", "multi-user.target")},
 			Commands: [][]string{{"systemctl", "daemon-reload"}, {"systemctl", "enable", "--now", "warphold-agent"}},
-		}
+		}, nil
 	}
 
 	cfg := os.Getenv("XDG_CONFIG_HOME")
 	if cfg == "" {
-		home, _ := os.UserHomeDir()
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return Plan{}, errors.Wrap(err, "unable to determine home directory for user-scope install")
+		}
+
 		cfg = filepath.Join(home, ".config")
+	}
+
+	if !ospath.IsAbs(cfg) {
+		return Plan{}, errors.Errorf("config directory %q is not absolute", cfg)
 	}
 
 	return Plan{
 		Files:    map[string]string{filepath.Join(cfg, "systemd", "user", "warphold-agent.service"): unit(binary, "user", "default.target")},
 		Commands: [][]string{{"systemctl", "--user", "daemon-reload"}, {"systemctl", "--user", "enable", "--now", "warphold-agent"}, {"loginctl", "enable-linger"}},
-	}
+	}, nil
 }
 
 func unit(binary, scope, wantedBy string) string {

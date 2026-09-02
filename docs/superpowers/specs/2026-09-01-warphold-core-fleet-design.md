@@ -137,7 +137,7 @@ Health is computed at read time: **green** when the newest successful snapshot i
 
 **Flow.**
 
-1. Admin: Devices → Add device → pick group → gets a token and a one-liner: `curl -fsSL https://<fleet>/enroll.sh | sh -s -- --token <T>`. Groups also offer a **preconfigured installer download** with the token baked in.
+1. Admin: Devices → Add device → pick group → gets a token and a one-liner: `curl -fsSL https://<fleet>/enroll.sh | sh -s -- --token <T>`. The token is passed as an argument, never in the URL: the served script is static, so the token stays out of the fleet's access log, out of any proxy in front of it, and out of the response body that `sh -s` echoes into terminals and CI logs. Groups also offer a **preconfigured installer download** with the token baked in.
 2. Script installs `warphold` to the user's local bin (or `/usr/local/bin` for system scope), writes the unit and autostart entry, and runs `warphold agent enroll --server <url> --token <T>`.
 3. `POST /api/v1/fleet/enroll {token, hostname, os, arch, version, scope}`. Fleet validates the token and, using the target's admin key:
    - creates a **writer** B2 application key scoped to the bucket and prefix `agents/<agent-id>/` with `writeFiles`, `listFiles`, `readFiles` and **no** `deleteFiles`;
@@ -149,7 +149,7 @@ Health is computed at read time: **green** when the newest successful snapshot i
 
 **Filesystem targets** exist so CI and homelab tests run without cloud credentials. Isolation there is a per-agent directory plus a per-agent repo password; the hosted-mode ACL model comes in sub-project 2.
 
-`GET /enroll.sh?token=<T>` validates both attacker-controlled inputs it interpolates into the served shell script before templating: `token` must match `^wh_[A-Za-z0-9_-]{20,64}$`, and the `Host` header (used to build the `Server` URL baked into the script) must match `^(\[ipv6\]|host)(:port)?$`. Either mismatch is a `400`, not a template-injection opportunity.
+`GET /enroll.sh` serves a **static** script: it reads no `token` query parameter, and the token reaches the script only as an argument (`sh -s -- --token <T>`), so no token is ever templated into the body or carried in a URL. Missing `--token` prints the usage message and exits `2`. The one attacker-controlled value still interpolated is the `Host` header (used to build the `Server` URL baked into the script); it must match `^(\[ipv6\]|host)(:port)?$` or the request is a `400`, not a template-injection opportunity.
 
 ## 6. Agent ↔ Fleet protocol
 
@@ -179,7 +179,7 @@ Admin endpoints under `/api/v1/fleet/`: `admins`, `targets`, `templates`, `group
 - Object Lock is required on B2 buckets and verified when a target is created; the target screen shows the verification state.
 - Per-agent keys carry `writeFiles`/`listFiles` but **not** `deleteFiles`; all prune/GC runs from Fleet with the admin key. This is *not* the same as "an agent key can never destroy data": Kopia's B2 backend implements `DeleteBlob` as `b2_hide_file` (`repo/blob/b2/b2_storage.go`), which B2 authorizes under `writeFiles`, so a compromised agent key can hide every blob under its own prefix and Kopia then sees an empty repository. Object Lock is the actual guarantee — the retained versions survive and recovery is un-hiding them — not the key's permission set.
 - Agents never hold the admin key and cannot list other agents' prefixes.
-- Enrollment tokens: hashed at rest, expiring, use-counted, revocable.
+- Enrollment tokens: hashed at rest, expiring, use-counted, revocable, and never carried in a URL — `/enroll.sh` is static and takes `--token` as a script argument.
 - Bearer tokens: 32 bytes CSPRNG, hashed at rest, rotated on re-enroll, revocable (revocation also deletes the B2 keys).
 - Repo passwords and B2 keys sealed at rest under the admin passphrase.
 - Fleet admin login rate-limited; sessions HTTP-only, SameSite=Strict.

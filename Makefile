@@ -183,7 +183,7 @@ build-current-os-noui:
 
 # warphold: dist paths follow the renamed goreleaser layout (dist/warphold_<os>_<arch>/warphold).
 # on macOS build and sign AMD64, ARM64 and Universal binary and *.tar.gz files for them
-dist/warphold_darwin_universal/warphold dist/warphold_darwin_amd64/warphold dist/warphold_darwin_arm6/warphold: $(all_go_sources)
+dist/warphold_darwin_universal/warphold dist/warphold_darwin_amd64/warphold dist/warphold_darwin_arm64/warphold: $(all_go_sources)
 	GOARCH=arm64 go build $(KOPIA_BUILD_FLAGS) -o dist/warphold_darwin_arm64/warphold -tags "$(KOPIA_BUILD_TAGS)" github.com/kopia/kopia
 	GOARCH=amd64 go build $(KOPIA_BUILD_FLAGS) -o dist/warphold_darwin_amd64/warphold -tags "$(KOPIA_BUILD_TAGS)" github.com/kopia/kopia
 	mkdir -p dist/warphold_darwin_universal

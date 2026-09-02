@@ -52,6 +52,15 @@ func enrollFailed(w http.ResponseWriter, status int, public, stage string, err e
 	writeErr(w, status, public)
 }
 
+// agentFailed answers an authenticated agent with a fixed message and records
+// the failing stage plus a safe error category in the server log. Store errors
+// quote SQL, file paths and column values; an agent is a device on someone's
+// LAN, not an operator, so it gets none of that.
+func agentFailed(w http.ResponseWriter, stage string, err error) {
+	log.Printf("warphold fleet: agent request failed at stage %s (%s)", stage, errCategory(err))
+	writeErr(w, http.StatusInternalServerError, "internal error")
+}
+
 func (s *Server) mountAgent(m *mux.Router) {
 	m.HandleFunc("/api/v1/fleet/enroll", s.requireActivated(s.handleEnroll)).Methods(http.MethodPost)
 	m.HandleFunc("/enroll.sh", s.requireActivated(s.handleEnrollSh)).Methods(http.MethodGet)
@@ -230,14 +239,18 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	doc, err := s.policyDocFor(ctx, a)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		agentFailed(w, "policy doc", err)
 		return
 	}
 	version := in.Heartbeat.Version
 	if version == "" {
 		version = a.Version
 	}
-	_ = s.store().TouchAgent(ctx, a.ID, s.now(), version, doc.ETag)
+	// in.ETag, not doc.ETag: the agent has not applied this poll's policy yet.
+	// The applied version is whatever the agent reports back on its next poll,
+	// so recording doc.ETag here would show the fleet a policy as applied that
+	// the agent may never receive (304, dropped connection, crash on apply).
+	_ = s.store().TouchAgent(ctx, a.ID, s.now(), version, in.ETag)
 	pending, _ := s.store().PendingCommands(ctx, a.ID)
 	for _, c := range pending {
 		doc.Commands = append(doc.Commands, poll.Command{ID: c.ID, Kind: c.Kind, Source: c.Source})
@@ -265,7 +278,7 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if _, err := s.store().AddReport(ctx, &store.Report{AgentID: a.ID, TaskID: in.TaskID, Kind: in.Kind, Source: in.Source, StartedAt: in.StartedAt, FinishedAt: in.FinishedAt, Status: in.Status, Bytes: in.Bytes, Files: in.Files, SnapshotID: in.SnapshotID, Stderr: in.Stderr}); err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		agentFailed(w, "add report", err)
 		return
 	}
 	if in.CommandID != 0 {

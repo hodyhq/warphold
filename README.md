@@ -81,7 +81,7 @@ warphold --config-file /var/lib/warphold/repository.config server start \
   --server-control-password "$KOPIA_SERVER_CONTROL_PASSWORD"
 
 # on the device being enrolled, with a token from the Fleet admin API/UI
-curl -fsSL https://<fleet-host>/enroll.sh?token=<TOKEN> | sh
+curl -fsSL https://<fleet-host>/enroll.sh | sh -s -- --token <TOKEN>
 ```
 
 `--without-password` leaves Kopia's own control API unauthenticated, so **always pass `--server-control-password`** (without it the control API is open to anyone who can reach the port) and **bind to `127.0.0.1`**, with a TLS reverse proxy (Traefik/Caddy/nginx) terminating in front. Binding `0.0.0.0` directly puts an unencrypted control plane on the LAN: enrollment bearer tokens and the setup token travel in the clear.
