@@ -23,6 +23,10 @@ var enrollSh = template.Must(template.New("enroll.sh").Parse(enrollShSrc))
 // travels in a URL or in an HTTP response body.
 var enrollShHost = regexp.MustCompile(`^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+)(:[0-9]{1,5})?$`)
 
+// handleEnrollSh serves a static installer. It is intentionally unauthenticated:
+// the script contains no secret (the enrollment token is supplied by the device
+// itself via `sh -s -- --token …`, never embedded here and never placed in a
+// URL), and a fresh, unenrolled device has no admin session to authenticate with.
 func (s *Server) handleEnrollSh(w http.ResponseWriter, r *http.Request) {
 	if !enrollShHost.MatchString(r.Host) {
 		writeErr(w, http.StatusBadRequest, "invalid host")

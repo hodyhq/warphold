@@ -149,7 +149,7 @@ Health is computed at read time: **green** when the newest successful snapshot i
 
 **Filesystem targets** exist so CI and homelab tests run without cloud credentials. Isolation there is a per-agent directory plus a per-agent repo password; the hosted-mode ACL model comes in sub-project 2.
 
-`GET /enroll.sh` serves a **static** script: it reads no `token` query parameter, and the token reaches the script only as an argument (`sh -s -- --token <T>`), so no token is ever templated into the body or carried in a URL. Missing `--token` prints the usage message and exits `2`. The one attacker-controlled value still interpolated is the `Host` header (used to build the `Server` URL baked into the script); it must match `^(\[ipv6\]|host)(:port)?$` or the request is a `400`, not a template-injection opportunity.
+`GET /enroll.sh` serves a **static** script: it reads no `token` query parameter, and the token reaches the script only as an argument (`sh -s -- --token <T>`), so no token is ever templated into the body or carried in a URL. Missing `--token` prints the usage message and exits `2`. The one attacker-controlled value still interpolated is the `Host` header (used to build the `Server` URL baked into the script); it must match `^(\[ipv6\]|host)(:port)?$` or the request is a `400`, not a template-injection opportunity. The endpoint is deliberately unauthenticated: the script carries no secret, and a device that hasn't enrolled yet has no admin session to present.
 
 ## 6. Agent ↔ Fleet protocol
 
