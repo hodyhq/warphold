@@ -118,11 +118,13 @@ func TestSystemdRejectsInjectableStateDir(t *testing.T) {
 
 func unitOf(t *testing.T, p install.Plan) string {
 	t.Helper()
-	require.Len(t, p.Files, 1)
-
-	for _, content := range p.Files {
-		return content
+	for path, content := range p.Files {
+		if strings.HasSuffix(path, ".service") {
+			return content
+		}
 	}
+
+	t.Fatal("plan contains no unit file")
 
 	return ""
 }

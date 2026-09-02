@@ -65,18 +65,48 @@ func Systemd(scope, binary string) (Plan, error) {
 		}, [][]string{{"systemctl", "daemon-reload"}, {"systemctl", "enable", "--now", "warphold-agent"}})
 	}
 
+	cfg, err := userConfigDir()
+	if err != nil {
+		return Plan{}, err
+	}
+
+	u, err := unit(binary, "user", "default.target")
+	if err != nil {
+		return Plan{}, err
+	}
+
+	// The tray is a login-session program, not a service: it needs the
+	// user's D-Bus session bus and their panel, so it autostarts with the
+	// desktop rather than with systemd.
+	desktop, err := Autostart(binary)
+	if err != nil {
+		return Plan{}, err
+	}
+
+	return planUnder(cfg, map[string]string{
+		filepath.Join(cfg, "systemd", "user", unitName): u,
+		AutostartPath(cfg): desktop,
+	}, [][]string{{"systemctl", "--user", "daemon-reload"}, {"systemctl", "--user", "enable", "--now", "warphold-agent"}, {"loginctl", "enable-linger"}})
+}
+
+// userConfigDir resolves the user's config directory for a user-scope
+// install: XDG_CONFIG_HOME when set, otherwise ~/.config. An unresolvable or
+// relative directory is an error rather than a unit written somewhere
+// relative to the current working directory, where systemd will never find
+// it.
+func userConfigDir() (string, error) {
 	cfg := os.Getenv("XDG_CONFIG_HOME")
 	if cfg == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return Plan{}, errors.Wrap(err, "unable to determine home directory for user-scope install")
+			return "", errors.Wrap(err, "unable to determine home directory for user-scope install")
 		}
 
 		cfg = filepath.Join(home, ".config")
 	}
 
 	if !ospath.IsAbs(cfg) {
-		return Plan{}, errors.Errorf("config directory %q is not absolute", cfg)
+		return "", errors.Errorf("config directory %q is not absolute", cfg)
 	}
 
 	// XDG_CONFIG_HOME is trusted to be absolute but not to be free of "..": a
@@ -87,20 +117,11 @@ func Systemd(scope, binary string) (Plan, error) {
 	// is harmless and normalizing it is the whole job of Clean.
 	for _, e := range strings.Split(filepath.ToSlash(cfg), "/") {
 		if e == ".." {
-			return Plan{}, errors.Errorf("config directory %q must not contain \"..\"", cfg)
+			return "", errors.Errorf("config directory %q must not contain \"..\"", cfg)
 		}
 	}
 
-	cfg = filepath.Clean(cfg)
-
-	u, err := unit(binary, "user", "default.target")
-	if err != nil {
-		return Plan{}, err
-	}
-
-	return planUnder(cfg, map[string]string{
-		filepath.Join(cfg, "systemd", "user", unitName): u,
-	}, [][]string{{"systemctl", "--user", "daemon-reload"}, {"systemctl", "--user", "enable", "--now", "warphold-agent"}, {"loginctl", "enable-linger"}})
+	return filepath.Clean(cfg), nil
 }
 
 // planUnder builds a plan after checking that every file it would write
