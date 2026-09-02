@@ -29,8 +29,10 @@ warphold --config-file /var/lib/warphold/repository.config server start \
   --address 127.0.0.1:51515
 
 # on the device being enrolled, with a token from the Fleet admin API/UI
-curl -fsSL https://<fleet-host>/enroll.sh | sh -s -- --token <TOKEN>
+WARPHOLD_ENROLL_TOKEN=<TOKEN> sh -c "$(curl -fsSL https://<fleet-host>/enroll.sh)"
 ```
+
+`sh -s -- --token <TOKEN>` still works, but it puts the token in the installer's argument list, where anyone who can run `ps` on that machine can read it while the install runs, and your shell records it in its history. The environment form keeps it out of both, and the installer passes it to `warphold agent enroll` the same way.
 
 Set `--server-username` and export `KOPIA_SERVER_PASSWORD` so Kopia's own server API requires a login, and **always export `KOPIA_SERVER_CONTROL_PASSWORD`** too (without it the control API is open to anyone who can reach the port). Both are the environment variables behind the `--server-password` and `--server-control-password` flags, and passing them that way instead is deliberate: command arguments are visible to every user on the host in `ps` output and are recorded in shell history, while the environment of another user's process is not readable. **Bind to `127.0.0.1`** unless a TLS reverse proxy (Traefik/Caddy/nginx) is terminating in front — binding `0.0.0.0` directly puts an unencrypted control plane on the LAN, and enrollment bearer tokens and the setup token would travel in the clear.
 

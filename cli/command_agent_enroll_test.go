@@ -51,3 +51,41 @@ func TestAgentEnrollWritesStateAndConnectsRepo(t *testing.T) {
 	raw, _ := json.Marshal(cfg)
 	require.NotContains(t, string(raw), "connect_token")
 }
+
+// TestAgentEnrollTakesTokenFromEnvironment pins that the enrollment token can
+// be supplied without ever appearing in argv, where "ps" and shell history
+// would expose it. It also pins that --token stays Required(): kingpin's
+// needsValue() treats an envar value as provided, so omitting the flag is only
+// an error when the variable is unset too.
+func TestAgentEnrollTakesTokenFromEnvironment(t *testing.T) {
+	url, tok := fleetForTest(t)
+	t.Setenv("WARPHOLD_STATE_DIR", t.TempDir())
+	runner := testenv.NewInProcRunner(t)
+	e := testenv.NewCLITest(t, nil, runner)
+
+	// The runner prefixes the name, matching App.EnvName in tests.
+	e.Environment["WARPHOLD_ENROLL_TOKEN"] = tok
+	e.RunAndExpectSuccess(t, "agent", "enroll", "--server", url, "--scope", "user")
+
+	cfg, err := state.Load("user")
+	require.NoError(t, err)
+	require.Equal(t, url, cfg.Server)
+	require.NotEmpty(t, cfg.Bearer)
+}
+
+func TestAgentEnrollRequiresATokenFromSomewhere(t *testing.T) {
+	url, _ := fleetForTest(t)
+	t.Setenv("WARPHOLD_STATE_DIR", t.TempDir())
+	runner := testenv.NewInProcRunner(t)
+	e := testenv.NewCLITest(t, nil, runner)
+
+	// e.Environment carries no token, and the runner gives each CLI run its
+	// own generated name prefix, so nothing in the ambient environment can
+	// satisfy the flag here.
+	require.NotContains(t, e.Environment, "WARPHOLD_ENROLL_TOKEN")
+
+	// e.Run, not RunAndExpectFailure: kingpin reports a missing required flag
+	// through the returned error, which RunAndExpectFailure discards.
+	_, _, err := e.Run(t, true, "agent", "enroll", "--server", url, "--scope", "user")
+	require.ErrorContains(t, err, "--token", "the failure must be the missing token, not something else")
+}
