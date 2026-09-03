@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>WarpHold recovery kit &mdash; {{.DeviceName}}</title>
+<style>
+/* Every style is inline and every font is a generic family: this page must
+   render and print identically on a machine with no network. */
+* { box-sizing: border-box; }
+body { font-family: Georgia, "Times New Roman", serif; color: #111; background: #fff;
+       margin: 0; padding: 24px; line-height: 1.45; font-size: 12pt; }
+main { max-width: 46em; margin: 0 auto; }
+h1 { font-size: 20pt; margin: 0 0 2px; }
+h2 { font-size: 12pt; margin: 0 0 6px; text-transform: uppercase; letter-spacing: .08em; }
+p { margin: 0 0 10px; }
+.sub { margin: 0 0 18px; color: #444; font-size: 10pt; }
+.facts { width: 100%; border-collapse: collapse; margin: 0 0 6px; font-size: 10.5pt; }
+.facts th { text-align: left; width: 11em; font-weight: normal; color: #444; padding: 3px 8px 3px 0; vertical-align: top; }
+.facts td { padding: 3px 0; font-family: "DejaVu Sans Mono", Consolas, monospace; word-break: break-all; }
+.box { border: 1.5pt solid #111; padding: 12px 14px; margin: 0 0 16px; page-break-inside: avoid; }
+.secret { font-family: "DejaVu Sans Mono", Consolas, monospace; font-size: 13pt;
+          word-break: break-all; margin: 0; padding: 8px 10px; border: 1pt dashed #555; background: #f6f6f6; }
+pre { font-family: "DejaVu Sans Mono", Consolas, monospace; font-size: 9.5pt; white-space: pre-wrap;
+      word-break: break-all; margin: 0 0 8px; padding: 8px 10px; background: #f6f6f6; border: 1pt solid #ccc; }
+.seal { border: 2pt solid #111; padding: 12px 14px; margin: 0 0 16px; font-weight: bold; page-break-inside: avoid; }
+.ack { border-top: 1pt solid #111; margin-top: 22px; padding-top: 10px; font-size: 10pt; color: #333; }
+.ack .line { display: inline-block; border-bottom: 1pt solid #111; width: 16em; margin: 0 1.5em 0 .4em; }
+@media print { body { padding: 0; } .box, .seal { page-break-inside: avoid; } }
+</style>
+</head>
+<body>
+<main>
+<h1>WarpHold recovery kit</h1>
+<p class="sub">{{.DeviceName}} &middot; generated {{stamp .Generated}} &middot; keep this page offline</p>
+
+<div class="seal">
+This page is the only copy of these secrets. WarpHold does not store the repository
+password anywhere it can be read back, and no one at WarpHold can recover it for you.
+Print it, store it somewhere physically safe, and shred any extra copies.
+</div>
+
+<div class="box">
+<h2>What to do first</h2>
+<p>Install upstream Kopia on any machine, run the three commands below in order, and
+your backups are back &mdash; WarpHold does not need to exist for this to work.</p>
+</div>
+
+<div class="box">
+<h2>Device and repository</h2>
+<table class="facts">
+<tr><th>Device</th><td>{{.DeviceName}}</td></tr>
+<tr><th>Device ID</th><td>{{.DeviceID}}</td></tr>
+<tr><th>Storage</th><td>{{.TargetKind}}</td></tr>
+{{if .Endpoint}}<tr><th>Endpoint</th><td>{{.Endpoint}}</td></tr>{{end}}
+{{if .Bucket}}<tr><th>Bucket</th><td>{{.Bucket}}</td></tr>{{end}}
+{{if .Region}}<tr><th>Region</th><td>{{.Region}}</td></tr>{{end}}
+{{if .Prefix}}<tr><th>Prefix</th><td>{{.Prefix}}</td></tr>{{end}}
+{{if .Path}}<tr><th>Path</th><td>{{.Path}}</td></tr>{{end}}
+{{if .ReadKeyID}}<tr><th>Read key ID</th><td>{{.ReadKeyID}}</td></tr>{{end}}
+{{if .ReadKey}}<tr><th>Read key</th><td>{{.ReadKey}}</td></tr>{{end}}
+</table>
+{{if .ReadKeyID}}<p class="sub">These read credentials can only read this device's backups. They cannot
+write to them, delete them, or reach any other device.</p>{{end}}
+</div>
+
+<div class="box">
+<h2>Repository password</h2>
+<p class="sub">Kopia asks for this when you run the connect command below. Type it exactly.</p>
+<p class="secret">{{.RepoPassword}}</p>
+</div>
+
+<div class="box">
+<h2>Commands</h2>
+{{if .Note}}<p class="sub">{{.Note}}</p>{{end}}
+{{range .Commands}}<pre>{{.}}</pre>
+{{end}}
+<p class="sub">Replace &lt;snapshot-id&gt; with an id from <em>kopia snapshot list</em>; append a
+sub-path to it (id/subdir/file) to restore just part of a snapshot.</p>
+</div>
+
+<div class="ack">
+Received and stored by <span class="line"></span> on <span class="line"></span>
+</div>
+</main>
+</body>
+</html>
