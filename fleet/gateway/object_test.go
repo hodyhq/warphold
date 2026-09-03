@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/require"
 
@@ -40,12 +41,18 @@ var malformedKeys = []string{
 	"abc123/x\x01y", "abc123/\t", "abc123/" + strings.Repeat("a", 1100),
 	strings.Repeat("../", 40) + "etc/passwd",
 	`\\server\share\x`, "abc123/x/../../../y",
+	// the key space is flat: <device-id>/<blob-name> and nothing deeper
+	"abc123", "abc123/a/b", "abc123/sub/x/y",
+	// .tmp is where partial writes are staged, so no device may own it
+	".tmp/x", ".tmp/",
+	// invalid UTF-8, an overlong encoding of '/', and C1 controls
+	"abc123/\xff", "abc123/x\xc0\xafy", "abc123/x\u0085y", "abc123/x\u009fy",
 }
 
 // hostileKeys adds the keys that are well formed but belong to somebody else,
 // which only NormalizeKey (which knows the prefix) can reject.
 var hostileKeys = append(append([]string{}, malformedKeys...),
-	"other/x", "abc1234/x", "abc12/x", "abc123", "ABC123/x", "c:/abc123/x",
+	"other/x", "abc1234/x", "abc12/x", "ABC123/x", "c:/abc123/x",
 	"..%2f..%2fetc/passwd")
 
 func TestNormalizeKeyRejectsHostileKeys(t *testing.T) {
@@ -72,6 +79,8 @@ func FuzzNormalizeKey(f *testing.F) {
 	for _, k := range []string{
 		"abc123/%2e%2e/%2e%2e/etc/passwd", "abc123/..a", "abc123/a..b", "abc123/...",
 		"abc123/p1234abcd", "abc123/kopia.repository", "abc123/x/y/z",
+		"abc123/", "abc123", "abc123/" + strings.Repeat("s", 300), "abc123/.tmp",
+		"abc123/\xc0\xaf", "abc123/\x80", "abc123/\u0085", ".tmp/x", "abc123/a/b",
 	} {
 		f.Add(k)
 	}
@@ -88,6 +97,8 @@ func FuzzNormalizeKey(f *testing.F) {
 
 		require.Equal(t, key, got, "NormalizeKey rewrote the key")
 		require.True(t, strings.HasPrefix(got, p), "accepted key outside the prefix")
+		require.True(t, utf8.ValidString(got), "accepted key is not valid UTF-8")
+		require.Equal(t, 1, strings.Count(got, "/"), "accepted key is not <device-id>/<blob-name>")
 		require.NotContains(t, got, `\`)
 		require.LessOrEqual(t, len(got), 1024)
 
@@ -112,10 +123,17 @@ func TestNormalizeKeyRejectsUnterminatedPrefix(t *testing.T) {
 }
 
 func TestNormalizeKeyEmptyPrefixStillValidates(t *testing.T) {
-	got, err := gateway.NormalizeKey("kopia.repository", "")
+	got, err := gateway.NormalizeKey("dev1/kopia.repository", "")
 	require.NoError(t, err)
-	require.Equal(t, "kopia.repository", got)
+	require.Equal(t, "dev1/kopia.repository", got)
 
-	_, err = gateway.NormalizeKey("../x", "")
-	require.Error(t, err)
+	for _, bad := range []string{"../x", "kopia.repository", "dev1/a/b", ".tmp/x"} {
+		_, err := gateway.NormalizeKey(bad, "")
+		require.ErrorIsf(t, err, gateway.ErrBadKey, "NormalizeKey(%q, \"\")", bad)
+	}
+}
+
+func TestNormalizeKeyRejectsReservedPrefix(t *testing.T) {
+	_, err := gateway.NormalizeKey(".tmp/x", ".tmp/")
+	require.ErrorIs(t, err, gateway.ErrBadKey)
 }
