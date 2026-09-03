@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"sync"
@@ -76,8 +75,8 @@ func (s *Server) gateway() *gateway.Gateway {
 	// this same map under the same lock; if a swap could happen mid-request the
 	// handle would be closed out from under it.
 	for id, objs := range s.gwDeps.stores {
-		if c, ok := objs.(io.Closer); ok {
-			if err := c.Close(); err != nil {
+		if c, ok := objs.(interface{ Close(context.Context) error }); ok {
+			if err := c.Close(context.Background()); err != nil {
 				log.Printf("warphold fleet: closing the hosted store of target %d: %v", id, err)
 			}
 		}
