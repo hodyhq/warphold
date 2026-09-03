@@ -45,8 +45,14 @@ type interval struct {
 // intervals: the setting holds seconds. The floor keeps a fat-fingered "1" from
 // turning an hourly mirror into a busy loop against the provider.
 var intervals = map[string]interval{
-	"mirror": {setting: "mirror_interval", def: time.Hour, min: 5 * time.Minute},
+	"mirror":       {setting: "mirror_interval", def: time.Hour, min: 5 * time.Minute},
+	"verify":       {setting: "verify_interval", def: 7 * day, min: time.Hour},
+	"test-restore": {setting: "test_restore_interval", def: 30 * day, min: time.Hour},
+	"maintenance":  {setting: "maintenance_interval", def: day, min: time.Hour},
+	"reap":         {setting: "reap_interval", def: day, min: time.Hour},
 }
+
+const day = 24 * time.Hour
 
 // Scheduler runs due jobs, one at a time.
 //

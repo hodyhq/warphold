@@ -171,7 +171,7 @@ func (s *Server) startJobs() {
 		return
 	}
 	old := s.sched
-	s.sched = jobs.NewScheduler(s.st, map[string]jobs.Runner{"mirror": jobs.Mirror(s.st, s.key)}, jobs.DefaultTick)
+	s.sched = jobs.NewScheduler(s.st, jobs.Runners(s.st, s.key), jobs.DefaultTick)
 	s.sched.Start(context.Background())
 	if old != nil {
 		// In a goroutine: Stop waits for the running job, which must not

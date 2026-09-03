@@ -1,17 +1,20 @@
 package cli_test
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/kopia/kopia/fleet"
+	"github.com/kopia/kopia/fleet/store"
 	"github.com/kopia/kopia/internal/apiclient"
 	"github.com/kopia/kopia/internal/testutil"
 	"github.com/kopia/kopia/tests/testenv"
@@ -257,4 +260,42 @@ func TestServerServesSPAWithoutUIAuth(t *testing.T) {
 		res, _ := get(t, p, false)
 		require.Equal(t, http.StatusUnauthorized, res.StatusCode, p)
 	}
+}
+
+// TestFleetJobsRunQueuesARow pins the CLI half of the jobs surface: the
+// command writes a pending row the Fleet server's scheduler will claim, and
+// refuses to invent a fleet database for a WarpHold that has none.
+func TestFleetJobsRunQueuesARow(t *testing.T) {
+	runner := testenv.NewInProcRunner(t)
+	e := testenv.NewCLITest(t, nil, runner)
+
+	configFile := filepath.Join(e.ConfigDir, ".kopia.config")
+	stateDir := fleet.StateDirFor(configFile)
+
+	// Before activation there is no fleet, and no database is created either.
+	e.RunAndExpectFailure(t, "fleet", "jobs", "run", "--kind", "verify")
+	require.NoFileExists(t, filepath.Join(stateDir, "fleet.db"))
+
+	e.RunAndExpectSuccess(t, "fleet", "activate",
+		"--email", "hody@hody.dev",
+		"--admin-password", "pw12345678",
+		"--passphrase", "seal-me-please")
+
+	out := e.RunAndExpectSuccess(t, "fleet", "jobs", "run", "--kind", "test-restore")
+	require.Contains(t, strings.Join(out, "\n"), "Queued test-restore job")
+
+	e.RunAndExpectFailure(t, "fleet", "jobs", "run", "--kind", "nonesuch")
+	e.RunAndExpectFailure(t, "fleet", "jobs", "run", "--kind", "verify", "--agent", "ag_nope")
+
+	st, err := store.Open(fleet.PathsFor(stateDir).DB)
+	require.NoError(t, err)
+
+	defer st.Close() //nolint:errcheck // test cleanup
+
+	js, err := st.RecentJobs(context.Background(), "", 50)
+	require.NoError(t, err)
+	require.Len(t, js, 1, "only the accepted kind was queued")
+	require.Equal(t, "test-restore", js[0].Kind)
+	require.Equal(t, "pending", js[0].Status)
+	require.Empty(t, js[0].AgentID)
 }

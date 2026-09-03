@@ -15,6 +15,7 @@ import (
 // commandFleet groups the Fleet control-plane commands.
 type commandFleet struct {
 	activate commandFleetActivate
+	jobs     commandFleetJobs
 }
 
 // registerFleetHandlersOnce guards RegisterServerHandlers: the in-process
@@ -26,6 +27,7 @@ var registerFleetHandlersOnce sync.Once
 func (c *commandFleet) setup(svc advancedAppServices, parent commandParent) {
 	cmd := parent.Command("fleet", "WarpHold Fleet: manage enrolled machines.")
 	c.activate.setup(svc, cmd)
+	c.jobs.setup(svc, cmd)
 
 	registerFleetHandlersOnce.Do(func() {
 		RegisterServerHandlers(func(srv *server.Server, m *mux.Router, configFile string) {

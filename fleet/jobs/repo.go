@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -278,3 +279,40 @@ func perAgent(st *store.Store, k seal.Key, verb string, readOnly bool, fn func(c
 // deviceDeadline is how long one device gets inside a fleet-wide sweep. The
 // scheduler's per-job timeout still bounds the whole run.
 const deviceDeadline = 30 * time.Minute
+
+// runnerFor is every job kind the Fleet server runs. It is the one list:
+// Runners builds them, HasKind validates a request against it.
+var runnerFor = map[string]func(*store.Store, seal.Key) Runner{
+	"mirror":       Mirror,
+	"verify":       Verify,
+	"test-restore": TestRestore,
+	"maintenance":  Maintenance,
+	"reap":         Reap,
+}
+
+// Runners is every runner, keyed by kind. The scheduler enqueues the
+// interval-driven kinds itself (see intervals); the jobs API can enqueue any
+// of them, for one agent or fleet-wide, on demand.
+func Runners(st *store.Store, k seal.Key) map[string]Runner {
+	out := make(map[string]Runner, len(runnerFor))
+	for kind, make := range runnerFor {
+		out[kind] = make(st, k)
+	}
+
+	return out
+}
+
+// HasKind reports whether kind is a job this Fleet knows how to run.
+func HasKind(kind string) bool { _, ok := runnerFor[kind]; return ok }
+
+// KindList is every kind, sorted - the API uses it to say what it accepts.
+func KindList() []string {
+	out := make([]string, 0, len(runnerFor))
+	for kind := range runnerFor {
+		out = append(out, kind)
+	}
+
+	sort.Strings(out)
+
+	return out
+}
