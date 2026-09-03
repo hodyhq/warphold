@@ -278,7 +278,10 @@ func ProbeConditionalPut(ctx context.Context, ci blob.ConnectionInfo, prefix str
 	defer cli.RemoveObject(context.WithoutCancel(ctx), opt.BucketName, name, minio.RemoveObjectOptions{}) //nolint:errcheck // best-effort cleanup
 
 	if _, err := cli.PutObject(ctx, opt.BucketName, name, strings.NewReader("warphold"), 8, condPut()); err != nil {
-		if minio.ToErrorResponse(err).StatusCode == http.StatusNotImplemented {
+		// The status alone is not enough: a proxy or load balancer in front of
+		// the bucket can answer a bare 501 for its own reasons, and that says
+		// nothing about the provider. Only S3's own NotImplemented code does.
+		if e := minio.ToErrorResponse(err); e.StatusCode == http.StatusNotImplemented && e.Code == "NotImplemented" {
 			return ErrCondPutNotImplemented
 		}
 

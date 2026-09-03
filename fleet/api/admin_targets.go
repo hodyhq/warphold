@@ -269,6 +269,12 @@ func (s *Server) handleTargetMirrorSet(w http.ResponseWriter, r *http.Request) {
 	}
 	t, err := s.store().Target(r.Context(), id)
 	if err != nil {
+		// A store that failed is not a target that is absent: answering 404
+		// would tell the admin to go and look for a row that is really there.
+		if !errors.Is(err, store.ErrNotFound) {
+			adminFailed(w, "read target", err)
+			return
+		}
 		writeErr(w, http.StatusNotFound, "target not found")
 		return
 	}

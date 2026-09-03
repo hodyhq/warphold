@@ -203,13 +203,16 @@ treats them as one:
   splits by shape:
   - **Mirror on a hosted disk target: allowed.** Object Lock is still required. The
     conditional write is not, because the Fleet server is the mirror bucket's only writer
-    and `fleet/jobs/mirror.go` lists the mirror before it uploads and never overwrites — so
-    `If-None-Match` buys nothing there that Object Lock does not already give. The answer is
+    and `fleet/jobs/mirror.go` lists the mirror before it uploads and skips what is already
+    there; a superseded version is retained by Object Lock — so `If-None-Match` buys nothing
+    there that Object Lock does not already give. The answer is
     *recorded*, not required: `targets.mirror_conditional_put` (NULL = never probed) and
     `mirror_conditional_put` on the API's target row and 201 body, so the Targets screen can
     say "offsite: locked, no conditional writes" rather than imply the stronger guarantee.
     The mirror job then uploads with a plain PUT on such a provider, since a conditional one
-    would 501 on the header itself.
+    would 501 on the header itself. A mirror configured before that column existed reads
+    NULL, which keeps the conditional write; re-PUTting `/api/v1/fleet/targets/{id}/mirror`
+    re-verifies the bucket and records the answer.
   - **Cloud-direct: still refused.** There the *devices* write to the bucket themselves, and
     nothing but the provider can stop two writers clobbering one key. The 400 now says so
     and names S3-compatible providers that do implement it (AWS S3, Cloudflare R2, MinIO).
