@@ -29,16 +29,18 @@ type gatewayDeps struct {
 // so every request is an unknown key and answers 403, which is exactly what a
 // revoked device sees too.
 func (s *Server) mountGateway(m *mux.Router) {
-	m.Path("/" + gateway.BucketName).Handler(gatewayHandler{s})
-	m.PathPrefix(gateway.PathPrefix).Handler(gatewayHandler{s})
+	// requireHost like every other Fleet route: once public_url is set, a
+	// request arriving under another Host is 421, so a device that resolved a
+	// stale or spoofed name never reaches the signature check.
+	h := s.requireHost(s.serveGateway)
+	m.Path("/" + gateway.BucketName).Handler(h)
+	m.PathPrefix(gateway.PathPrefix).Handler(h)
 }
 
-// gatewayHandler defers building the Gateway until the first request, because
-// the key cache needs the store and the sealing key that activation creates.
-type gatewayHandler struct{ s *Server }
-
-func (h gatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	g := h.s.gateway()
+// serveGateway defers building the Gateway until the first request, because the
+// key cache needs the store and the sealing key that activation creates.
+func (s *Server) serveGateway(w http.ResponseWriter, r *http.Request) {
+	g := s.gateway()
 	if g == nil {
 		notActivatedGateway.ServeHTTP(w, r)
 		return
@@ -66,6 +68,13 @@ func (s *Server) gateway() *gateway.Gateway {
 	// The old backends are handles on directories nothing will ask for again;
 	// closing them here is what keeps an activation cycle (or a reopen after
 	// Close) from leaking one directory fd per hosted target.
+	//
+	// Invariant: this loop is the ONLY place a cached store is closed, and it
+	// runs only when the *store.Store behind the gateway is swapped (New /
+	// Activate / a reopen after Close) -- never under a live request. A request
+	// resolves its backend through targetStore, which hands out a handle from
+	// this same map under the same lock; if a swap could happen mid-request the
+	// handle would be closed out from under it.
 	for id, objs := range s.gwDeps.stores {
 		if c, ok := objs.(io.Closer); ok {
 			if err := c.Close(); err != nil {
@@ -76,10 +85,20 @@ func (s *Server) gateway() *gateway.Gateway {
 
 	s.gwDeps.st = st
 	s.gwDeps.stores = map[int64]gateway.ObjectStore{}
+	// The limits and the trusted-proxy list are a snapshot: the Gateway is
+	// rebuilt when the store behind it changes, so a settings change applies
+	// at restart. That is the same lifetime a reverse proxy's own config has.
+	ctx := context.Background()
+
 	s.gwDeps.gw = gateway.NewGateway(gateway.Config{
-		Keys:     gateway.NewKeys(st, s.sealKey()),
-		StoreFor: s.storeForAgent,
-		Now:      s.now,
+		Keys:            gateway.NewKeys(st, s.sealKey()),
+		StoreFor:        s.storeForAgent,
+		Now:             s.now,
+		TrustedProxies:  s.trustedProxies(ctx),
+		IPRatePerSecond: s.rateSetting(ctx, gatewayIPRateSetting),
+		IPRateBurst:     s.rateSetting(ctx, gatewayIPBurstSetting),
+		RatePerSecond:   s.rateSetting(ctx, gatewayDeviceRateSetting),
+		RateBurst:       s.rateSetting(ctx, gatewayDeviceBurstSetting),
 	})
 
 	return s.gwDeps.gw

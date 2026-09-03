@@ -73,10 +73,10 @@ type blobStore struct {
 
 func (s *blobStore) key(id blob.ID) string { return s.opts.Prefix + string(id) }
 
-// mapErr translates the ObjectStore's errors into blob's. ErrBadKey is
+// mapBlobErr translates the ObjectStore's errors into blob's. ErrBadKey is
 // deliberately left alone: a blob id the flat key space cannot hold is a bug,
 // not a missing blob, and it should be loud rather than look like a 404.
-func mapErr(err error) error {
+func mapBlobErr(err error) error {
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return blob.ErrBlobNotFound
@@ -103,7 +103,7 @@ func (s *blobStore) PutBlob(ctx context.Context, id blob.ID, data blob.Bytes, op
 
 	info, err := s.objs.Put(ctx, s.key(id), r, int64(data.Length()), !opts.DoNotRecreate)
 	if err != nil {
-		return mapErr(err)
+		return mapBlobErr(err)
 	}
 
 	if opts.GetModTime != nil {
@@ -122,7 +122,7 @@ func (s *blobStore) GetBlob(ctx context.Context, id blob.ID, offset, length int6
 
 	rc, info, err := s.objs.Get(ctx, s.key(id), offset, length)
 	if err != nil {
-		return mapErr(err)
+		return mapBlobErr(err)
 	}
 	defer rc.Close() //nolint:errcheck // read-only handle
 
@@ -148,7 +148,7 @@ func (s *blobStore) GetBlob(ctx context.Context, id blob.ID, offset, length int6
 func (s *blobStore) GetMetadata(ctx context.Context, id blob.ID) (blob.Metadata, error) {
 	info, err := s.objs.Head(ctx, s.key(id))
 	if err != nil {
-		return blob.Metadata{}, mapErr(err)
+		return blob.Metadata{}, mapBlobErr(err)
 	}
 
 	return blob.Metadata{BlobID: id, Length: info.Size, Timestamp: info.LastModified.UTC()}, nil
@@ -163,7 +163,7 @@ func (s *blobStore) ListBlobs(ctx context.Context, idPrefix blob.ID, cb func(blo
 	for {
 		objs, truncated, err := s.objs.List(ctx, prefix, after, 0)
 		if err != nil {
-			return mapErr(err)
+			return mapBlobErr(err)
 		}
 
 		for _, o := range objs {
@@ -195,7 +195,7 @@ func (s *blobStore) DeleteBlob(ctx context.Context, id blob.ID) error {
 		return nil
 	}
 
-	return mapErr(err)
+	return mapBlobErr(err)
 }
 
 func (s *blobStore) ConnectionInfo() blob.ConnectionInfo {

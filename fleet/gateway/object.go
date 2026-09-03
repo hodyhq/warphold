@@ -60,19 +60,27 @@ var ErrIncompleteBody = errors.New("body does not match the declared size")
 // arbitrarily deep directory tree.
 //
 // ETag is filled in by Put (which hashes as it streams, so it is free there)
-// and by Head. Get and List leave it empty rather than reading every object
-// back only to hash it.
+// and by Head, which is the guarantee. On Get it is best-effort: a backend that
+// already holds the digest may pass it on - the cloud backend does, since the
+// provider returns it with the metadata - but the local backend leaves it
+// empty. List always leaves it empty rather than reading every object back only
+// to hash it.
 type ObjectStore interface {
 	// Put stores r under key. size is the expected byte count, or -1 if it is
 	// unknown; a reader that delivers a different count is ErrIncompleteBody
 	// and stores nothing. Without overwrite, an existing key is ErrExists and
 	// its bytes are left untouched.
+	//
+	// Implementations MUST read r to EOF on the success path: the gateway
+	// wraps the request body in a Content-MD5 verifier that only fires at EOF,
+	// so a store that returns nil without reaching it would acknowledge bytes
+	// nothing verified. The gateway fails such a request closed with a 500.
 	Put(ctx context.Context, key string, r io.Reader, size int64, overwrite bool) (ObjectInfo, error)
 
 	// Get returns the bytes at [offset, offset+length), where length < 0 means
 	// "to the end" and a length past the end is clamped. The ObjectInfo
-	// describes the whole object, not the returned range, and its ETag is
-	// empty - call Head for that.
+	// describes the whole object, not the returned range; its ETag may be empty
+	// - call Head when it is required.
 	Get(ctx context.Context, key string, offset, length int64) (io.ReadCloser, ObjectInfo, error)
 
 	// Head returns the object's metadata, including its ETag.
@@ -90,6 +98,14 @@ type ObjectStore interface {
 	// is what GetBucketVersioning answers.
 	Versioned(ctx context.Context) bool
 }
+
+// A backend that holds a connection also implements
+//
+//	interface{ Close(context.Context) error }
+//
+// which a caller must type-assert for and call when a target is deconfigured.
+// The local backend does not need it; the cloud backend releases its HTTP
+// client's idle connections.
 
 // NormalizeKey validates an S3 object key and confines it to prefix.
 // It rejects: an empty key, a leading '/', any "." or ".." segment, an empty

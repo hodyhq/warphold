@@ -57,16 +57,20 @@ func TestDeviceOverwriteIsAlwaysFalse(t *testing.T) {
 }
 
 func TestKeyClassNamesTheBlobClass(t *testing.T) {
+	// The classes are a closed set: a log line must never carry any part of a
+	// blob name.
 	for key, want := range map[string]string{
 		"s35391b98f24603bae4bd9a4e4e5408e2-s7cd8": "s",
-		"xn0_1234":         "xn",
-		"xs1234":           "xs",
-		"pdeadbeef":        "p",
-		"q1234":            "q",
-		"kopia.repository": "kopia.repository",
-		".storageconfig":   ".storageconfig",
-		"_log_20260902":    "_log_",
-		"":                 "",
+		"xn0_1234":                         "xn",
+		"xs1234":                           "xs",
+		"pdeadbeef":                        "p",
+		"q1234":                            "q",
+		"kopia.repository":                 "kopia-meta",
+		"kopia.maintenance":                "kopia-meta",
+		"kopia.repository.backup.20260902": "kopia-meta",
+		".storageconfig":                   "dot",
+		"_log_20260902":                    "_log_",
+		"":                                 "",
 	} {
 		require.Equal(t, want, keyClass(key), "key %q", key)
 	}

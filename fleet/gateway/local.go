@@ -488,9 +488,11 @@ func (l *local) Delete(ctx context.Context, key string) error {
 // append-only plus the mirror job is what protects history (§4.3).
 func (l *local) Versioned(context.Context) bool { return false }
 
-// Close releases the root directory handle. It is not part of ObjectStore:
-// only a caller that opened its own store (blob.NewStorage, via the hosted
-// adapter) may close one, never a shared handle out of the gateway's cache.
+// Close releases the root directory handle. It is not part of ObjectStore, so
+// a caller has to type-assert for it: only whoever owns the handle may close
+// it -- a caller that opened its own store (blob.NewStorage, via the hosted
+// adapter), or the Fleet server discarding its per-target cache on a store
+// swap. Never a handle another request is still serving from.
 func (l *local) Close() error { return l.root.Close() }
 
 // open validates key and opens it as an object. It Lstats first, so a symlink
