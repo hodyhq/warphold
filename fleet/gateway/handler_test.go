@@ -558,6 +558,12 @@ func TestGatewayPutBodyChecks(t *testing.T) {
 
 		head := f.do(t, call{akid: akidA, secret: testSecret, method: http.MethodHead, path: objectPath(key)})
 		require.Equal(t, http.StatusNotFound, head.StatusCode, "a rejected body must not be stored")
+
+		// Nothing is committed *and* nothing is left half-written: the store
+		// stages every body under <root>/.tmp and unlinks it on failure.
+		leftover, err := filepath.Glob(filepath.Join(f.root, ".tmp", "*"))
+		require.NoError(t, err)
+		require.Empty(t, leftover, "a rejected body must leave no temp file behind")
 	})
 
 	t.Run("oversize", func(t *testing.T) {

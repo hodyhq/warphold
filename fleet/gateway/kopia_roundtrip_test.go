@@ -2,14 +2,22 @@ package gateway_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/pem"
+	"fmt"
+	"io"
+	"io/fs"
 	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
 	"github.com/stretchr/testify/require"
 
 	"github.com/kopia/kopia/fleet/enroll"
@@ -52,9 +60,17 @@ func tlsFixture(t *testing.T) (*fixture, *httptest.Server) {
 	return f, tlsSrv
 }
 
+// testRootCA is the httptest server's own certificate, PEM-encoded. Handing it
+// to the device's client keeps TLS verification on, which is the setting a real
+// device runs with; DoNotVerifyTLS would hide a certificate the gateway serves
+// wrongly.
+func testRootCA(srv *httptest.Server) []byte {
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
+}
+
 // kopiaStorage connects Kopia's own S3 backend to the gateway, exactly as an
 // enrolled device would (spec section 7.1 step 3).
-func kopiaStorage(ctx context.Context, t *testing.T, srv *httptest.Server, isCreate bool) blob.Storage {
+func kopiaStorage(ctx context.Context, t *testing.T, srv *httptest.Server, akid, secret string, isCreate bool) blob.Storage {
 	t.Helper()
 
 	u, err := url.Parse(srv.URL)
@@ -64,9 +80,9 @@ func kopiaStorage(ctx context.Context, t *testing.T, srv *httptest.Server, isCre
 		BucketName:      gateway.BucketName,
 		Prefix:          devA + "/",
 		Endpoint:        u.Host,
-		DoNotVerifyTLS:  true,
-		AccessKeyID:     akidA,
-		SecretAccessKey: testSecret,
+		RootCA:          testRootCA(srv),
+		AccessKeyID:     akid,
+		SecretAccessKey: secret,
 		Region:          testRegion,
 	}, isCreate)
 	require.NoError(t, err)
@@ -76,12 +92,119 @@ func kopiaStorage(ctx context.Context, t *testing.T, srv *httptest.Server, isCre
 	return st
 }
 
+// --- shared round-trip helpers ---------------------------------------------
+
+// takeSnapshot uploads si.Path and returns the new manifest id.
+func takeSnapshot(ctx context.Context, t *testing.T, rep repo.Repository, si snapshot.SourceInfo) manifest.ID {
+	t.Helper()
+
+	var id manifest.ID
+
+	require.NoError(t, repo.WriteSession(ctx, rep, repo.WriteSessionOptions{Purpose: "snapshot"},
+		func(ctx context.Context, w repo.RepositoryWriter) error {
+			entry, err := localfs.NewEntry(si.Path)
+			if err != nil {
+				return err
+			}
+
+			tree, err := policy.TreeForSource(ctx, w, si)
+			if err != nil {
+				return err
+			}
+
+			man, err := upload.NewUploader(w).Upload(ctx, entry, tree, si)
+			if err != nil {
+				return err
+			}
+
+			id, err = snapshot.SaveSnapshot(ctx, w, man)
+
+			return err
+		}))
+
+	return id
+}
+
+// restoreSnapshot restores one manifest into target.
+func restoreSnapshot(ctx context.Context, t *testing.T, rep repo.Repository, man *snapshot.Manifest, target string) {
+	t.Helper()
+
+	root, err := snapshotfs.SnapshotRoot(rep, man)
+	require.NoError(t, err)
+
+	out := &restore.FilesystemOutput{TargetPath: target}
+	require.NoError(t, out.Init(ctx))
+
+	_, err = restore.Entry(ctx, rep, out, root, restore.Options{RestoreDirEntryAtDepth: math.MaxInt32})
+	require.NoError(t, err)
+}
+
+// treeDigest maps every regular file's path, relative to root, to the SHA-256
+// of its contents: comparing two of these is what "byte-identical" means here.
+func treeDigest(t *testing.T, root string) map[string]string {
+	t.Helper()
+
+	out := map[string]string{}
+
+	require.NoError(t, filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+
+		rel, err := filepath.Rel(root, p)
+		if err != nil {
+			return err
+		}
+
+		out[rel] = fmt.Sprintf("%x", sha256.Sum256(b))
+
+		return nil
+	}))
+
+	require.NotEmpty(t, out, "the source tree is empty, so the comparison would prove nothing")
+
+	return out
+}
+
+// requireBlob asserts a blob reads back with exactly these bytes.
+func requireBlob(ctx context.Context, t *testing.T, st blob.Storage, key, want string) {
+	t.Helper()
+
+	var got gather.WriteBuffer
+	defer got.Close()
+
+	require.NoError(t, st.GetBlob(ctx, blob.ID(key), 0, -1, &got))
+	require.Equal(t, want, string(got.ToByteSlice()))
+}
+
+// requireS3Error asserts the gateway answered the stock client with exactly
+// this status and S3 error code. The pair is the contract: minio-go decides
+// whether to retry from the status, and Kopia maps the code.
+func requireS3Error(t *testing.T, err error, status int, code string) minio.ErrorResponse {
+	t.Helper()
+
+	var e minio.ErrorResponse
+
+	require.ErrorAs(t, err, &e)
+	require.Equal(t, status, e.StatusCode)
+	require.Equal(t, code, e.Code)
+
+	return e
+}
+
+// --- the round trips -------------------------------------------------------
+
 // TestKopiaBlobStorageRoundTrip drives Kopia's S3 backend against the gateway:
 // the blob.Storage contract, without a repository on top of it.
 func TestKopiaBlobStorageRoundTrip(t *testing.T) {
 	ctx := testlogging.Context(t)
 	_, srv := tlsFixture(t)
-	st := kopiaStorage(ctx, t, srv, true)
+	st := kopiaStorage(ctx, t, srv, akidA, testSecret, true)
 
 	payload := gather.FromSlice([]byte("kopia blob payload"))
 
@@ -108,16 +231,124 @@ func TestKopiaBlobStorageRoundTrip(t *testing.T) {
 		return nil
 	}))
 	require.Equal(t, []blob.ID{blob.ID(packKey)}, listed)
+}
 
-	// The allowlist: a session marker may be deleted, a pack blob may not.
-	require.NoError(t, st.PutBlob(ctx, blob.ID(sessionKey), gather.FromSlice([]byte("marker")), blob.PutOptions{}))
-	require.NoError(t, st.DeleteBlob(ctx, blob.ID(sessionKey)))
-	require.Error(t, st.DeleteBlob(ctx, blob.ID(packKey)), "deleting a pack blob must fail")
+// deviceClient is minio-go -- the very client Kopia's s3 backend drives --
+// with the device's credential and the fixture's certificate, but *without*
+// Kopia's retrying wrapper on top.
+//
+// The wrapper is what a device really runs, and it treats the gateway's 403 and
+// 409 as retriable: a single append-only denial costs ten attempts and ~22s of
+// backoff. That is correct behaviour to keep (the rules test would just take
+// three minutes to assert it), so the denials are asserted here, one attempt
+// each. See task-9-report.
+func deviceClient(t *testing.T, srv *httptest.Server, akid, secret string) *minio.Client {
+	t.Helper()
 
-	// And the object survives the denied delete.
-	got.Reset()
-	require.NoError(t, st.GetBlob(ctx, blob.ID(packKey), 0, -1, &got))
-	require.Equal(t, "kopia blob payload", string(got.ToByteSlice()))
+	u, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+
+	tr, ok := srv.Client().Transport.(*http.Transport)
+	require.True(t, ok)
+
+	cli, err := minio.New(u.Host, &minio.Options{
+		Creds:     credentials.NewStaticV4(akid, secret, ""),
+		Secure:    true,
+		Region:    testRegion,
+		Transport: tr,
+	})
+	require.NoError(t, err)
+
+	return cli
+}
+
+// putObject uploads with exactly the options repo/blob/s3 uses.
+func putObject(ctx context.Context, cli *minio.Client, key, body string) error {
+	_, err := cli.PutObject(ctx, gateway.BucketName, devA+"/"+key, strings.NewReader(body), int64(len(body)),
+		minio.PutObjectOptions{ContentType: "application/x-kopia", SendContentMd5: true})
+
+	return err
+}
+
+// getObject reads a whole object back.
+func getObject(ctx context.Context, t *testing.T, cli *minio.Client, key string) string {
+	t.Helper()
+
+	o, err := cli.GetObject(ctx, gateway.BucketName, devA+"/"+key, minio.GetObjectOptions{})
+	require.NoError(t, err)
+
+	defer o.Close() //nolint:errcheck // test cleanup
+
+	b, err := io.ReadAll(o)
+	require.NoError(t, err)
+
+	return string(b)
+}
+
+// TestGatewayDeviceRulesThroughTheStockClient pins the append-only contract on
+// the path a device actually takes -- minio-go, sigv4, TLS -- rather than the
+// hand-rolled requests of handler_test.go, and asserts the exact status and
+// error code each rule answers, because that pair is what the client sees.
+func TestGatewayDeviceRulesThroughTheStockClient(t *testing.T) {
+	ctx := testlogging.Context(t)
+	_, srv := tlsFixture(t)
+
+	cli := deviceClient(t, srv, akidA, testSecret)
+	// The recovery kit's credential: same device, same prefix, read-only.
+	ro := deviceClient(t, srv, akidRO, secretRO)
+
+	const body = "the first write"
+
+	// "xs..." is the single-epoch compaction prefix: an unanchored session
+	// match would let it through (RECONCILE section 7.3).
+	keptKeys := []string{packKey, "kopia.repository", "xs1234567890abcdef1234"}
+
+	for _, k := range append([]string{sessionKey}, keptKeys...) {
+		require.NoError(t, putObject(ctx, cli, k, body))
+	}
+
+	t.Run("a second PUT of an existing key is refused and changes nothing", func(t *testing.T) {
+		requireS3Error(t, putObject(ctx, cli, packKey, "second write"), http.StatusConflict, "ObjectAlreadyExists")
+		require.Equal(t, body, getObject(ctx, t, cli, packKey))
+	})
+
+	t.Run("only a session blob may be deleted", func(t *testing.T) {
+		require.NoError(t, cli.RemoveObject(ctx, gateway.BucketName, devA+"/"+sessionKey, minio.RemoveObjectOptions{}))
+
+		for _, k := range keptKeys {
+			err := cli.RemoveObject(ctx, gateway.BucketName, devA+"/"+k, minio.RemoveObjectOptions{})
+			requireS3Error(t, err, http.StatusForbidden, "AppendOnlyDeleteDenied")
+			require.Equal(t, body, getObject(ctx, t, cli, k))
+		}
+	})
+
+	t.Run("a read-only key reads and lists but never writes", func(t *testing.T) {
+		require.Equal(t, body, getObject(ctx, t, ro, packKey))
+
+		var listed []string
+
+		for o := range ro.ListObjects(ctx, gateway.BucketName, minio.ListObjectsOptions{Recursive: true}) {
+			require.NoError(t, o.Err)
+
+			listed = append(listed, o.Key)
+		}
+
+		require.Len(t, listed, len(keptKeys), "a read-only key sees the device's blobs")
+
+		e := requireS3Error(t, putObject(ctx, ro, sessionKey, "nope"), http.StatusForbidden, "AccessDenied")
+		require.Equal(t, "this key is read-only", e.Message)
+
+		// DELETE is the one place the two refusals share a branch: a read-only
+		// key is refused with the append-only code even for a session marker it
+		// would otherwise be allowed to delete. Same 403, and deliberately the
+		// same answer a writer key gets, so the mode is not enumerable -- but
+		// it is NOT the "this key is read-only" message PUT gives, and this
+		// pins that. See task-9-report.
+		e = requireS3Error(t,
+			ro.RemoveObject(ctx, gateway.BucketName, devA+"/"+sessionKey, minio.RemoveObjectOptions{}),
+			http.StatusForbidden, "AppendOnlyDeleteDenied")
+		require.Contains(t, e.Message, "only Kopia session markers may be deleted")
+	})
 }
 
 // TestKopiaRepositoryRoundTrip is the D4 spike promoted to a regression test:
@@ -127,7 +358,7 @@ func TestKopiaRepositoryRoundTrip(t *testing.T) {
 	ctx := testlogging.Context(t)
 	f, srv := tlsFixture(t)
 
-	st := kopiaStorage(ctx, t, srv, true)
+	st := kopiaStorage(ctx, t, srv, akidA, testSecret, true)
 
 	require.NoError(t, repo.Initialize(ctx, st, &repo.NewRepositoryOptions{}, repoPassword))
 
@@ -157,31 +388,7 @@ func TestKopiaRepositoryRoundTrip(t *testing.T) {
 		}))
 
 	si := snapshot.SourceInfo{Host: "device", UserName: "user", Path: source}
-
-	var manifestID manifest.ID
-
-	require.NoError(t, repo.WriteSession(ctx, rep, repo.WriteSessionOptions{Purpose: "snapshot"},
-		func(ctx context.Context, w repo.RepositoryWriter) error {
-			entry, err := localfs.NewEntry(source)
-			if err != nil {
-				return err
-			}
-
-			tree, err := policy.TreeForSource(ctx, w, si)
-			if err != nil {
-				return err
-			}
-
-			man, err := upload.NewUploader(w).Upload(ctx, entry, tree, si)
-			if err != nil {
-				return err
-			}
-
-			id, err := snapshot.SaveSnapshot(ctx, w, man)
-			manifestID = id
-
-			return err
-		}))
+	manifestID := takeSnapshot(ctx, t, rep, si)
 
 	require.NoError(t, rep.Close(ctx))
 
@@ -197,23 +404,10 @@ func TestKopiaRepositoryRoundTrip(t *testing.T) {
 	require.Len(t, mans, 1)
 	require.Equal(t, manifestID, mans[0].ID)
 
-	root, err := snapshotfs.SnapshotRoot(rep, mans[0])
-	require.NoError(t, err)
-
 	target := filepath.Join(dir, "restored")
-	out := &restore.FilesystemOutput{TargetPath: target}
-	require.NoError(t, out.Init(ctx))
+	restoreSnapshot(ctx, t, rep, mans[0], target)
 
-	_, err = restore.Entry(ctx, rep, out, root, restore.Options{RestoreDirEntryAtDepth: math.MaxInt32})
-	require.NoError(t, err)
-
-	restored, err := os.ReadFile(filepath.Join(target, "hello.txt"))
-	require.NoError(t, err)
-	require.Equal(t, "hello\nmore\n", string(restored))
-
-	big, err := os.Stat(filepath.Join(target, "nested", "big.bin"))
-	require.NoError(t, err)
-	require.EqualValues(t, 3<<20, big.Size())
+	require.Equal(t, treeDigest(t, source), treeDigest(t, target))
 
 	assertNoDeniedRequests(t, f)
 }
@@ -249,11 +443,14 @@ func assertNoDeniedRequests(t *testing.T, f *fixture) {
 
 // TestKopiaRepositoryFromServerProvisionedRepo is the other half of the round
 // trip: the repository is created by the *Fleet server*, through the hosted
-// blob adapter and never over HTTP (spec §7.1 step 4), and the device then
-// reads and writes it with the credential it was enrolled with. If the
+// blob adapter and never over HTTP (spec section 7.1 step 4), and the device
+// then reads and writes it with the credential it was enrolled with. If the
 // server's on-disk layout ever diverged from the one the gateway serves --
 // Kopia's own filesystem provider shards, this adapter does not -- the device
 // would not find kopia.repository here.
+//
+// Two snapshots, because the second is the one that reuses the first's index
+// and pack blobs, which is where an append-only violation would surface.
 func TestKopiaRepositoryFromServerProvisionedRepo(t *testing.T) {
 	ctx := testlogging.Context(t)
 	f, srv := tlsFixture(t)
@@ -278,7 +475,7 @@ func TestKopiaRepositoryFromServerProvisionedRepo(t *testing.T) {
 
 	o, ok := ci.Config.(*s3.Options)
 	require.True(t, ok)
-	o.DoNotVerifyTLS = true // httptest's certificate is self-signed
+	o.RootCA = testRootCA(srv) // httptest's certificate is its own root
 
 	st, err := s3.New(ctx, o, false)
 	require.NoError(t, err)
@@ -298,42 +495,40 @@ func TestKopiaRepositoryFromServerProvisionedRepo(t *testing.T) {
 	defer rep.Close(ctx) //nolint:errcheck // test cleanup
 
 	// Provisioning already handed maintenance to Fleet, so the device does not
-	// have to (and its engine runs with maintenance disabled anyway).
+	// have to (and its engine runs with --no-auto-maintenance anyway).
 	params, err := maintenance.GetParams(ctx, rep)
 	require.NoError(t, err)
 	require.Equal(t, owner, params.Owner)
 
 	source := filepath.Join(dir, "src")
-	require.NoError(t, os.MkdirAll(source, 0o700))
+	require.NoError(t, os.MkdirAll(filepath.Join(source, "nested"), 0o700))
 	require.NoError(t, os.WriteFile(filepath.Join(source, "hello.txt"), []byte("hello\nmore\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(source, "nested", "big.bin"), make([]byte, 3<<20), 0o600))
 
 	si := snapshot.SourceInfo{Host: "device", UserName: "user", Path: source}
+	first := takeSnapshot(ctx, t, rep, si)
 
-	require.NoError(t, repo.WriteSession(ctx, rep, repo.WriteSessionOptions{Purpose: "snapshot"},
-		func(ctx context.Context, w repo.RepositoryWriter) error {
-			entry, err := localfs.NewEntry(source)
-			if err != nil {
-				return err
-			}
+	// A second snapshot over a changed tree, on the same connection.
+	require.NoError(t, os.WriteFile(filepath.Join(source, "nested", "second.txt"), []byte("added later\n"), 0o600))
 
-			tree, err := policy.TreeForSource(ctx, w, si)
-			if err != nil {
-				return err
-			}
-
-			man, err := upload.NewUploader(w).Upload(ctx, entry, tree, si)
-			if err != nil {
-				return err
-			}
-
-			_, err = snapshot.SaveSnapshot(ctx, w, man)
-
-			return err
-		}))
+	second := takeSnapshot(ctx, t, rep, si)
+	require.NotEqual(t, first, second)
 
 	mans, err := snapshot.ListSnapshots(ctx, rep, si)
 	require.NoError(t, err)
-	require.Len(t, mans, 1)
+	require.Len(t, mans, 2, "snapshot list must show both")
+	require.ElementsMatch(t, []manifest.ID{first, second}, []manifest.ID{mans[0].ID, mans[1].ID})
+
+	// The newest snapshot restores byte-identically to what was uploaded.
+	latest := mans[0]
+	if mans[1].StartTime.After(latest.StartTime) {
+		latest = mans[1]
+	}
+
+	target := filepath.Join(dir, "restored")
+	restoreSnapshot(ctx, t, rep, latest, target)
+
+	require.Equal(t, treeDigest(t, source), treeDigest(t, target))
 
 	assertNoDeniedRequests(t, f)
 }
