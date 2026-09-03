@@ -16,6 +16,7 @@ import (
 type commandFleet struct {
 	activate commandFleetActivate
 	rotate   commandFleetRotatePassphrase
+	jobs     commandFleetJobs
 }
 
 // registerFleetHandlersOnce guards RegisterServerHandlers: the in-process
@@ -28,6 +29,7 @@ func (c *commandFleet) setup(svc advancedAppServices, parent commandParent) {
 	cmd := parent.Command("fleet", "WarpHold Fleet: manage enrolled machines.")
 	c.activate.setup(svc, cmd)
 	c.rotate.setup(svc, cmd)
+	c.jobs.setup(svc, cmd)
 
 	registerFleetHandlersOnce.Do(func() {
 		RegisterServerHandlers(func(ctx context.Context, srv *server.Server, m *mux.Router, configFile string) error {

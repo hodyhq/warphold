@@ -81,7 +81,8 @@ func TestSettingsRejectsUnknownKeysAndBadValues(t *testing.T) {
 	require.ElementsMatch(t,
 		[]string{"fleet_name", "poll_interval", "public_url", "revoked_retention_days",
 			"trusted_proxies", "gateway_ip_rate", "gateway_ip_burst", "gateway_device_rate",
-			"gateway_device_burst"},
+			"gateway_device_burst",
+			"smtp_host", "smtp_port", "smtp_username", "smtp_from", "smtp_tls", "smtp_password_set"},
 		slices.Collect(maps.Keys(body)), "only the whitelisted keys are exposed")
 	require.NotContains(t, body, "seal_salt")
 }

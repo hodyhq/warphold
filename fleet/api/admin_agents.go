@@ -23,14 +23,6 @@ type mirrorOut struct {
 	Stale         bool       `json:"stale"`
 }
 
-// mirrorStale calls a copy stale once it is older than three mirror
-// intervals, so a fleet can miss two runs (one slow, one failed) before it
-// complains. A device that has never been mirrored is stale by definition:
-// its target has a mirror and the device is not in it.
-func mirrorStale(at *time.Time, now time.Time, every time.Duration) bool {
-	return at == nil || now.Sub(*at) > 3*every
-}
-
 // mirrorFor resolves a device's offsite state through its group's target, or
 // nil when that target keeps no mirror.
 //
@@ -61,7 +53,7 @@ func (s *Server) mirrorFor(ctx context.Context, a store.Agent) (*mirrorOut, erro
 		m.MirroredAt, m.MirroredBytes = rs.MirroredAt, rs.MirroredBytes
 	}
 
-	m.Stale = mirrorStale(m.MirroredAt, s.now(), jobs.MirrorInterval(ctx, st))
+	m.Stale = jobs.MirrorStale(m.MirroredAt, s.now(), jobs.MirrorInterval(ctx, st))
 
 	return &m, nil
 }
@@ -91,10 +83,14 @@ type agentOut struct {
 	// KitAckedAt is when an admin acknowledged holding the printed recovery
 	// kit; nil is what the UI's un-acked banner and list marker key off.
 	KitAckedAt *time.Time `json:"kit_acked_at"`
+
+	// SizeBytes is repo_stats.stored_bytes, 0 until the stats job has
+	// measured this device's repository at least once.
+	SizeBytes int64 `json:"size_bytes"`
 }
 
-func (s *Server) agentOut(a store.Agent, latest *store.Report, lastOK, kitAcked *time.Time) agentOut {
-	return agentOut{ID: a.ID, Name: a.Name, Hostname: a.Hostname, OS: a.OS, Arch: a.Arch, Version: a.Version, Scope: a.Scope, GroupID: a.GroupID, EnrolledAt: a.EnrolledAt, LastSeenAt: a.LastSeenAt, RevokedAt: a.RevokedAt, Health: s.healthOf(a, latest, lastOK), KitAckedAt: kitAcked}
+func (s *Server) agentOut(a store.Agent, latest *store.Report, lastOK, kitAcked *time.Time, sizeBytes int64) agentOut {
+	return agentOut{ID: a.ID, Name: a.Name, Hostname: a.Hostname, OS: a.OS, Arch: a.Arch, Version: a.Version, Scope: a.Scope, GroupID: a.GroupID, EnrolledAt: a.EnrolledAt, LastSeenAt: a.LastSeenAt, RevokedAt: a.RevokedAt, Health: s.healthOf(a, latest, lastOK), KitAckedAt: kitAcked, SizeBytes: sizeBytes}
 }
 
 // healthOf takes the last successful snapshot time rather than looking it up:
@@ -124,6 +120,7 @@ func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 	// A failed lookup degrades to "no acknowledgement", which shows the un-acked
 	// marker: the safe direction for a nag about a recovery kit nobody printed.
 	kitAcks, _ := s.store().KitAcks(ctx)
+	repoStats, _ := s.store().RepoStats(ctx)
 	out := make([]agentOut, 0, len(as))
 	for _, a := range as {
 		var lr *store.Report
@@ -138,7 +135,8 @@ func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 		if t, found := kitAcks[a.ID]; found {
 			acked = &t
 		}
-		out = append(out, s.agentOut(a, lr, ok, acked))
+
+		out = append(out, s.agentOut(a, lr, ok, acked, repoStats[a.ID].StoredBytes))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -168,12 +166,17 @@ func (s *Server) handleAgentGet(w http.ResponseWriter, r *http.Request) {
 
 	kitAcked, _ := s.store().KitAck(ctx, a.ID)
 
+	var sizeBytes int64
+	if rs, err := s.store().RepoStat(ctx, a.ID); err == nil {
+		sizeBytes = rs.StoredBytes
+	}
+
 	// Flatten agentOut's fields alongside reports (spec: "same object + reports:[last 20]").
 	writeJSON(w, http.StatusOK, struct {
 		agentOut
 		Reports []store.Report `json:"reports"`
 		Mirror  *mirrorOut     `json:"mirror"`
-	}{s.agentOut(*a, lr, lastOK, kitAcked), reports, mirror})
+	}{s.agentOut(*a, lr, lastOK, kitAcked, sizeBytes), reports, mirror})
 }
 
 func (s *Server) handleAgentRevoke(w http.ResponseWriter, r *http.Request) {

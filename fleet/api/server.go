@@ -24,6 +24,7 @@ import (
 	"github.com/kopia/kopia/fleet/b2api"
 	"github.com/kopia/kopia/fleet/gateway"
 	"github.com/kopia/kopia/fleet/jobs"
+	"github.com/kopia/kopia/fleet/mail"
 	"github.com/kopia/kopia/fleet/seal"
 	"github.com/kopia/kopia/fleet/store"
 	"github.com/kopia/kopia/repo/blob"
@@ -70,6 +71,8 @@ type Server struct {
 	st    *store.Store
 	key   seal.Key
 	login *limiter
+	// smtpTest throttles the test-send endpoint, per admin.
+	smtpTest *limiter
 	// nowFn is the server clock, read through now() under mu so
 	// SetNowForTesting can move it between requests without racing handlers.
 	nowFn func() time.Time
@@ -134,7 +137,14 @@ type Server struct {
 
 // New creates a Server for stateDir; if Fleet was activated before, its state is loaded.
 func New(stateDir string) *Server {
-	s := &Server{paths: fleet.PathsFor(stateDir), login: newLimiter(loginMaxAttempts, loginWindow), nowFn: time.Now, b2: b2api.New(nil), cloud: gatewayCloud{}}
+	s := &Server{
+		paths:    fleet.PathsFor(stateDir),
+		login:    newLimiter(loginMaxAttempts, loginWindow),
+		smtpTest: newLimiter(1, smtpTestWindow),
+		nowFn:    time.Now,
+		b2:       b2api.New(nil),
+		cloud:    gatewayCloud{},
+	}
 	// A missing key file just means "never activated"; anything else (bad
 	// permissions, a corrupt DB) must be loud, because the server would
 	// otherwise report "not activated" and print the setup-token path while
@@ -227,7 +237,10 @@ func (s *Server) startJobs() {
 		return
 	}
 	old := s.sched
-	s.sched = jobs.NewScheduler(s.st, map[string]jobs.Runner{"mirror": jobs.Mirror(s.st, s.key)}, jobs.DefaultTick)
+	// cloudStoreFor is handed to the runners so a job can open a cloud-direct
+	// hosted repository the same way the gateway does; it is a method value on
+	// s, so it always sees the current sealing key.
+	s.sched = jobs.NewScheduler(s.st, jobs.Runners(s.st, s.key, s.cloudStoreFor), jobs.DefaultTick)
 	s.sched.Start(context.Background())
 	if old != nil {
 		// In a goroutine: Stop waits for the running job, which must not
@@ -700,6 +713,12 @@ func (s *Server) SetupTokenPathForTesting() string {
 	return s.setupTokenPath
 }
 
+// MailConfigForTesting exposes the stored SMTP settings, password included,
+// so a test can prove the password round-trips through the seal.
+func (s *Server) MailConfigForTesting(ctx context.Context) (mail.Config, error) {
+	return mail.Load(ctx, s.store(), s.sealKey())
+}
+
 // SetB2ForTesting swaps the B2 client.
 func (s *Server) SetB2ForTesting(b b2api.API) { s.b2 = b }
 
@@ -763,6 +782,14 @@ func (s *Server) sealHeld(next http.HandlerFunc) http.HandlerFunc {
 
 		next(w, r)
 	}
+}
+
+// SetRepoStatsForTesting records one agent's repository size, as the "stats"
+// job would, without opening a real repository: overview and the agent
+// endpoints only read the row, and building one per test would only slow it
+// down.
+func (s *Server) SetRepoStatsForTesting(ctx context.Context, agentID string, logicalBytes, storedBytes, blobCount int64) error {
+	return s.store().SetStats(ctx, agentID, s.now(), logicalBytes, storedBytes, blobCount)
 }
 
 // requireActivated wraps admin handlers so they 409 before activation.

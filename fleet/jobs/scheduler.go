@@ -20,6 +20,13 @@ import (
 // whether or not it also returns an error, so a partial run can explain itself.
 type Runner func(ctx context.Context, j store.Job) (detail string, err error)
 
+// ErrSkipped marks a job that deliberately did nothing - a fleet with no SMTP
+// configured skipping its digest, say - as distinct from a failure: the row
+// is recorded 'skipped', not 'error', and does not count against a job kind's
+// health. A Runner that skips should wrap or return this, with a detail
+// explaining why.
+var ErrSkipped = errors.New("job skipped")
+
 // DefaultTimeout bounds a single job run. It doubles as the staleness
 // threshold: a row still 'running' after this long was left behind by a crash,
 // because the scheduler is one goroutine in one process and never abandons a
@@ -45,8 +52,16 @@ type interval struct {
 // intervals: the setting holds seconds. The floor keeps a fat-fingered "1" from
 // turning an hourly mirror into a busy loop against the provider.
 var intervals = map[string]interval{
-	"mirror": {setting: "mirror_interval", def: time.Hour, min: 5 * time.Minute},
+	"mirror":       {setting: "mirror_interval", def: time.Hour, min: 5 * time.Minute},
+	"verify":       {setting: "verify_interval", def: 7 * day, min: time.Hour},
+	"test-restore": {setting: "test_restore_interval", def: 30 * day, min: time.Hour},
+	"maintenance":  {setting: "maintenance_interval", def: day, min: time.Hour},
+	"reap":         {setting: "reap_interval", def: day, min: time.Hour},
+	"stats":        {setting: "stats_interval", def: day, min: time.Hour},
+	"digest":       {setting: "digest_interval", def: 7 * day, min: day},
 }
+
+const day = 24 * time.Hour
 
 // Scheduler runs due jobs, one at a time.
 //
@@ -227,6 +242,18 @@ func (s *Scheduler) enqueueIntervals(ctx context.Context) {
 // MirrorInterval is the gap between mirror runs the scheduler is currently
 // using, clamped the same way. The API reads it so a device's offsite copy is
 // called stale by the scheduler's clock rather than a second hard-coded one.
+// MirrorStale calls an offsite copy stale once it is older than three mirror
+// intervals, so a fleet can miss two runs (one slow, one failed) before it
+// complains. A device that has never been mirrored is stale by definition: its
+// target has a mirror and the device is not in it.
+//
+// It is the ONE staleness rule: the dashboard overview, the per-device panel
+// and the weekly digest all call it, so they cannot disagree about which
+// devices are behind.
+func MirrorStale(at *time.Time, now time.Time, every time.Duration) bool {
+	return at == nil || now.Sub(*at) > 3*every
+}
+
 func MirrorInterval(ctx context.Context, st *store.Store) time.Duration {
 	return intervalFor(ctx, st, intervals["mirror"])
 }
@@ -264,7 +291,13 @@ func (s *Scheduler) runOne(ctx context.Context) bool {
 
 	status := "ok"
 
-	if runErr != nil {
+	switch {
+	case errors.Is(runErr, ErrSkipped):
+		// Deliberate, not a failure: the row still needs a detail, but
+		// nothing here should look like an error to the UI or count against
+		// requeueStale's next-run math.
+		status = "skipped"
+	case runErr != nil:
 		status = "error"
 		// A runner that returned a detail has already said what happened, in
 		// the shape it wants the UI to show; the error only sets the status.

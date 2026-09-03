@@ -76,8 +76,8 @@ type overviewDevice struct {
 	// "never". The server formats it so every client reads one clock - the
 	// server's - instead of subtracting timestamps against a browser's.
 	Last string `json:"last"`
-	// SizeBytes is 0 until Plan 3's jobs collect Kopia repository stats, like
-	// the fleet-wide StoredBytes.
+	// SizeBytes is repo_stats.stored_bytes, 0 until the stats job has
+	// measured this device's repository at least once.
 	SizeBytes int64    `json:"size_bytes"`
 	Days      []string `json:"days"`
 }
@@ -149,6 +149,17 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		adminFailed(w, "read settings", err)
 		return
+	}
+	// Sizes degrade, they do not take the page down: the dashboard is polled
+	// every 30 s, and an unreadable repo_stats leaves exactly the state a
+	// never-measured fleet is in - stored 0 and dedup_ratio null, which the UI
+	// already renders as "not measured yet" rather than as a real zero. Same
+	// contract as the offsite tile's Unknown (see offsiteOverview).
+	repoStats, err := st.RepoStats(ctx)
+	if err != nil {
+		log.Printf("warphold fleet: reading repository stats: %v", errCategory(err))
+
+		repoStats = nil
 	}
 
 	now := s.now().UTC()
@@ -232,6 +243,18 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		Last24h:   overviewTimeline{Buckets: buckets},
 		Devices:   make([]overviewDevice, 0, len(live)),
 	}
+	// DedupRatio stays nil - the UI hides the Stored sub-line - until the
+	// stats job has measured at least one repository; a fleet with none yet
+	// must not report a ratio computed from a division by zero.
+	var totalLogical int64
+	for _, r := range repoStats {
+		out.StoredBytes += r.StoredBytes
+		totalLogical += r.LogicalBytes
+	}
+	if len(repoStats) > 0 && out.StoredBytes > 0 {
+		ratio := float64(totalLogical) / float64(out.StoredBytes)
+		out.DedupRatio = &ratio
+	}
 	for _, b := range buckets {
 		out.Last24h.Completed += b.OK
 		out.Last24h.Failed += b.Failed
@@ -271,7 +294,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		}
 		out.Devices = append(out.Devices, overviewDevice{
 			ID: a.ID, Name: a.Name, Group: groupNames[a.GroupID],
-			Health: hs, Last: last, Days: days[a.ID],
+			Health: hs, Last: last, SizeBytes: repoStats[a.ID].StoredBytes, Days: days[a.ID],
 		})
 	}
 
@@ -327,7 +350,7 @@ func (s *Server) fillOffsite(ctx context.Context, out *overviewOut, targets []st
 			at = rs.MirroredAt
 		}
 
-		if mirrorStale(at, now, every) {
+		if jobs.MirrorStale(at, now, every) {
 			out.Offsite.StaleDevices++
 		}
 	}

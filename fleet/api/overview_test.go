@@ -157,3 +157,34 @@ func TestOverviewCountsBucketsAndDays(t *testing.T) {
 	require.Len(t, body["devices"], 3)
 	require.Nil(t, body["latest_failure"], "its failure goes with it")
 }
+
+// TestOverviewStoredBytesAndDedupRatio: the Stored tile and its ratio stay
+// nil/zero until the stats job has left at least one repo_stats row, per the
+// contract in overview.go's own comment; each device also gets its own size.
+func TestOverviewStoredBytesAndDedupRatio(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+	gid := h.mkGroup(t)
+	id1, _ := enrollInto(t, h, gid, "laptop-1")
+	id2, _ := enrollInto(t, h, gid, "laptop-2")
+
+	_, body := h.do("GET", "/api/v1/fleet/overview", nil)
+	require.Nil(t, body["dedup_ratio"])
+	require.Equal(t, float64(0), body["stored_bytes"])
+
+	require.NoError(t, h.s.SetRepoStatsForTesting(t.Context(), id1, 4000, 1000, 3))
+	require.NoError(t, h.s.SetRepoStatsForTesting(t.Context(), id2, 2000, 1000, 2))
+
+	_, body = h.do("GET", "/api/v1/fleet/overview", nil)
+	require.Equal(t, float64(2000), body["stored_bytes"])
+	require.InDelta(t, 3.0, body["dedup_ratio"], 0.001, "6000 logical over 2000 stored")
+
+	devices := body["devices"].([]any)
+	byName := map[string]map[string]any{}
+	for _, d := range devices {
+		m := d.(map[string]any)
+		byName[m["name"].(string)] = m
+	}
+	require.Equal(t, float64(1000), byName["laptop-1"]["size_bytes"])
+	require.Equal(t, float64(1000), byName["laptop-2"]["size_bytes"])
+}

@@ -30,7 +30,12 @@ func (s *Server) mountAdmin(m *mux.Router) {
 	m.HandleFunc("/api/v1/fleet/settings", adm(s.handleSettingsGet)).Methods(http.MethodGet) // Task 14
 	m.HandleFunc("/api/v1/fleet/settings", adm(s.sealHeld(s.handleSettingsUpdate))).Methods(http.MethodPut)
 	m.HandleFunc("/api/v1/fleet/settings/passphrase", adm(s.handlePassphraseRotate)).Methods(http.MethodPost) // Plan 3, Task 26
-	s.mountAdminEnrollment(m, adm)                                                                            // Task 9/11: tokens + agents
+	// sealHeld: the test send unseals the stored SMTP password, so a rotation
+	// must not swap the key underneath it and turn a race into "the stored
+	// SMTP password could not be unsealed; re-enter it".
+	m.HandleFunc("/api/v1/fleet/settings/smtp/test", adm(s.sealHeld(s.handleSMTPTest))).Methods(http.MethodPost) // Task 30
+	s.mountAdminEnrollment(m, adm)                                                                               // Task 9/11: tokens + agents
+	s.mountAdminJobs(m, adm)                                                                                     // Task 28: scheduled jobs
 }
 
 func pathID(r *http.Request) (int64, bool) {

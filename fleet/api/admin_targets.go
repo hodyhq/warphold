@@ -496,7 +496,7 @@ func (s *Server) targetMirrorState(ctx context.Context, targets []store.Target) 
 			newest[tid] = at
 		}
 
-		if mirrorStale(at, now, every) {
+		if jobs.MirrorStale(at, now, every) {
 			stale[tid] = true
 		}
 	}

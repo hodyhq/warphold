@@ -2,6 +2,7 @@ package cli_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -738,4 +739,57 @@ func TestServerStartRefusesUnresolvedPendingSealKey(t *testing.T) {
 
 	require.Contains(t, strings.Join(stderr, "\n"), "cannot be used")
 	require.FileExists(t, pending, "the pending key must not be deleted to make the server start")
+}
+
+// TestFleetJobsRunQueuesARow pins the CLI half of the jobs surface: the
+// command writes a pending row the Fleet server's scheduler will claim, and
+// refuses to invent a fleet database for a WarpHold that has none.
+func TestFleetJobsRunQueuesARow(t *testing.T) {
+	runner := testenv.NewInProcRunner(t)
+	e := testenv.NewCLITest(t, nil, runner)
+
+	configFile := filepath.Join(e.ConfigDir, ".kopia.config")
+	stateDir := fleet.StateDirFor(configFile)
+
+	// Before activation there is no fleet, and no database is created either.
+	e.RunAndExpectFailure(t, "fleet", "jobs", "run", "--kind", "verify")
+	require.NoFileExists(t, filepath.Join(stateDir, "fleet.db"))
+
+	e.RunAndExpectSuccess(t, "fleet", "activate",
+		"--email", "hody@hody.dev",
+		"--admin-password", "pw12345678",
+		"--passphrase", "seal-me-please")
+
+	out := e.RunAndExpectSuccess(t, "fleet", "jobs", "run", "--kind", "test-restore")
+	require.Contains(t, strings.Join(out, "\n"), "Queued test-restore job")
+
+	e.RunAndExpectFailure(t, "fleet", "jobs", "run", "--kind", "nonesuch")
+	e.RunAndExpectFailure(t, "fleet", "jobs", "run", "--kind", "verify", "--agent", "ag_nope")
+
+	st, err := store.Open(fleet.PathsFor(stateDir).DB)
+	require.NoError(t, err)
+
+	defer st.Close() //nolint:errcheck // test cleanup
+
+	js, err := st.RecentJobs(context.Background(), "", 50)
+	require.NoError(t, err)
+
+	// Not "exactly one row": `fleet activate` now provisions the host's own
+	// repository and the setup defaults (Task 20), which takes long enough
+	// that the scheduler it starts has already enqueued and run this fleet's
+	// interval-driven kinds. What this test owns is what the CLI queued.
+	var queued []store.Job
+
+	for _, j := range js {
+		if j.Status == "pending" {
+			queued = append(queued, j)
+		}
+
+		require.NotEqual(t, "nonesuch", j.Kind, "an unknown kind is rejected before it is written")
+		require.NotEqual(t, "ag_nope", j.AgentID, "an unknown agent is rejected before it is written")
+	}
+
+	require.Len(t, queued, 1, "only the accepted kind was queued")
+	require.Equal(t, "test-restore", queued[0].Kind)
+	require.Empty(t, queued[0].AgentID)
 }
