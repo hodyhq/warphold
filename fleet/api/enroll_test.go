@@ -15,6 +15,7 @@ import (
 func TestEnrollHappyPathAndRevoke(t *testing.T) {
 	h := newHarness(t)
 	h.activateAndLogin()
+	h.setPublicURL()
 	gid := h.mkGroup(t)
 	_, tok := h.do("POST", "/api/v1/fleet/tokens", map[string]any{"group_id": gid})
 
@@ -57,7 +58,16 @@ const wellFormedEnrollToken = "wh_deadbeefdeadbeefdead1234"
 func TestEnrollShIsServed(t *testing.T) {
 	h := newHarness(t)
 	h.activateAndLogin()
+
+	// /enroll.sh is gated on public_url: the script's whole job is to hand a
+	// device a server URL, and without the setting there is no correct one.
 	res, err := http.Get(h.srv.URL + "/enroll.sh")
+	require.NoError(t, err)
+	res.Body.Close()
+	require.Equal(t, 409, res.StatusCode, "no public_url, no installer")
+
+	server := h.setPublicURL()
+	res, err = http.Get(h.srv.URL + "/enroll.sh")
 	require.NoError(t, err)
 	defer res.Body.Close()
 	require.Equal(t, 200, res.StatusCode)
@@ -65,6 +75,7 @@ func TestEnrollShIsServed(t *testing.T) {
 	raw, err := io.ReadAll(res.Body)
 	require.NoError(t, err)
 	script := string(raw)
+	require.Contains(t, script, `SERVER="`+server+`"`, "the script points at public_url, not the Host header")
 	require.Contains(t, script, "warphold agent enroll")
 	// The token reaches the binary through the environment, never its argv,
 	// so it is not visible in "ps" while the enroll runs.
@@ -97,6 +108,7 @@ func TestEnrollShIsServed(t *testing.T) {
 func TestEnrollShIgnoresQueryToken(t *testing.T) {
 	h := newHarness(t)
 	h.activateAndLogin()
+	h.setPublicURL()
 
 	for _, tok := range []string{wellFormedEnrollToken, `wh_abc"; echo pwned`} {
 		res, err := http.Get(h.srv.URL + "/enroll.sh?token=" + url.QueryEscape(tok))
@@ -110,14 +122,24 @@ func TestEnrollShIgnoresQueryToken(t *testing.T) {
 	}
 }
 
+// TestEnrollShRejectsUnsafeHost covers both halves of what used to be one
+// check: the host interpolated into the script now comes from public_url, so
+// a shell-unsafe host has to be rejected when it is *stored*, and a request
+// arriving under a foreign Host is misrouted rather than served.
 func TestEnrollShRejectsUnsafeHost(t *testing.T) {
 	h := newHarness(t)
 	h.activateAndLogin()
+
+	resp, body := h.do("PUT", "/api/v1/fleet/settings", map[string]any{"public_url": "https://evil.example; echo pwned"})
+	require.Equal(t, 400, resp.StatusCode)
+	require.NotEmpty(t, body["error"])
+
+	h.setPublicURL()
 	req, err := http.NewRequest(http.MethodGet, h.srv.URL+"/enroll.sh", nil)
 	require.NoError(t, err)
-	req.Host = "evil.example; echo pwned"
+	req.Host = "evil.example"
 	res, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer res.Body.Close()
-	require.Equal(t, 400, res.StatusCode)
+	require.Equal(t, http.StatusMisdirectedRequest, res.StatusCode)
 }

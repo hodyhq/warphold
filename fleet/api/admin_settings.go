@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -27,6 +28,7 @@ const (
 type settingsOut struct {
 	FleetName    string `json:"fleet_name"`
 	PollInterval int    `json:"poll_interval"`
+	PublicURL    string `json:"public_url"`
 }
 
 func (s *Server) currentSettings(ctx context.Context) (settingsOut, error) {
@@ -34,7 +36,11 @@ func (s *Server) currentSettings(ctx context.Context) (settingsOut, error) {
 	if err != nil {
 		return settingsOut{}, err
 	}
-	return settingsOut{FleetName: name, PollInterval: s.pollInterval(ctx)}, nil
+	pub, err := s.store().Setting(ctx, publicURLSetting)
+	if err != nil {
+		return settingsOut{}, err
+	}
+	return settingsOut{FleetName: name, PollInterval: s.pollInterval(ctx), PublicURL: pub}, nil
 }
 
 func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
@@ -55,9 +61,42 @@ func (s *Server) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "malformed body")
 		return
 	}
+	// "verify" is a flag on the call, not a setting: it asks the server to
+	// prove public_url reaches this Fleet before storing it.
+	verify := false
+	if raw, ok := in["verify"]; ok {
+		if err := json.Unmarshal(raw, &verify); err != nil {
+			writeErr(w, http.StatusBadRequest, "verify must be true or false")
+			return
+		}
+		delete(in, "verify")
+	}
 	writes := make(map[string]string, len(in))
 	for key, raw := range in {
 		switch key {
+		case publicURLSetting:
+			var raw2 string
+			if err := json.Unmarshal(raw, &raw2); err != nil {
+				writeErr(w, http.StatusBadRequest, "public_url must be a string")
+				return
+			}
+			u, err := parsePublicURL(raw2)
+			if err != nil {
+				writeErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			if verify {
+				if err := s.verifyPublicURL(r.Context(), u); err != nil {
+					var pe *proxyError
+					if errors.As(err, &pe) {
+						writeJSON(w, http.StatusBadRequest, map[string]any{"error": pe.Error(), "proxy_requirements": proxyRequirements})
+						return
+					}
+					adminFailed(w, "verify public_url", err)
+					return
+				}
+			}
+			writes[key] = u.String()
 		case fleetNameSetting:
 			var name string
 			if err := json.Unmarshal(raw, &name); err != nil {

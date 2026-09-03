@@ -132,7 +132,7 @@ func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 			writeErr(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
-		requireCSRF(next)(w, r.WithContext(context.WithValue(r.Context(), sessionCtxKey, sess)))
+		s.requireCSRF(next)(w, r.WithContext(context.WithValue(r.Context(), sessionCtxKey, sess)))
 	}
 }
 

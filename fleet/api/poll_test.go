@@ -14,6 +14,7 @@ import (
 
 func enrollAgent(t *testing.T, h *harness) (id string, bearer string) {
 	t.Helper()
+	h.setPublicURL()
 	gid := h.mkGroup(t)
 	_, tok := h.do("POST", "/api/v1/fleet/tokens", map[string]any{"group_id": gid})
 	admin := h.jar

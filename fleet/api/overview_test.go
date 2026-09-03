@@ -15,6 +15,7 @@ import (
 // group, and therefore a fresh target, per call).
 func enrollInto(t *testing.T, h *harness, groupID float64, hostname string) (id, bearer string) {
 	t.Helper()
+	h.setPublicURL()
 	_, tok := h.do("POST", "/api/v1/fleet/tokens", map[string]any{"group_id": groupID})
 	admin := h.jar
 	h.jar = nil

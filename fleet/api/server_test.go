@@ -201,6 +201,18 @@ func (h *harness) activateAndLogin() {
 	h.jar = h.login("hody@hody.dev", "pw12345678")
 }
 
+// setPublicURL points the fleet's public_url at the harness's own httptest
+// server. It is http://127.0.0.1:<port>, which parsePublicURL allows because
+// it is loopback. Enrollment tokens and /enroll.sh are gated on this setting,
+// so any test that reaches them calls this first; the ones that deliberately
+// exercise the unset state (the gate, and the requestIsHTTPS fallback) do not.
+func (h *harness) setPublicURL() string {
+	h.t.Helper()
+	resp, body := h.do("PUT", "/api/v1/fleet/settings", map[string]any{"public_url": h.srv.URL})
+	require.Equal(h.t, 200, resp.StatusCode, body)
+	return h.srv.URL
+}
+
 func TestStatusActivateLogin(t *testing.T) {
 	h := newHarness(t)
 	resp, body := h.do("GET", "/api/v1/fleet/status", nil)
