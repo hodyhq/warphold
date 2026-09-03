@@ -52,7 +52,7 @@ nfpms:
   # upstream kopia package since both install the same binary path.
   - homepage: https://warphold.com
     vendor: WarpHold
-    maintainer: Hodahel Moinzadeh
+    maintainer: Hodahel Moinzadeh <hody@hody.dev>
     description: "Backups that hold — single-machine app and Fleet server"
     license: Apache 2.0
     conflicts:
@@ -72,10 +72,12 @@ nfpms:
 signs:
   # warphold: signing key is a HUMAN CHECKPOINT (WARPHOLD_SIGNING_KEY /
   # WARPHOLD_SIGNING_PASSPHRASE repo secrets, see release.yml and
-  # docs/RELEASING.md); tools/sign.sh itself is unchanged.
+  # docs/RELEASING.md). tools/sign.sh is upstream and untouched (it hardcodes
+  # the "Kopia Builder" gpg key name); tools/warphold-sign.sh is the WarpHold
+  # replacement, reading the key id/passphrase goreleaser exports.
   - id: all
     artifacts: checksum
-    cmd: tools/sign.sh
+    cmd: tools/warphold-sign.sh
     args: ["${artifact}", "${signature}"]
 changelog:
   filters:

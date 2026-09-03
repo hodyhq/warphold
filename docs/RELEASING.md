@@ -12,16 +12,44 @@ Pushing a `v*` tag runs `.github/workflows/release.yml`:
 
 ## Signing key (human checkpoint)
 
-Checksum signing (`tools/sign.sh`) needs two repository secrets, sourced from
-1Password — never commit them:
+Checksum signing (`tools/warphold-sign.sh`, invoked as `signs.cmd`) needs two
+repository secrets, sourced from 1Password — never commit them:
 
-- `WARPHOLD_SIGNING_KEY`
-- `WARPHOLD_SIGNING_PASSPHRASE`
+- `WARPHOLD_SIGNING_KEY` — the private key, ASCII-armored (`gpg --export-secret-keys --armor`)
+- `WARPHOLD_SIGNING_PASSPHRASE` — its passphrase
 
-If either is missing, the workflow detects it, prints a `::warning::`, and
-runs goreleaser with `--skip=sign` — the release still publishes, with an
+The workflow imports `WARPHOLD_SIGNING_KEY` into a throwaway `GNUPGHOME`
+(created fresh, `chmod 700`, removed at the end of the job — never the
+runner's default keyring) and derives the key id from the imported key's own
+fingerprint, so no third "key id" secret is needed. `WARPHOLD_SIGNING_KEY_ID`
+and `GNUPGHOME`/`GPG_TTY` are exported to the goreleaser step only; the
+passphrase is only ever read by gpg over `--passphrase-fd`, never as an
+argument or echoed.
+
+If either secret is missing, the workflow detects it, prints a `::warning::`,
+and runs goreleaser with `--skip=sign` — the release still publishes, with an
 **unsigned** `checksums.txt`. Set both secrets before a release that needs
-signed checksums.
+signed checksums. `tools/sign.sh` is upstream Kopia's script (hardcodes the
+"Kopia Builder" gpg key name) and is left untouched; `tools/warphold-sign.sh`
+is the WarpHold-specific replacement wired into `.goreleaser.yml`.
+
+## Install paths
+
+Tarball installers (`scripts/install/fleet.sh`, `scripts/install/app.sh`)
+install to `/usr/local/bin`; the `.deb`/`.rpm` packages install to
+`/usr/bin` (`bindir` in `.goreleaser.yml`'s `nfpms`, the distro norm for
+packaged binaries). Both are on `PATH` — do not install both on the same
+machine.
+
+## goreleaser version
+
+`.goreleaser.yml` is pinned to the **goreleaser v1 config schema** (no
+`version:` key, `overrides`/name-template style unchanged since v1.21) and
+CI/local dry runs pin the `goreleaser` binary itself to `1.26.2`, the last v1
+release. Don't bump to a v2 `goreleaser` binary or migrate the config to the
+v2 schema without repinning both together — v2 removed fields this config
+still would have used (`replacements`) and the two schemas aren't
+mixable.
 
 ## Local dry run
 

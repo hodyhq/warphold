@@ -1,8 +1,10 @@
 #!/bin/sh
 # warphold: deb/rpm postinstall hook (nfpm scripts.postinstall in .goreleaser.yml).
-# Intentionally does nothing but print next steps — a package postinstall
-# must never start, enable, or configure a service on its own; the operator
-# chooses desktop vs. server mode explicitly.
+# Intentionally does nothing but print next steps — the package is the
+# binary and the app, nothing more. It never creates the `warphold` system
+# user, never creates /var/lib/warphold, and never starts, enables, or
+# configures a service. All server provisioning (user, dirs, service) is
+# fleet.sh's job only, run explicitly by the operator.
 set -e
 
 cat <<'EOF'
