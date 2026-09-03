@@ -21,6 +21,15 @@ type Config struct {
 	ETag         string `json:"policy_etag"`
 }
 
+// The scopes an agent state directory can have. ScopeApp is the standalone
+// single-machine app: it is not enrolled anywhere, so its repository and
+// engine live beside - not on top of - a Fleet agent's on the same machine.
+const (
+	ScopeUser   = "user"
+	ScopeSystem = "system"
+	ScopeApp    = "app"
+)
+
 func home() string {
 	h, err := os.UserHomeDir()
 	if err != nil {
@@ -31,21 +40,26 @@ func home() string {
 }
 
 // Dir is where agent.json and repository.config live. $WARPHOLD_STATE_DIR
-// overrides both scopes, for tests.
+// overrides every scope, for tests.
 func Dir(scope string) string {
 	if d := os.Getenv("WARPHOLD_STATE_DIR"); d != "" {
 		return d
 	}
 
-	if scope == "system" {
+	if scope == ScopeSystem {
 		return "/etc/warphold"
 	}
 
+	base := filepath.Join(home(), ".config", "warphold")
 	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" {
-		return filepath.Join(x, "warphold")
+		base = filepath.Join(x, "warphold")
 	}
 
-	return filepath.Join(home(), ".config", "warphold")
+	if scope == ScopeApp {
+		return filepath.Join(base, "app")
+	}
+
+	return base
 }
 
 // CacheDir is the Kopia content cache directory for the agent's repository.
@@ -54,15 +68,20 @@ func CacheDir(scope string) string {
 		return filepath.Join(d, "cache")
 	}
 
-	if scope == "system" {
+	if scope == ScopeSystem {
 		return "/var/cache/warphold"
 	}
 
+	base := filepath.Join(home(), ".cache", "warphold")
 	if x := os.Getenv("XDG_CACHE_HOME"); x != "" {
-		return filepath.Join(x, "warphold")
+		base = filepath.Join(x, "warphold")
 	}
 
-	return filepath.Join(home(), ".cache", "warphold")
+	if scope == ScopeApp {
+		return filepath.Join(base, "app")
+	}
+
+	return base
 }
 
 // RepoConfigPath is the Kopia repository config file for the agent's scope.

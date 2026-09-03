@@ -4,7 +4,7 @@ import (
 	"context"
 	stderrors "errors"
 	"io/fs"
-	"net/url"
+	"os"
 	"time"
 
 	"github.com/pkg/errors"
@@ -42,7 +42,19 @@ type client struct {
 // which holds no secret worth withholding here - only the agent's name. The
 // Fleet group is not part of the enrollment the agent stores, so the label is
 // the agent name alone until the enroll response carries one.
+//
+// The standalone app has no enrollment and no group at all, so it is labelled
+// with this machine's hostname.
 func (c *client) vault() string {
+	if c.scope == state.ScopeApp {
+		h, err := os.Hostname()
+		if err != nil {
+			h = ""
+		}
+
+		return VaultLabel("", h)
+	}
+
 	cfg, err := state.Load(c.scope)
 	if err != nil {
 		return VaultLabel("", "")
@@ -153,12 +165,7 @@ func (c *client) recentErrors(ctx context.Context, local *engine.Local) int {
 // loopback engine, and any process that could read that argv could read
 // engine.json itself.
 func (c *client) detailsURL() (string, error) {
-	info, err := engine.ReadInfo(c.scope)
-	if err != nil {
-		return "", errors.Wrap(err, "the agent engine is not running")
-	}
-
-	return info.BaseURL + "/local/session?t=" + url.QueryEscape(info.LocalToken), nil
+	return engine.SessionURL(c.scope)
 }
 
 // backupNow starts a snapshot of every configured source.
