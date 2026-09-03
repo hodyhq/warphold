@@ -73,19 +73,40 @@ func (s *Store) RevokeAgent(ctx context.Context, id string, at time.Time) error 
 
 // SetAgentBundle replaces an agent's sealed bundle. Enrollment inserts the
 // agent row before it provisions -- device_keys.agent_id references it -- and
-// fills the bundle in once provisioning has produced one.
+// fills the bundle in once provisioning has produced one. Returns ErrNotFound
+// if the agent id doesn't exist (e.g. it was concurrently deleted), matching
+// FinishJob's pattern -- a no-op UPDATE must not read as success.
 func (s *Store) SetAgentBundle(ctx context.Context, id string, sealed []byte) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE agents SET sealed_bundle=? WHERE id=?`, sealed, id)
-	return err
-}
-
-// DeleteAgent removes an agent and its gateway keys. It exists for one caller:
-// unwinding an enrollment that failed after the agent row was inserted. A
-// device that finished enrolling is revoked, never deleted.
-func (s *Store) DeleteAgent(ctx context.Context, id string) error {
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM device_keys WHERE agent_id=?`, id); err != nil {
+	res, err := s.db.ExecContext(ctx, `UPDATE agents SET sealed_bundle=? WHERE id=?`, sealed, id)
+	if err != nil {
 		return err
 	}
-	_, err := s.db.ExecContext(ctx, `DELETE FROM agents WHERE id=?`, id)
-	return err
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// DeleteAgent removes an agent and its gateway keys, atomically: either both
+// rows go or neither does. It exists for one caller: unwinding an enrollment
+// that failed after the agent row was inserted. A device that finished
+// enrolling is revoked, never deleted.
+func (s *Store) DeleteAgent(ctx context.Context, id string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after Commit
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM device_keys WHERE agent_id=?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM agents WHERE id=?`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

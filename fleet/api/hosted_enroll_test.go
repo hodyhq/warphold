@@ -161,14 +161,22 @@ func TestHostedEnrollFailureLeavesNothingBehind(t *testing.T) {
 
 	before := h.agentIDs(t)
 
+	// The failure response never carries the agent id (it is minted, then
+	// rolled back, entirely server-side), so the hook is what tells this test
+	// which directory a leaked repository would have landed in.
+	var mintedID string
+	h.s.SetEnrollIDHookForTesting(func(id string) { mintedID = id })
+	t.Cleanup(func() { h.s.SetEnrollIDHookForTesting(nil) })
+
 	h.jar = nil
 	resp, body := h.do("POST", "/api/v1/fleet/enroll", map[string]any{"token": tok["token"], "hostname": "fw16", "os": "linux", "arch": "amd64", "scope": "user"})
 	require.Equal(t, 502, resp.StatusCode, body)
 	require.Nil(t, body["agent_id"])
+	require.NotEmpty(t, mintedID, "the enroll id hook must fire even when enrollment fails")
 
 	h.activateAndLoginAgain()
 	require.Equal(t, before, h.agentIDs(t), "a failed enrollment must leave no agent row")
-	require.NoDirExists(t, filepath.Join(root, "ag_"), "and no repository directory")
+	require.NoDirExists(t, filepath.Join(root, mintedID), "and no repository directory")
 }
 
 // agentIDs lists the ids the admin API reports, as a set.

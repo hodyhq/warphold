@@ -1073,6 +1073,25 @@ func TestClientIPTrustsForwardedOnlyFromATrustedProxy(t *testing.T) {
 	}
 }
 
+// A trusted proxy that appends its hop as a *separate* X-Forwarded-For header
+// line (net/http/httputil.ReverseProxy does this via Header.Add, rather than
+// extending one comma-joined value) must still have that hop trusted. Before
+// the fix, ClientIP used Header.Get, which returns only the first header
+// line -- so the proxy's own appended line was invisible and a client-forged
+// first line was believed instead.
+func TestClientIPJoinsMultipleForwardedForHeaderLines(t *testing.T) {
+	trusted, err := gateway.ParseTrustedProxies("10.0.0.0/8")
+	require.NoError(t, err)
+
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "10.0.0.1:9" // trusted proxy
+
+	r.Header.Add("X-Forwarded-For", "1.2.3.4")     // client-supplied spoof line
+	r.Header.Add("X-Forwarded-For", "203.0.113.9") // the trusted proxy's own hop
+
+	require.Equal(t, "203.0.113.9", gateway.ClientIP(r, trusted))
+}
+
 func TestParseTrustedProxiesIsAllOrNothing(t *testing.T) {
 	nets, err := gateway.ParseTrustedProxies("10.0.0.0/8, 192.168.1.7, ::1/128")
 	require.NoError(t, err)
