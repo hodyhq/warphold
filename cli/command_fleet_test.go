@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -289,10 +291,45 @@ func TestServerStartRefusesUnresolvedPendingSealKey(t *testing.T) {
 	pending := filepath.Join(stateDir, "seal.key.new")
 	require.NoError(t, os.WriteFile(pending, []byte("nonsense\n"), 0o600))
 
-	_, stderr := e.RunAndExpectFailure(t, "server", "start",
+	var (
+		mu     sync.Mutex
+		stderr []string
+		sp     testutil.ServerParameters
+	)
+
+	// Not RunAndExpectFailure: its wait() never returns if the refusal
+	// regresses and the server serves, which turns a regression into a hung
+	// package instead of a failing test. ProcessOutput is what unblocks the
+	// scan in that case - it returns false once the server announces its
+	// address, which only a server that came up ever prints.
+	wait, kill := e.RunAndProcessStderr(t, func(line string) bool {
+		mu.Lock()
+		defer mu.Unlock()
+
+		stderr = append(stderr, line)
+
+		return sp.ProcessOutput(line)
+	}, "server", "start",
 		"--insecure", "--without-password", "--no-ui", "--no-grpc",
 		"--address=127.0.0.1:0", "--server-control-password=admin-pwd")
-	require.Contains(t, strings.Join(stderr, "\n"), "cannot be used")
 
+	done := make(chan error, 1)
+
+	go func() { done <- wait() }()
+
+	select {
+	case err := <-done:
+		require.Error(t, err, "server start must fail on an unresolved pending sealing key")
+	case <-time.After(30 * time.Second):
+		// Only here: the in-process runner's interrupt channel is closed once
+		// the command returns, so killing a finished one panics.
+		kill()
+		t.Fatal("server start did not refuse; it is serving on an unresolved pending seal key")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	require.Contains(t, strings.Join(stderr, "\n"), "cannot be used")
 	require.FileExists(t, pending, "the pending key must not be deleted to make the server start")
 }

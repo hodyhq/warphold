@@ -45,11 +45,19 @@ func (c *commandFleet) setup(svc advancedAppServices, parent commandParent) {
 
 			// Held for as long as this server serves, so `fleet
 			// rotate-passphrase` can tell a running Fleet from a stopped one.
-			// Best effort: if it cannot be taken, something else already holds
-			// it and the offline command is refused either way.
+			// Already held means another Fleet has it and the offline command
+			// is refused anyway; anything else (bad permissions on the state
+			// dir) would leave this server unlocked and the offline rotation
+			// free to run underneath it, so it refuses to start.
 			lock, lockErr := fleet.TryLock(stateDir)
 			if lockErr != nil {
-				log(context.Background()).Warnf("warphold fleet: cannot hold %s: %v", fleet.PathsFor(stateDir).LockFile, lockErr)
+				if !errors.Is(lockErr, fleet.ErrLocked) {
+					fs.Close() //nolint:errcheck
+
+					return errors.Join(errors.New("cannot hold "+fleet.PathsFor(stateDir).LockFile), lockErr)
+				}
+
+				log(context.Background()).Warnf("warphold fleet: %s is already held: %v", fleet.PathsFor(stateDir).LockFile, lockErr)
 			}
 
 			fs.Mount(m)

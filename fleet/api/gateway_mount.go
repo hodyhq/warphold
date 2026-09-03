@@ -43,6 +43,12 @@ func (s *Server) mountGateway(m *mux.Router) {
 // the key cache needs the store and the sealing key that activation creates.
 type gatewayHandler struct{ s *Server }
 
+// The Gateway is resolved once per request, so a request that captured the
+// pre-rotation one and then blocked in Keys.Lookup can come back after the
+// swap and answer a single spurious 403 with a key that no longer opens
+// anything. It is self-correcting - the retry resolves the rebuilt Gateway -
+// and it is the price of not pinning the sealing RLock across a 64 MiB upload,
+// which the previous whole-request lock did.
 func (h gatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	g := h.s.gateway()
 	if g == nil {
