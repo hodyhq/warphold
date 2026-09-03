@@ -23,7 +23,11 @@ func (s *Server) mountAdminKit(m *mux.Router, adm func(http.HandlerFunc) http.Ha
 // exempt from the CSRF double submit, and it is safe to repeat: a hosted
 // device's read-only gateway key is minted once and then reused, so the page
 // is identical every time until an admin regenerates it. That is what makes a
-// rate limit unnecessary -- nothing is minted on a repeat GET.
+// rate limit unnecessary -- nothing is minted on a repeat GET. A first GET does
+// mint a key, which is only safe on a GET because the admin session cookie is
+// SameSite=Strict: a cross-site navigation never carries it here (pinned in
+// admins_test.go). A revoked device still gets a kit on purpose (restore after
+// revoke is a real need); the M5 reap job refuses one once retired_at is set.
 //
 // The page is never persisted server-side and never logged; it exists only in
 // the response body.
@@ -59,6 +63,7 @@ func (s *Server) handleAgentKit(w http.ResponseWriter, r *http.Request) {
 	// is, which is what makes this policy as tight as it looks.
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'")
 	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(buf.Bytes())
 }
