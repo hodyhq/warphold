@@ -15,6 +15,7 @@ import (
 // commandFleet groups the Fleet control-plane commands.
 type commandFleet struct {
 	activate commandFleetActivate
+	rotate   commandFleetRotatePassphrase
 }
 
 // registerFleetHandlersOnce guards RegisterServerHandlers: the in-process
@@ -26,10 +27,39 @@ var registerFleetHandlersOnce sync.Once
 func (c *commandFleet) setup(svc advancedAppServices, parent commandParent) {
 	cmd := parent.Command("fleet", "WarpHold Fleet: manage enrolled machines.")
 	c.activate.setup(svc, cmd)
+	c.rotate.setup(svc, cmd)
 
 	registerFleetHandlersOnce.Do(func() {
-		RegisterServerHandlers(func(ctx context.Context, srv *server.Server, m *mux.Router, configFile string) {
-			fs := api.New(fleet.StateDirFor(configFile))
+		RegisterServerHandlers(func(ctx context.Context, srv *server.Server, m *mux.Router, configFile string) error {
+			stateDir := fleet.StateDirFor(configFile)
+			fs := api.New(stateDir)
+
+			// State that cannot be used safely is fatal here, not a warning:
+			// serving Fleet on a key that may no longer open its own store
+			// would seal every new secret into a store nothing can read back.
+			if err := fs.StateError(); err != nil {
+				fs.Close() //nolint:errcheck
+
+				return errors.Join(errors.New("fleet state in "+stateDir+" cannot be used"), err)
+			}
+
+			// Held for as long as this server serves, so `fleet
+			// rotate-passphrase` can tell a running Fleet from a stopped one.
+			// Already held means another Fleet has it and the offline command
+			// is refused anyway; anything else (bad permissions on the state
+			// dir) would leave this server unlocked and the offline rotation
+			// free to run underneath it, so it refuses to start.
+			lock, lockErr := fleet.TryLock(stateDir)
+			if lockErr != nil {
+				if !errors.Is(lockErr, fleet.ErrLocked) {
+					fs.Close() //nolint:errcheck
+
+					return errors.Join(errors.New("cannot hold "+fleet.PathsFor(stateDir).LockFile), lockErr)
+				}
+
+				log(ctx).Warnf("warphold fleet: %s is already held: %v", fleet.PathsFor(stateDir).LockFile, lockErr)
+			}
+
 			fs.Mount(m)
 
 			// Setup gives the Fleet host a repository of its own; this opens
@@ -65,8 +95,14 @@ func (c *commandFleet) setup(svc advancedAppServices, parent commandParent) {
 					err = prev(ctx)
 				}
 
+				if lock != nil {
+					err = errors.Join(err, lock.Unlock())
+				}
+
 				return errors.Join(err, fs.Close())
 			}
+
+			return nil
 		})
 	})
 }

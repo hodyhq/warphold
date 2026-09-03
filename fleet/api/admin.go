@@ -15,7 +15,7 @@ func (s *Server) mountAdmin(m *mux.Router) {
 	adm := func(h http.HandlerFunc) http.HandlerFunc {
 		return s.requireHost(s.requireActivated(s.requireAdmin(h)))
 	}
-	m.HandleFunc("/api/v1/fleet/targets", adm(s.handleTargetCreate)).Methods(http.MethodPost)
+	m.HandleFunc("/api/v1/fleet/targets", adm(s.sealHeld(s.handleTargetCreate))).Methods(http.MethodPost)
 	m.HandleFunc("/api/v1/fleet/targets", adm(s.handleTargetList)).Methods(http.MethodGet)
 	m.HandleFunc("/api/v1/fleet/templates", adm(s.handleTemplateCreate)).Methods(http.MethodPost)
 	m.HandleFunc("/api/v1/fleet/templates/{id}", adm(s.handleTemplateUpdate)).Methods(http.MethodPut)
@@ -28,8 +28,9 @@ func (s *Server) mountAdmin(m *mux.Router) {
 	m.HandleFunc("/api/v1/fleet/admins/{id}", adm(s.handleAdminDelete)).Methods(http.MethodDelete)
 	m.HandleFunc("/api/v1/fleet/overview", adm(s.handleOverview)).Methods(http.MethodGet)    // Task 12
 	m.HandleFunc("/api/v1/fleet/settings", adm(s.handleSettingsGet)).Methods(http.MethodGet) // Task 14
-	m.HandleFunc("/api/v1/fleet/settings", adm(s.handleSettingsUpdate)).Methods(http.MethodPut)
-	s.mountAdminEnrollment(m, adm) // Task 9/11: tokens + agents
+	m.HandleFunc("/api/v1/fleet/settings", adm(s.sealHeld(s.handleSettingsUpdate))).Methods(http.MethodPut)
+	m.HandleFunc("/api/v1/fleet/settings/passphrase", adm(s.handlePassphraseRotate)).Methods(http.MethodPost) // Plan 3, Task 26
+	s.mountAdminEnrollment(m, adm)                                                                            // Task 9/11: tokens + agents
 }
 
 func pathID(r *http.Request) (int64, bool) {

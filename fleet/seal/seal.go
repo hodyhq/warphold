@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/nacl/secretbox"
@@ -60,11 +61,29 @@ func (k Key) Open(sealed []byte) ([]byte, error) {
 	return out, nil
 }
 
-// WriteKeyFile writes the key hex-encoded with mode 0600. It writes a 0600
-// temp file in the same directory and renames it over path, so a pre-existing
-// key file ends up 0600 too (os.WriteFile keeps the permissions of a file that
-// already exists) and a partially written key is never visible.
+// WriteKeyFile writes the key hex-encoded with mode 0600.
 func WriteKeyFile(path string, k Key) error {
+	return writeSecretFile(path, hex.EncodeToString(k[:])+"\n")
+}
+
+// WritePendingKeyFile writes a rotation's new key beside the live one, tagged
+// with the salt it was derived from: "hex(key) hex(salt)". The tag is the whole
+// point of the file: a restart compares it with the salt in the store to tell
+// whether the rotation's transaction committed (salts match, finish the
+// rename) or not (salts differ, the pending key is dead).
+//
+// The tag survives the rename onto seal.key, where it is harmless - the salt is
+// public and already in the store, and ReadKeyFile ignores it - and it leaves a
+// rotated key file saying which salt it belongs to.
+func WritePendingKeyFile(path string, k Key, salt []byte) error {
+	return writeSecretFile(path, hex.EncodeToString(k[:])+" "+hex.EncodeToString(salt)+"\n")
+}
+
+// writeSecretFile writes content through a 0600 temp file in the same
+// directory and renames it over path, so a pre-existing file ends up 0600 too
+// (os.WriteFile keeps the permissions of a file that already exists) and a
+// partially written secret is never visible.
+func writeSecretFile(path, content string) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
@@ -87,7 +106,7 @@ func WriteKeyFile(path string, k Key) error {
 	if err := f.Chmod(0o600); err != nil {
 		return err
 	}
-	if _, err := f.WriteString(hex.EncodeToString(k[:]) + "\n"); err != nil {
+	if _, err := f.WriteString(content); err != nil {
 		return err
 	}
 	if err := f.Sync(); err != nil {
@@ -97,27 +116,59 @@ func WriteKeyFile(path string, k Key) error {
 		return err
 	}
 
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+
+	// Best effort: without it the rename can be lost in a crash even though
+	// the file's own contents were synced. It is not fatal - not every
+	// platform lets a directory be opened and synced - and a lost rename of
+	// the pending key is recovered from the salt in the store anyway.
+	if d, err := os.Open(dir); err == nil {
+		d.Sync()  //nolint:errcheck
+		d.Close() //nolint:errcheck
+	}
+
+	return nil
 }
 
 // ReadKeyFile reads a key written by WriteKeyFile.
 func ReadKeyFile(path string) (Key, error) {
+	k, _, err := readKeyFile(path)
+	return k, err
+}
+
+// ReadPendingKeyFile reads a key and salt written by WritePendingKeyFile. A
+// file with no salt tag is rejected: only a tagged file can be recovered.
+func ReadPendingKeyFile(path string) (Key, []byte, error) {
+	k, salt, err := readKeyFile(path)
+	if err == nil && len(salt) == 0 {
+		return k, nil, errors.New("seal key file carries no salt")
+	}
+	return k, salt, err
+}
+
+func readKeyFile(path string) (Key, []byte, error) {
 	var k Key
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return k, err
+		return k, nil, err
 	}
-	raw, err := hex.DecodeString(string(trimNL(b)))
+	fields := strings.Fields(string(b))
+	if len(fields) == 0 || len(fields) > 2 {
+		return k, nil, errors.New("seal key file is malformed")
+	}
+	raw, err := hex.DecodeString(fields[0])
 	if err != nil || len(raw) != len(k) {
-		return k, errors.New("seal key file is malformed")
+		return k, nil, errors.New("seal key file is malformed")
 	}
 	copy(k[:], raw)
-	return k, nil
-}
-
-func trimNL(b []byte) []byte {
-	for len(b) > 0 && (b[len(b)-1] == '\n' || b[len(b)-1] == '\r') {
-		b = b[:len(b)-1]
+	if len(fields) == 1 {
+		return k, nil, nil
 	}
-	return b
+	salt, err := hex.DecodeString(fields[1])
+	if err != nil || len(salt) == 0 {
+		return k, nil, errors.New("seal key file is malformed")
+	}
+	return k, salt, nil
 }

@@ -54,6 +54,13 @@ const (
 // Server holds Fleet state for the HTTP handlers.
 type Server struct {
 	mu sync.RWMutex
+	// sealMu guards the sealing key against a passphrase rotation. Every
+	// handler that seals or unseals holds it for reading across its whole
+	// seal-then-write span (see sealHeld), and RotatePassphrase takes it for
+	// writing, so no request can seal with the old key while the rotation is
+	// re-sealing - Go's RWMutex lets the pending writer block new readers, so
+	// the rotation waits for in-flight writers and then has the key to itself.
+	sealMu sync.RWMutex
 	// activateMu serializes Activate end to end (check-then-write), so
 	// concurrent activation attempts cannot race past the Activated() check:
 	// only the caller holding activateMu can see !Activated() and proceed.
@@ -104,6 +111,15 @@ type Server struct {
 	// activated (see handleActivate); both are cleared once activation succeeds.
 	setupTokenPath string
 	setupToken     string
+
+	// rotateCrash is the crash seam RotatePassphrase runs between its commit
+	// and the key-file rename; nil outside tests.
+	rotateCrash func() error
+
+	// stateErr is set when the state on disk cannot be used safely - today, a
+	// pending sealing key that could not be resolved. It is not "not activated":
+	// the caller mounting Fleet must refuse to serve (see StateError).
+	stateErr error
 
 	// gwDeps carries the device-facing S3 gateway, built on first use because
 	// it needs the store and sealing key that activation creates.
@@ -168,6 +184,17 @@ func ensureSetupToken(dir string) (path, token string, err error) {
 }
 
 func (s *Server) load() error {
+	// A rotation may have crashed between its transaction and its rename, in
+	// which case the key that opens this store is still sitting in seal.key.new.
+	// An unresolved one is fatal, not a warning: see recoverPendingKey.
+	if err := s.recoverPendingKey(); err != nil {
+		s.mu.Lock()
+		s.stateErr = err
+		s.mu.Unlock()
+
+		return err
+	}
+
 	key, err := seal.ReadKeyFile(s.paths.KeyFile)
 	if err != nil {
 		return err
@@ -178,7 +205,7 @@ func (s *Server) load() error {
 	}
 	s.invalidateTrustedProxies()
 	s.mu.Lock()
-	s.key, s.st, s.closed = key, st, false
+	s.key, s.st, s.closed, s.stateErr = key, st, false, nil
 	s.mu.Unlock()
 	s.startJobs()
 	return nil
@@ -223,6 +250,18 @@ func (s *Server) SetNowForTesting(f func() time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.nowFn = f
+}
+
+// StateError reports state on disk that must stop this Fleet from serving,
+// rather than degrade it to "not activated": a rotation's pending sealing key
+// that could not be resolved may be the only key that opens the store, and
+// serving on the old one would seal new secrets it cannot be read back with.
+// `server start` refuses to come up while this is set.
+func (s *Server) StateError() error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.stateErr
 }
 
 // Activated reports whether the store and key are loaded.
@@ -342,7 +381,9 @@ func (s *Server) writeActivation(ctx context.Context, salt []byte, passphrase, e
 	if _, err := st.CreateAdmin(ctx, email, pwHash, s.now()); err != nil {
 		return err
 	}
-	settings := map[string]string{"seal_salt": hex.EncodeToString(salt)}
+	// store.SealSaltSetting rather than the literal: rotation reads the same
+	// key back (fleet/store/reseal.go), so the two must not drift.
+	settings := map[string]string{store.SealSaltSetting: hex.EncodeToString(salt)}
 	// instance_id is generated here rather than lazily on the first status
 	// probe, so `fleet activate --verify-public-url` has something to compare
 	// against the moment activation returns.
@@ -675,6 +716,10 @@ func (s *Server) AdminsForTesting(ctx context.Context) ([]store.Admin, error) {
 	return st.Admins(ctx)
 }
 
+// StoreForTesting exposes the state store so a test can seed rows the API does
+// not create on its own (a second gateway key, a sealed setting).
+func (s *Server) StoreForTesting() *store.Store { return s.store() }
+
 // SeedGroupForTesting creates a filesystem target, a template and a group.
 func (s *Server) SeedGroupForTesting(ctx context.Context, path string, sources []string, policyJSON string) (targetID, templateID, groupID int64) {
 	st, now := s.store(), s.now()
@@ -706,6 +751,18 @@ func (s *Server) AgentForTesting(ctx context.Context, id string) *store.Agent {
 		return nil
 	}
 	return a
+}
+
+// sealHeld wraps a handler that seals or unseals so it holds the sealing key
+// for the whole request. Rotation cannot start while one is in flight, and no
+// new one can start once rotation has the lock.
+func (s *Server) sealHeld(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		s.sealMu.RLock()
+		defer s.sealMu.RUnlock()
+
+		next(w, r)
+	}
 }
 
 // requireActivated wraps admin handlers so they 409 before activation.

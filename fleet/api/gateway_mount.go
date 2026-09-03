@@ -21,6 +21,7 @@ type gatewayDeps struct {
 	mu     sync.Mutex
 	st     *store.Store
 	gw     *gateway.Gateway
+	keys   *gateway.Keys
 	stores map[int64]gateway.ObjectStore
 }
 
@@ -28,6 +29,12 @@ type gatewayDeps struct {
 // Fleet is served, activated or not: before activation there are no device keys,
 // so every request is an unknown key and answers 403, which is exactly what a
 // revoked device sees too.
+//
+// Unlike the admin routes it is not wrapped in sealHeld: a device request can
+// stream 64 MiB, and holding the sealing lock for that long would block the
+// rotation - and, behind Go's queued writer, every other device - for the
+// length of one slow upload. The lock is taken inside Keys.Lookup instead (see
+// Keys.Guard), which is the only part of the request that touches the key.
 func (s *Server) mountGateway(m *mux.Router) {
 	// requireHost like every other Fleet route: once public_url is set, a
 	// request arriving under another Host is 421, so a device that resolved a
@@ -39,6 +46,13 @@ func (s *Server) mountGateway(m *mux.Router) {
 
 // serveGateway defers building the Gateway until the first request, because the
 // key cache needs the store and the sealing key that activation creates.
+//
+// The Gateway is resolved once per request, so a request that captured the
+// pre-rotation one and then blocked in Keys.Lookup can come back after the
+// swap and answer a single spurious 403 with a key that no longer opens
+// anything. It is self-correcting - the retry resolves the rebuilt Gateway -
+// and it is the price of not pinning the sealing RLock across a 64 MiB upload,
+// which the previous whole-request lock did.
 func (s *Server) serveGateway(w http.ResponseWriter, r *http.Request) {
 	g := s.gateway()
 	if g == nil {
@@ -77,17 +91,34 @@ func (s *Server) gateway() *gateway.Gateway {
 	// targetStore, which hands out a handle from this same map under the same
 	// lock; if a swap could happen mid-request the handle would be closed out
 	// from under it.
-	closeStores(s.gwDeps.stores)
+	//
+	// Guarded by the store comparison, not by reaching this line: a passphrase
+	// rotation nils gw and keys (resetGateway) while the *store.Store stays the
+	// same, so an unguarded closeStores here would close a live request's
+	// backend on the very next gateway() call. A rotation re-seals the
+	// credentials a backend was opened with; it does not move the bucket or
+	// the directory, so an already-open handle stays correct.
+	if s.gwDeps.st != st {
+		closeStores(s.gwDeps.stores)
 
-	s.gwDeps.st = st
-	s.gwDeps.stores = map[int64]gateway.ObjectStore{}
+		s.gwDeps.st = st
+		s.gwDeps.stores = map[int64]gateway.ObjectStore{}
+	}
+
 	// The limits and the trusted-proxy list are a snapshot: the Gateway is
 	// rebuilt when the store behind it changes, so a settings change applies
 	// at restart. That is the same lifetime a reverse proxy's own config has.
 	ctx := context.Background()
 
+	// Keys is kept on gwDeps so a passphrase rotation can invalidate the
+	// cached entries (resetGateway) rather than leave them holding secrets the
+	// old sealing key opened. Guard is the sealing RLock, taken inside
+	// Keys.Lookup for the key read alone -- see the comment on mountGateway.
+	s.gwDeps.keys = gateway.NewKeys(st, s.sealKey())
+	s.gwDeps.keys.Guard = s.sealMu.RLocker()
+
 	s.gwDeps.gw = gateway.NewGateway(gateway.Config{
-		Keys:            gateway.NewKeys(st, s.sealKey()),
+		Keys:            s.gwDeps.keys,
 		StoreFor:        s.storeForAgent,
 		Now:             s.now,
 		TrustedProxies:  s.trustedProxies(ctx),
@@ -225,4 +256,19 @@ func (s *Server) closeGatewayStores() {
 	// a racing targetStore must never write into a nil map.
 	s.gwDeps.stores = map[int64]gateway.ObjectStore{}
 	s.gwDeps.gw, s.gwDeps.st = nil, nil
+}
+
+// resetGateway drops the cached key entries and the Gateway itself. The
+// Gateway holds the sealing key by value, so a passphrase rotation has to
+// rebuild it: invalidating the cache alone would only re-read secrets the old
+// key can no longer open.
+func (s *Server) resetGateway() {
+	s.gwDeps.mu.Lock()
+	defer s.gwDeps.mu.Unlock()
+
+	if s.gwDeps.keys != nil {
+		s.gwDeps.keys.InvalidateAll()
+	}
+
+	s.gwDeps.gw, s.gwDeps.keys = nil, nil
 }
