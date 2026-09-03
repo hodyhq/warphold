@@ -529,6 +529,15 @@ func (s *Server) IssueTokenForTesting(ctx context.Context, groupID int64) string
 	return plain
 }
 
+// PendingReapsForTesting exposes the reap jobs queued for an agent.
+func (s *Server) PendingReapsForTesting(ctx context.Context, agentID string) []time.Time {
+	at, err := s.store().PendingReaps(ctx, agentID)
+	if err != nil {
+		return nil
+	}
+	return at
+}
+
 // AgentForTesting exposes one agent's stored record for tests, or nil if it does not exist.
 func (s *Server) AgentForTesting(ctx context.Context, id string) *store.Agent {
 	a, err := s.store().Agent(ctx, id)

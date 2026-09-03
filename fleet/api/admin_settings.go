@@ -14,21 +14,32 @@ import (
 // by pollInterval and handed to the agent in its policy document.
 const pollIntervalSetting = "poll_interval"
 
+// revokedRetentionSetting is how long a revoked device's repository is kept
+// before the reap job removes it, in days (D6).
+const revokedRetentionSetting = "revoked_retention_days"
+
 const (
 	maxFleetNameLen = 64
 	// The bounds keep a fleet from either hammering the server or going
 	// effectively silent; the agent's own default sits inside them.
 	minPollSeconds = 15
 	maxPollSeconds = 3600
+
+	defaultRetentionDays = 30
+	// One day is the floor: a revocation is often a mistake or a rebuild, and
+	// zero would destroy the repository before anyone could say so.
+	minRetentionDays = 1
+	maxRetentionDays = 3650
 )
 
 // settingsOut is the whole of the settings API surface. The settings table
 // also holds seal_salt, which the escrow depends on, so the endpoint reads and
 // writes these two keys by name rather than passing the table through.
 type settingsOut struct {
-	FleetName    string `json:"fleet_name"`
-	PollInterval int    `json:"poll_interval"`
-	PublicURL    string `json:"public_url"`
+	FleetName            string `json:"fleet_name"`
+	PollInterval         int    `json:"poll_interval"`
+	PublicURL            string `json:"public_url"`
+	RevokedRetentionDays int    `json:"revoked_retention_days"`
 }
 
 func (s *Server) currentSettings(ctx context.Context) (settingsOut, error) {
@@ -40,7 +51,21 @@ func (s *Server) currentSettings(ctx context.Context) (settingsOut, error) {
 	if err != nil {
 		return settingsOut{}, err
 	}
-	return settingsOut{FleetName: name, PollInterval: s.pollInterval(ctx), PublicURL: pub}, nil
+	return settingsOut{
+		FleetName: name, PollInterval: s.pollInterval(ctx), PublicURL: pub,
+		RevokedRetentionDays: s.revokedRetentionDays(ctx),
+	}, nil
+}
+
+// revokedRetentionDays reads the retention window, falling back to the default
+// for an unset, unparsable or out-of-range value: a bad row must not shorten
+// the window a device's repository is protected by.
+func (s *Server) revokedRetentionDays(ctx context.Context) int {
+	v, _ := s.store().Setting(ctx, revokedRetentionSetting)
+	if n, err := strconv.Atoi(v); err == nil && n >= minRetentionDays && n <= maxRetentionDays {
+		return n
+	}
+	return defaultRetentionDays
 }
 
 func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
@@ -120,6 +145,17 @@ func (s *Server) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			writes[key] = strconv.Itoa(secs)
+		case revokedRetentionSetting:
+			var days int
+			if err := json.Unmarshal(raw, &days); err != nil {
+				writeErr(w, http.StatusBadRequest, "revoked_retention_days must be a whole number of days")
+				return
+			}
+			if days < minRetentionDays || days > maxRetentionDays {
+				writeErr(w, http.StatusBadRequest, "revoked_retention_days must be between "+strconv.Itoa(minRetentionDays)+" and "+strconv.Itoa(maxRetentionDays))
+				return
+			}
+			writes[key] = strconv.Itoa(days)
 		default:
 			writeErr(w, http.StatusBadRequest, "unknown setting: "+key)
 			return

@@ -13,6 +13,7 @@ import (
 	"os"
 	"strings"
 	"syscall"
+	"time"
 )
 
 const (
@@ -26,6 +27,10 @@ const (
 
 	// maxKeys matches S3's cap for ListObjectsV2.
 	maxKeys = 1000
+
+	// tempSweepAge is how stale a partial write must be before a starting
+	// store will remove it. See sweepTemp.
+	tempSweepAge = time.Hour
 )
 
 // LocalOptions configures NewLocal. The zero value is the supported default.
@@ -33,11 +38,6 @@ type LocalOptions struct {
 	// MaxObjectSize is the largest object Put will store, in bytes.
 	// Zero means DefaultMaxObjectSize.
 	MaxObjectSize int64
-
-	// SkipTempSweep leaves abandoned partial writes alone. Set it whenever
-	// this is not the only store open on the root: the sweep cannot tell a
-	// crashed write from one another process is making right now.
-	SkipTempSweep bool
 }
 
 // local is the Fleet-disk backend (§4.3). Every path goes through an os.Root,
@@ -91,7 +91,7 @@ func NewLocal(dir string, opts LocalOptions) (ObjectStore, error) {
 		l.maxSize = DefaultMaxObjectSize
 	}
 
-	if n := l.sweepTemp(opts.SkipTempSweep); n > 0 {
+	if n := l.sweepTemp(); n > 0 {
 		log.Printf("warphold gateway: removed %d abandoned temp file(s) from %s/%s", n, dir, tmpDir)
 	}
 
@@ -100,19 +100,28 @@ func NewLocal(dir string, opts LocalOptions) (ObjectStore, error) {
 
 // sweepTemp removes partial writes left by a crash. Nothing links to them: a
 // temp file is only ever named by the Put that is writing it.
-func (l *local) sweepTemp(skip bool) int {
-	if skip {
-		return 0
-	}
-
+//
+// Only files older than tempSweepAge go, because this is not necessarily the
+// only store open on the root - hosted provisioning opens a second one while
+// devices are uploading - and a sweep cannot otherwise tell a crashed write
+// from one another opener is making right now. A Put that takes longer than an
+// hour has already hit the request timeout.
+func (l *local) sweepTemp() int {
 	ents, err := fs.ReadDir(l.root.FS(), tmpDir)
 	if err != nil {
 		return 0
 	}
 
+	cutoff := time.Now().Add(-tempSweepAge)
+
 	var n int
 
 	for _, e := range ents {
+		info, err := e.Info()
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+
 		if err := l.root.RemoveAll(tmpDir + "/" + e.Name()); err == nil {
 			n++
 		}

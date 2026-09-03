@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/kopia/kopia/repo/blob"
 )
@@ -26,10 +27,16 @@ type HostedOptions struct {
 func init() {
 	blob.AddSupportedStorage(HostedStorageType, HostedOptions{},
 		func(_ context.Context, o *HostedOptions, _ bool) (blob.Storage, error) {
-			// SkipTempSweep: this store is a *second* opener of a root that the
-			// serving gateway already owns, and the sweep would delete the
-			// partial writes of devices uploading right now.
-			objs, err := NewLocal(o.Root, LocalOptions{SkipTempSweep: true})
+			// The prefix is what confines this storage to one device: an empty
+			// or unterminated one would address every device on the root, or
+			// every device whose id merely starts with it. checkKey is the
+			// validator the device-facing path uses, so a prefix is accepted
+			// exactly when it can name a real key.
+			if !strings.HasSuffix(o.Prefix, "/") || checkKey(o.Prefix+"x") != nil {
+				return nil, fmt.Errorf("%w: hosted prefix %q must be a device id followed by a slash", ErrBadKey, o.Prefix)
+			}
+
+			objs, err := NewLocal(o.Root, LocalOptions{})
 			if err != nil {
 				return nil, err
 			}
@@ -121,6 +128,9 @@ func (s *blobStore) GetBlob(ctx context.Context, id blob.ID, offset, length int6
 
 	n, err := io.Copy(output, rc)
 	if err != nil {
+		// A partial read must not look like a short blob to the caller.
+		output.Reset()
+
 		return fmt.Errorf("reading blob %q: %w", id, err)
 	}
 
@@ -144,6 +154,9 @@ func (s *blobStore) GetMetadata(ctx context.Context, id blob.ID) (blob.Metadata,
 	return blob.Metadata{BlobID: id, Length: info.Size, Timestamp: info.LastModified.UTC()}, nil
 }
 
+// ponytail: one directory read per page, so a device with far more blobs than
+// a page re-reads its directory each time. Fine at Kopia's blob counts; give
+// ObjectStore a streaming List if it ever bites.
 func (s *blobStore) ListBlobs(ctx context.Context, idPrefix blob.ID, cb func(blob.Metadata) error) error {
 	prefix, after := s.key(idPrefix), ""
 

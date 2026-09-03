@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"sync"
 
@@ -59,6 +61,17 @@ func (s *Server) gateway() *gateway.Gateway {
 
 	if s.gwDeps.gw != nil && s.gwDeps.st == st {
 		return s.gwDeps.gw
+	}
+
+	// The old backends are handles on directories nothing will ask for again;
+	// closing them here is what keeps an activation cycle (or a reopen after
+	// Close) from leaking one directory fd per hosted target.
+	for id, objs := range s.gwDeps.stores {
+		if c, ok := objs.(io.Closer); ok {
+			if err := c.Close(); err != nil {
+				log.Printf("warphold fleet: closing the hosted store of target %d: %v", id, err)
+			}
+		}
 	}
 
 	s.gwDeps.st = st

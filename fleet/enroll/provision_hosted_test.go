@@ -162,15 +162,29 @@ func TestProvisionHostedCreatesReadableRepositoryAndDeviceKey(t *testing.T) {
 func TestProvisionHostedDisablesTheKeyWhenTheRepositoryFails(t *testing.T) {
 	ctx := context.Background()
 	st := seedAgent(t, "ag_h1")
+	root := t.TempDir()
 
 	boom := errors.New("storage is on fire")
 	p := &enroll.Provisioner{
 		Owner: "fleet@" + publicHost, Store: st, SealKey: sealKey,
-		InitializeForTesting: func(context.Context, blob.ConnectionInfo, string) error { return boom },
+		// Fails *after* writing a real repository, which is the case that
+		// matters: the rollback has something to clean up.
+		InitializeForTesting: func(ctx context.Context, ci blob.ConnectionInfo, password string) error {
+			bst, err := blob.NewStorage(ctx, ci, true)
+			require.NoError(t, err)
+			require.NoError(t, repo.Initialize(ctx, bst, &repo.NewRepositoryOptions{}, password))
+			require.NoError(t, bst.Close(ctx))
+			require.FileExists(t, filepath.Join(root, "ag_h1", "kopia.repository"))
+
+			return boom
+		},
 	}
 
-	_, err := p.Provision(ctx, hostedSpec(t.TempDir()), "ag_h1")
+	_, err := p.Provision(ctx, hostedSpec(root), "ag_h1")
 	require.ErrorIs(t, err, boom)
+
+	require.NoDirExists(t, filepath.Join(root, "ag_h1"),
+		"a repository from an enrollment that never completed is nobody else's to reap")
 
 	keys, err := st.DeviceKeysForAgent(ctx, "ag_h1")
 	require.NoError(t, err)
@@ -201,4 +215,22 @@ func TestProvisionHostedRejectsAnIncompleteTarget(t *testing.T) {
 			require.Empty(t, keys, "nothing is minted before the target is known to be usable")
 		})
 	}
+}
+
+// The agent id is server-minted, but RemoveHostedRepository unlinks a tree, so
+// it refuses anything that could resolve outside the device's own directory.
+func TestRemoveHostedRepositoryRefusesAMalformedAgentID(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "keep"), 0o700))
+
+	for _, id := range []string{"..", ".", "../keep", "a/b", `a\b`} {
+		require.Error(t, enroll.RemoveHostedRepository(hostedSpec(root), id), "id %q", id)
+	}
+
+	require.DirExists(t, filepath.Join(root, "keep"))
+
+	// A non-hosted target owns no hosted repository, and an empty id names none.
+	require.NoError(t, enroll.RemoveHostedRepository(enroll.TargetSpec{Kind: "b2"}, "ag_h1"))
+	require.NoError(t, enroll.RemoveHostedRepository(hostedSpec(root), ""))
+	require.DirExists(t, root)
 }

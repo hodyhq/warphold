@@ -85,7 +85,8 @@ func StartHeadless(ctx context.Context, configFile, repoPassword, scope string) 
 		// repository's maintenance owner, and a hosted repository is served
 		// over an append-only gateway that would refuse the deletes and the
 		// kopia.maintenance overwrite a compaction issues. This is the
-		// server-mode equivalent of --no-auto-maintenance.
+		// server-mode equivalent of --no-auto-maintenance; the option's effect
+		// is pinned by internal/server's TestDisableMaintenanceStopsTheMaintenanceManager.
 		DisableMaintenance: true,
 	})
 	if err != nil {

@@ -141,6 +141,14 @@ func (s *Server) handleAgentRevoke(w http.ResponseWriter, r *http.Request) {
 		adminFailed(w, "revoke agent", err)
 		return
 	}
+	// Phase two: the repository is removed when the retention window closes.
+	// Scheduled after the revoke lands, so a queued reap can never outlive a
+	// revocation that failed.
+	retention := time.Duration(s.revokedRetentionDays(ctx)) * 24 * time.Hour
+	if _, err := s.store().ScheduleReap(ctx, a.ID, s.now().Add(retention)); err != nil {
+		adminFailed(w, "schedule reap", err)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

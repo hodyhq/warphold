@@ -656,11 +656,11 @@ func (s *Server) SetRepository(ctx context.Context, rep repo.Repository) error {
 		return err
 	}
 
-	// warphold: the equivalent of the CLI's --no-auto-maintenance for a
-	// server-mode engine. WarpHold devices never run maintenance: the Fleet
-	// identity owns it (spec 7.1 step 5), and the repository's owner field is
-	// not the only thing standing between a device and a compaction that the
-	// append-only gateway would reject.
+	// warphold: opt out of automatic maintenance entirely, the server-mode
+	// counterpart of the CLI's --no-auto-maintenance. Upstream relies on the
+	// repository's maintenance owner to decide who runs it, which is a value
+	// in the repository that can change under a running server; a client that
+	// must never run maintenance needs to say so locally.
 	if !s.options.DisableMaintenance {
 		s.maint = maybeStartMaintenanceManager(ctx, s.rep, s, s.options.MinMaintenanceInterval)
 	}

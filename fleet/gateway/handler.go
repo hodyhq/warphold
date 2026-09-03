@@ -30,6 +30,11 @@ const BucketName = "warphold"
 // catch-all.
 const PathPrefix = "/" + BucketName + "/"
 
+// DefaultRegion is the region the gateway advertises and verifies signatures
+// against when Config.Region is empty. Provisioning puts it in the device's
+// connection info, so the two ends cannot drift apart.
+const DefaultRegion = BucketName
+
 // locationRegion is the region minio-go hardcodes into the signature of a
 // GetBucketLocation request, whatever the client was configured with.
 const locationRegion = "us-east-1"
@@ -105,7 +110,7 @@ type Config struct {
 	// ObjectStore per hosted target, shared by that target's devices.
 	StoreFor func(ctx context.Context, agentID string) (ObjectStore, error)
 
-	// Bucket and Region default to BucketName and "warphold". Region is what
+	// Bucket and Region default to BucketName and DefaultRegion. Region is what
 	// GetBucketLocation advertises and what a credential scope must name.
 	Bucket, Region string
 
@@ -152,7 +157,7 @@ func NewGateway(c Config) *Gateway {
 	}
 
 	if g.region == "" {
-		g.region = BucketName
+		g.region = DefaultRegion
 	}
 
 	if g.maxBytes <= 0 {

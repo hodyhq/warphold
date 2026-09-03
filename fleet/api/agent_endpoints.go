@@ -19,6 +19,7 @@ import (
 
 	"github.com/kopia/kopia/agent/poll"
 	"github.com/kopia/kopia/fleet/enroll"
+	"github.com/kopia/kopia/fleet/gateway"
 	"github.com/kopia/kopia/fleet/store"
 )
 
@@ -127,6 +128,9 @@ func (s *Server) specFor(ctx context.Context, t *store.Target) (enroll.TargetSpe
 		}
 		spec.StorageMode, spec.HostedRoot = t.StorageMode, t.Path
 		spec.PublicHost, spec.TLS = u.Host, u.Scheme == "https"
+		// The same region the mounted gateway verifies signatures against;
+		// mountGateway leaves Config.Region empty, so this is that default.
+		spec.Region = gateway.DefaultRegion
 	}
 	return spec, nil
 }
@@ -226,6 +230,11 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		// leaves no credential and no half-agent behind.
 		if err := s.store().DeleteAgent(rctx, id); err != nil {
 			log.Printf("warphold fleet: enroll %s failed at stage cleanup: agent row may remain (%s)", id, errCategory(err))
+		}
+		// And the repository it was given, which nothing else would collect:
+		// the reap job only ever sees agents that finished enrolling.
+		if err := enroll.RemoveHostedRepository(spec, id); err != nil {
+			log.Printf("warphold fleet: enroll %s failed at stage cleanup: repository may remain (%s)", id, errCategory(err))
 		}
 	}()
 	bundle, err = prov.Provision(ctx, spec, id)

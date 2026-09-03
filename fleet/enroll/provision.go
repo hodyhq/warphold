@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/kopia/kopia/fleet/b2api"
@@ -234,7 +235,7 @@ func (p *Provisioner) provisionHosted(ctx context.Context, t TargetSpec, agentID
 
 	region := t.Region
 	if region == "" {
-		region = gateway.BucketName
+		region = gateway.DefaultRegion
 	}
 
 	scheme := "http://"
@@ -261,9 +262,10 @@ func (p *Provisioner) provisionHosted(ctx context.Context, t TargetSpec, agentID
 	}, nil
 }
 
-// rollback hands back credentials that Provision minted before it failed. The
-// repository directory, if one was created, is left alone: it holds no data
-// and the reap job owns removal (D6).
+// rollback hands back everything Provision minted before it failed: the
+// credentials, and for a hosted target the repository directory too. It holds
+// no data - the enrollment never completed - and the reap job only ever sees
+// agents that finished enrolling, so nothing else would clean it up.
 func (p *Provisioner) rollback(ctx context.Context, t TargetSpec, agentID string, b *Bundle) {
 	switch t.Kind {
 	case "b2":
@@ -274,7 +276,41 @@ func (p *Provisioner) rollback(ctx context.Context, t TargetSpec, agentID string
 		if p.Store != nil && b.GatewayKeyID != "" {
 			_, _ = p.Store.DisableDeviceKeysForAgent(ctx, agentID, p.now())
 		}
+
+		_ = RemoveHostedRepository(t, agentID)
 	}
+}
+
+// RemoveHostedRepository deletes one device's repository directory under a
+// hosted target's root. Enrollment calls it to unwind a failure of its own;
+// the reap job (M5) will call it for a revoked device once the retention
+// window closes.
+//
+// The agent id is server-minted, but this is an unlinking of a whole tree, so
+// it is checked rather than trusted: a value carrying a path separator or a
+// relative segment would resolve outside the device's own directory.
+func RemoveHostedRepository(t TargetSpec, agentID string) error {
+	if t.Kind != "hosted" || t.HostedRoot == "" || agentID == "" {
+		return nil
+	}
+
+	if agentID != filepath.Base(agentID) || agentID == "." || agentID == ".." || strings.ContainsAny(agentID, `/\`) {
+		return errors.New("refusing to remove a repository for a malformed agent id")
+	}
+
+	dir := filepath.Join(t.HostedRoot, agentID)
+	if err := os.RemoveAll(dir); err != nil {
+		// Gone is success, whatever the reason RemoveAll gave: a root that is
+		// not a directory at all reports ENOTDIR rather than "not found", and
+		// there is nothing there either way.
+		if _, statErr := os.Lstat(dir); statErr != nil {
+			return nil
+		}
+
+		return err
+	}
+
+	return nil
 }
 
 // initialize creates the repository, connects to a scratch config, and sets

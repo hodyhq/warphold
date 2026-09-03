@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -402,8 +403,12 @@ func TestReservedTmpDirectory(t *testing.T) {
 	_, err = s.Head(ctx, ".tmp/x")
 	require.ErrorIs(t, err, gateway.ErrBadKey)
 
-	// leftovers from a crashed Put are swept on start, not left to accumulate
-	require.NoError(t, os.WriteFile(filepath.Join(dir, ".tmp", "ABCDEF"), []byte("partial"), 0o600))
+	// leftovers from a crashed Put are swept on start, not left to accumulate.
+	// Aged past the sweep threshold: a *fresh* temp file belongs to a write in
+	// flight and is deliberately kept -- see TestNewLocalSweepsOnlyStaleTempFiles.
+	leftover := filepath.Join(dir, ".tmp", "ABCDEF")
+	require.NoError(t, os.WriteFile(leftover, []byte("partial"), 0o600))
+	require.NoError(t, os.Chtimes(leftover, time.Now().Add(-2*time.Hour), time.Now().Add(-2*time.Hour)))
 
 	_, err = gateway.NewLocal(dir, gateway.LocalOptions{})
 	require.NoError(t, err)
@@ -537,4 +542,27 @@ func baseNames(paths []string) []string {
 	}
 
 	return out
+}
+
+// A starting store sweeps abandoned partial writes, but only stale ones: a
+// second opener (hosted provisioning, while devices are uploading) must not
+// delete a Put that is in flight right now.
+func TestNewLocalSweepsOnlyStaleTempFiles(t *testing.T) {
+	dir := t.TempDir()
+
+	_, err := gateway.NewLocal(dir, gateway.LocalOptions{})
+	require.NoError(t, err)
+
+	fresh := filepath.Join(dir, ".tmp", "in-flight")
+	stale := filepath.Join(dir, ".tmp", "crashed")
+	require.NoError(t, os.WriteFile(fresh, []byte("partial"), 0o600))
+	require.NoError(t, os.WriteFile(stale, []byte("partial"), 0o600))
+	require.NoError(t, os.Chtimes(stale, time.Now().Add(-2*time.Hour), time.Now().Add(-2*time.Hour)))
+
+	// A second store on the same root, which is exactly the hosted-adapter case.
+	_, err = gateway.NewLocal(dir, gateway.LocalOptions{})
+	require.NoError(t, err)
+
+	require.FileExists(t, fresh, "a partial write from another opener must survive")
+	require.NoFileExists(t, stale, "a partial write left by a crash must be swept")
 }

@@ -2,8 +2,10 @@ package api_test
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -80,6 +82,45 @@ func TestHostedEnrollProvisionsAndRevokeDisablesTheGatewayKey(t *testing.T) {
 	// job removes it.
 	require.FileExists(t, filepath.Join(root, id, "kopia.repository"), "revocation keeps the repository")
 	require.NotNil(t, h.s.AgentForTesting(ctx, id).RevokedAt)
+
+	// ...and phase two is queued rather than run: one pending reap job, at the
+	// default 30-day retention window.
+	reaps := h.s.PendingReapsForTesting(ctx, id)
+	require.Len(t, reaps, 1)
+	require.WithinDuration(t, time.Now().Add(30*24*time.Hour), reaps[0], time.Minute)
+}
+
+// A configured retention window is what the reap is scheduled for.
+func TestRevokeUsesTheConfiguredRetentionWindow(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+	h.activateAndLogin()
+	h.setPublicURL()
+	gid := h.mkHostedGroup(t, t.TempDir())
+
+	resp, body := h.do("PUT", "/api/v1/fleet/settings", map[string]any{"revoked_retention_days": 7})
+	require.Equal(t, 200, resp.StatusCode, body)
+	require.Equal(t, float64(7), body["revoked_retention_days"])
+
+	for _, bad := range []any{0, -1, 4000, "soon"} {
+		resp, _ := h.do("PUT", "/api/v1/fleet/settings", map[string]any{"revoked_retention_days": bad})
+		require.Equal(t, 400, resp.StatusCode, "revoked_retention_days=%v must be rejected", bad)
+	}
+
+	_, tok := h.do("POST", "/api/v1/fleet/tokens", map[string]any{"group_id": gid})
+	admin := h.jar
+	h.jar = nil
+	resp, body = h.do("POST", "/api/v1/fleet/enroll", map[string]any{"token": tok["token"], "hostname": "fw16", "os": "linux", "arch": "amd64", "scope": "user"})
+	require.Equal(t, 201, resp.StatusCode, body)
+	id := body["agent_id"].(string)
+
+	h.jar = admin
+	resp, _ = h.do("POST", "/api/v1/fleet/agents/"+id+"/revoke", nil)
+	require.Equal(t, 204, resp.StatusCode)
+
+	reaps := h.s.PendingReapsForTesting(ctx, id)
+	require.Len(t, reaps, 1)
+	require.WithinDuration(t, time.Now().Add(7*24*time.Hour), reaps[0], time.Minute)
 }
 
 // Enrollment on a hosted target needs the public URL: it is the S3 endpoint
@@ -98,4 +139,53 @@ func TestHostedEnrollWithoutPublicURLIs409(t *testing.T) {
 	resp, body := h.do("POST", "/api/v1/fleet/enroll", map[string]any{"token": tok, "hostname": "fw16", "os": "linux", "arch": "amd64", "scope": "user"})
 	require.Equal(t, 409, resp.StatusCode, body)
 	require.Contains(t, body["error"], "public URL")
+}
+
+// A failed enrollment leaves nothing behind: no agent row, no gateway key, and
+// no repository directory. The token is already spent, so the device retries
+// with a new one rather than adopting a half-built identity.
+func TestHostedEnrollFailureLeavesNothingBehind(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+	h.setPublicURL()
+
+	root := filepath.Join(t.TempDir(), "hosted")
+	require.NoError(t, os.MkdirAll(root, 0o700))
+	gid := h.mkHostedGroup(t, root)
+	_, tok := h.do("POST", "/api/v1/fleet/tokens", map[string]any{"group_id": gid})
+
+	// The root becomes a file under the target, so provisioning fails after
+	// the device key has been minted -- the window the rollback exists for.
+	require.NoError(t, os.RemoveAll(root))
+	require.NoError(t, os.WriteFile(root, []byte("not a directory"), 0o600))
+
+	before := h.agentIDs(t)
+
+	h.jar = nil
+	resp, body := h.do("POST", "/api/v1/fleet/enroll", map[string]any{"token": tok["token"], "hostname": "fw16", "os": "linux", "arch": "amd64", "scope": "user"})
+	require.Equal(t, 502, resp.StatusCode, body)
+	require.Nil(t, body["agent_id"])
+
+	h.activateAndLoginAgain()
+	require.Equal(t, before, h.agentIDs(t), "a failed enrollment must leave no agent row")
+	require.NoDirExists(t, filepath.Join(root, "ag_"), "and no repository directory")
+}
+
+// agentIDs lists the ids the admin API reports, as a set.
+func (h *harness) agentIDs(t *testing.T) map[string]bool {
+	t.Helper()
+	resp, list := h.doList("GET", "/api/v1/fleet/agents")
+	require.Equal(t, 200, resp.StatusCode)
+
+	out := map[string]bool{}
+	for _, a := range list {
+		out[a["id"].(string)] = true
+	}
+	return out
+}
+
+// activateAndLoginAgain restores an admin session after an enrollment call
+// cleared the jar.
+func (h *harness) activateAndLoginAgain() {
+	h.jar = h.login("hody@hody.dev", "pw12345678")
 }

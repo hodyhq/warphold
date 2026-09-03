@@ -9,7 +9,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kopia/kopia/fleet/gateway"
+	"github.com/kopia/kopia/internal/blobtesting"
 	"github.com/kopia/kopia/internal/gather"
+	"github.com/kopia/kopia/internal/testlogging"
 	"github.com/kopia/kopia/repo/blob"
 	"github.com/kopia/kopia/repo/blob/filesystem"
 )
@@ -57,64 +59,32 @@ func TestHostedStorageIsFlatUnlikeFilesystem(t *testing.T) {
 		"the filesystem provider writes <root>/p/dea/<rest>.f - a path the gateway's flat key space cannot address")
 }
 
-func TestHostedStorageRoundTrip(t *testing.T) {
+// The blob.Storage contract itself, run by Kopia's own conformance suite
+// rather than re-asserted by hand.
+func TestHostedStorageVerifyStorage(t *testing.T) {
+	ctx := testlogging.Context(t)
+	blobtesting.VerifyStorage(ctx, t, hostedStorage(t, t.TempDir(), "dev1/"), blob.PutOptions{})
+}
+
+// What VerifyStorage does not cover: two devices sharing one root see
+// disjoint key spaces, and the factory refuses a prefix that would not confine
+// one device.
+func TestHostedStorageConfinesEachDeviceToItsPrefix(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
-	st := hostedStorage(t, root, "dev1/")
 
-	require.NoError(t, st.PutBlob(ctx, "p0001", gather.FromSlice([]byte("0123456789")), blob.PutOptions{}))
-	require.NoError(t, st.PutBlob(ctx, "p0002", gather.FromSlice([]byte("xy")), blob.PutOptions{}))
-	require.NoError(t, st.PutBlob(ctx, "q0001", gather.FromSlice([]byte("z")), blob.PutOptions{}))
+	require.NoError(t, hostedStorage(t, root, "dev1/").PutBlob(ctx, "p0001", gather.FromSlice([]byte("mine")), blob.PutOptions{}))
 
-	var buf gather.WriteBuffer
-	defer buf.Close()
-
-	require.NoError(t, st.GetBlob(ctx, "p0001", 0, -1, &buf))
-	require.Equal(t, "0123456789", string(buf.ToByteSlice()))
-
-	require.NoError(t, st.GetBlob(ctx, "p0001", 3, 4, &buf))
-	require.Equal(t, "3456", string(buf.ToByteSlice()))
-
-	// A range past the end is invalid, not a short read.
-	require.ErrorIs(t, st.GetBlob(ctx, "p0001", 8, 4, &buf), blob.ErrInvalidRange)
-	require.ErrorIs(t, st.GetBlob(ctx, "p0001", -1, 4, &buf), blob.ErrInvalidRange)
-	require.ErrorIs(t, st.GetBlob(ctx, "nope", 0, -1, &buf), blob.ErrBlobNotFound)
-
-	md, err := st.GetMetadata(ctx, "p0001")
+	other, err := blob.ListAllBlobs(ctx, hostedStorage(t, root, "dev2/"), "")
 	require.NoError(t, err)
-	require.Equal(t, blob.ID("p0001"), md.BlobID)
-	require.Equal(t, int64(10), md.Length)
-	require.False(t, md.Timestamp.IsZero())
+	require.Empty(t, other, "one device must not see another's blobs")
 
-	_, err = st.GetMetadata(ctx, "nope")
-	require.ErrorIs(t, err, blob.ErrBlobNotFound)
-
-	all, err := blob.ListAllBlobs(ctx, st, "")
-	require.NoError(t, err)
-	require.Equal(t, []blob.ID{"p0001", "p0002", "q0001"}, blobIDs(all))
-
-	p, err := blob.ListAllBlobs(ctx, st, "p")
-	require.NoError(t, err)
-	require.Equal(t, []blob.ID{"p0001", "p0002"}, blobIDs(p))
-
-	// The Fleet server owns this repository, so a plain PutBlob replaces; only
-	// the device's HTTP credential is append-only.
-	require.NoError(t, st.PutBlob(ctx, "p0002", gather.FromSlice([]byte("replaced")), blob.PutOptions{}))
-	require.NoError(t, st.GetBlob(ctx, "p0002", 0, -1, &buf))
-	require.Equal(t, "replaced", string(buf.ToByteSlice()))
-
-	require.ErrorIs(t, st.PutBlob(ctx, "p0002", gather.FromSlice([]byte("no")), blob.PutOptions{DoNotRecreate: true}), blob.ErrBlobAlreadyExists)
-
-	require.NoError(t, st.DeleteBlob(ctx, "q0001"))
-	require.NoError(t, st.DeleteBlob(ctx, "q0001"), "deleting a missing blob is not an error")
-	_, err = st.GetMetadata(ctx, "q0001")
-	require.ErrorIs(t, err, blob.ErrBlobNotFound)
-
-	// Another device's prefix is a different key space, sharing the root.
-	other := hostedStorage(t, root, "dev2/")
-	mine, err := blob.ListAllBlobs(ctx, other, "")
-	require.NoError(t, err)
-	require.Empty(t, mine)
+	for _, prefix := range []string{"", "dev1", "/"} {
+		_, err := blob.NewStorage(ctx, blob.ConnectionInfo{
+			Type: gateway.HostedStorageType, Config: &gateway.HostedOptions{Root: root, Prefix: prefix},
+		}, false)
+		require.Error(t, err, "prefix %q does not confine a device", prefix)
+	}
 }
 
 func TestHostedStorageConnectionInfoReopens(t *testing.T) {
@@ -138,13 +108,4 @@ func TestHostedStorageConnectionInfoReopens(t *testing.T) {
 	require.NoError(t, reopened.GetBlob(ctx, "p0001", 0, -1, &buf))
 	require.Equal(t, "hi", string(buf.ToByteSlice()))
 	require.Contains(t, reopened.DisplayName(), root)
-}
-
-func blobIDs(md []blob.Metadata) []blob.ID {
-	out := make([]blob.ID, 0, len(md))
-	for _, m := range md {
-		out = append(out, m.BlobID)
-	}
-
-	return out
 }
