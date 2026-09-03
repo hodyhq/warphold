@@ -291,16 +291,16 @@ func TestMirrorIntervalSettingIsClampedToItsFloor(t *testing.T) {
 
 	s := NewScheduler(st, nil, time.Millisecond)
 
-	require.Equal(t, iv.def, s.intervalFor(ctx, iv), "unset means the default")
+	require.Equal(t, iv.def, intervalFor(ctx, s.st, iv), "unset means the default")
 
 	require.NoError(t, st.SetSetting(ctx, iv.setting, "not a number"))
-	require.Equal(t, iv.def, s.intervalFor(ctx, iv))
+	require.Equal(t, iv.def, intervalFor(ctx, s.st, iv))
 
 	require.NoError(t, st.SetSetting(ctx, iv.setting, "1"))
-	require.Equal(t, iv.min, s.intervalFor(ctx, iv), "a fat-fingered interval is floored")
+	require.Equal(t, iv.min, intervalFor(ctx, s.st, iv), "a fat-fingered interval is floored")
 
 	require.NoError(t, st.SetSetting(ctx, iv.setting, strconv.Itoa(int((2*time.Hour).Seconds()))))
-	require.Equal(t, 2*time.Hour, s.intervalFor(ctx, iv))
+	require.Equal(t, 2*time.Hour, intervalFor(ctx, s.st, iv))
 }
 
 func TestSchedulerTimeoutFallsBackToTheDefault(t *testing.T) {

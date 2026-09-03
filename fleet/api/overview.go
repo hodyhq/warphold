@@ -1,11 +1,14 @@
 package api
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
 	"github.com/kopia/kopia/fleet/health"
+	"github.com/kopia/kopia/fleet/jobs"
 	"github.com/kopia/kopia/fleet/store"
 )
 
@@ -29,6 +32,14 @@ type overviewCounts struct {
 	Red     int `json:"red"`
 	Unknown int `json:"unknown"`
 	Targets int `json:"targets"`
+}
+
+// overviewOffsite is the dashboard's offsite tile: how many targets keep a
+// mirror at all, and how many devices are behind in one. Both are zero on a
+// fleet with no mirror, which is how the UI knows to hide the tile.
+type overviewOffsite struct {
+	TargetsWithMirror int `json:"targets_with_mirror"`
+	StaleDevices      int `json:"stale_devices"`
 }
 
 type overviewBucket struct {
@@ -74,6 +85,7 @@ type overviewOut struct {
 	DedupRatio    *float64         `json:"dedup_ratio"`
 	Last24h       overviewTimeline `json:"last24h"`
 	LatestFailure *overviewFailure `json:"latest_failure"`
+	Offsite       overviewOffsite  `json:"offsite"`
 	Devices       []overviewDevice `json:"devices"`
 }
 
@@ -257,5 +269,56 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	s.fillOffsite(ctx, &out, targets, groups, live, now)
+
 	writeJSON(w, http.StatusOK, out)
+}
+
+// fillOffsite counts the devices whose offsite copy is behind. It is one
+// extra query (every stats row) and only when some target actually mirrors -
+// the overview is polled every 30 s by every open dashboard.
+func (s *Server) fillOffsite(ctx context.Context, out *overviewOut, targets []store.Target, groups []store.Group, live map[string]store.Agent, now time.Time) {
+	mirrored := make(map[int64]bool, len(targets))
+
+	for _, t := range targets {
+		if t.MirrorKind != "" {
+			mirrored[t.ID] = true
+			out.Offsite.TargetsWithMirror++
+		}
+	}
+
+	if out.Offsite.TargetsWithMirror == 0 {
+		return
+	}
+
+	stats, err := s.store().RepoStats(ctx)
+	if err != nil {
+		// The tile reads "0 behind" rather than taking the whole dashboard
+		// down over the one counter that is not load-bearing.
+		log.Printf("warphold fleet: reading repository stats: %v", errCategory(err))
+
+		return
+	}
+
+	every := jobs.MirrorInterval(ctx, s.store())
+
+	groupTarget := make(map[int64]int64, len(groups))
+	for _, g := range groups {
+		groupTarget[g.ID] = g.TargetID
+	}
+
+	for _, a := range live {
+		if !mirrored[groupTarget[a.GroupID]] {
+			continue
+		}
+
+		var at *time.Time
+		if rs, ok := stats[a.ID]; ok {
+			at = rs.MirroredAt
+		}
+
+		if mirrorStale(at, now, every) {
+			out.Offsite.StaleDevices++
+		}
+	}
 }

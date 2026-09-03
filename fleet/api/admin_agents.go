@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"time"
@@ -8,8 +9,54 @@ import (
 	"github.com/gorilla/mux"
 
 	"github.com/kopia/kopia/fleet/health"
+	"github.com/kopia/kopia/fleet/jobs"
 	"github.com/kopia/kopia/fleet/store"
 )
+
+// mirrorOut is a device's offsite copy: when its blobs last reached the
+// mirror bucket, how much is there, and whether that was long enough ago to
+// be a problem. It is null for a device whose target has no mirror at all -
+// "no offsite" and "offsite behind" are different states and the UI says so.
+type mirrorOut struct {
+	MirroredAt    *time.Time `json:"mirrored_at"`
+	MirroredBytes int64      `json:"mirrored_bytes"`
+	Stale         bool       `json:"stale"`
+}
+
+// mirrorStale calls a copy stale once it is older than three mirror
+// intervals, so a fleet can miss two runs (one slow, one failed) before it
+// complains. A device that has never been mirrored is stale by definition:
+// its target has a mirror and the device is not in it.
+func mirrorStale(at *time.Time, now time.Time, every time.Duration) bool {
+	return at == nil || now.Sub(*at) > 3*every
+}
+
+// mirrorFor resolves a device's offsite state through its group's target, or
+// nil when that target keeps no mirror.
+func (s *Server) mirrorFor(ctx context.Context, a store.Agent) *mirrorOut {
+	st := s.store()
+
+	g, err := st.Group(ctx, a.GroupID)
+	if err != nil {
+		return nil
+	}
+
+	t, err := st.Target(ctx, g.TargetID)
+	if err != nil || t.MirrorKind == "" {
+		return nil
+	}
+
+	var m mirrorOut
+	// No stats row yet means nothing has been mirrored, which is exactly what
+	// a zero mirrorOut says; a read failure is not worth failing the page over.
+	if rs, err := st.RepoStat(ctx, a.ID); err == nil {
+		m.MirroredAt, m.MirroredBytes = rs.MirroredAt, rs.MirroredBytes
+	}
+
+	m.Stale = mirrorStale(m.MirroredAt, s.now(), jobs.MirrorInterval(ctx, st))
+
+	return &m
+}
 
 var allowedCommands = map[string]bool{"snapshot-now": true, "pause": true, "resume": true, "verify": true}
 
@@ -98,7 +145,8 @@ func (s *Server) handleAgentGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, struct {
 		agentOut
 		Reports []store.Report `json:"reports"`
-	}{s.agentOut(*a, lr, lastOK), reports})
+		Mirror  *mirrorOut     `json:"mirror"`
+	}{s.agentOut(*a, lr, lastOK), reports, s.mirrorFor(ctx, *a)})
 }
 
 func (s *Server) handleAgentRevoke(w http.ResponseWriter, r *http.Request) {

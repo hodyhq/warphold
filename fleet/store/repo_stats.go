@@ -42,3 +42,31 @@ func (s *Store) SetMirrored(ctx context.Context, agentID string, at time.Time, b
 		agentID, ts(at), ts(at), bytes)
 	return err
 }
+
+// RepoStats returns every agent's stats row keyed by agent id. The overview
+// folds the whole fleet in Go and may not issue a query per agent.
+func (s *Store) RepoStats(ctx context.Context) (map[string]RepoStat, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+repoStatCols+` FROM repo_stats`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := map[string]RepoStat{}
+
+	for rows.Next() {
+		var r RepoStat
+
+		var collected string
+
+		var mirrored sql.NullString
+		if err := rows.Scan(&r.AgentID, &collected, &r.LogicalBytes, &r.StoredBytes, &r.BlobCount, &mirrored, &r.MirroredBytes); err != nil {
+			return nil, err
+		}
+
+		r.CollectedAt, r.MirroredAt = parseTS(collected), parseTSP(mirrored)
+		out[r.AgentID] = r
+	}
+
+	return out, rows.Err()
+}
