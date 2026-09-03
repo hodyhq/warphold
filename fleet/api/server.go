@@ -23,6 +23,7 @@ import (
 	"github.com/kopia/kopia/fleet"
 	"github.com/kopia/kopia/fleet/b2api"
 	"github.com/kopia/kopia/fleet/jobs"
+	"github.com/kopia/kopia/fleet/mail"
 	"github.com/kopia/kopia/fleet/seal"
 	"github.com/kopia/kopia/fleet/store"
 )
@@ -61,6 +62,8 @@ type Server struct {
 	st    *store.Store
 	key   seal.Key
 	login *limiter
+	// smtpTest throttles the test-send endpoint, per admin.
+	smtpTest *limiter
 	// nowFn is the server clock, read through now() under mu so
 	// SetNowForTesting can move it between requests without racing handlers.
 	nowFn func() time.Time
@@ -90,7 +93,7 @@ type Server struct {
 
 // New creates a Server for stateDir; if Fleet was activated before, its state is loaded.
 func New(stateDir string) *Server {
-	s := &Server{paths: fleet.PathsFor(stateDir), login: newLimiter(loginMaxAttempts, loginWindow), nowFn: time.Now, b2: b2api.New(nil)}
+	s := &Server{paths: fleet.PathsFor(stateDir), login: newLimiter(loginMaxAttempts, loginWindow), smtpTest: newLimiter(1, smtpTestWindow), nowFn: time.Now, b2: b2api.New(nil)}
 	// A missing key file just means "never activated"; anything else (bad
 	// permissions, a corrupt DB) must be loud, because the server would
 	// otherwise report "not activated" and print the setup-token path while
@@ -519,6 +522,10 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusForbidden, "missing or invalid "+csrfHeader+" header")
 			return
 		}
+		if pu, _ := s.PublicURL(r.Context()); !originAllowed(r, pu) {
+			writeErr(w, http.StatusForbidden, "request origin does not match the configured public URL")
+			return
+		}
 		if err := s.store().RevokeSession(r.Context(), sess.ID, s.now()); err != nil {
 			adminFailed(w, "revoke session", err)
 			return
@@ -534,6 +541,12 @@ func (s *Server) SetupTokenPathForTesting() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.setupTokenPath
+}
+
+// MailConfigForTesting exposes the stored SMTP settings, password included,
+// so a test can prove the password round-trips through the seal.
+func (s *Server) MailConfigForTesting(ctx context.Context) (mail.Config, error) {
+	return mail.Load(ctx, s.store(), s.sealKey())
 }
 
 // SetB2ForTesting swaps the B2 client.

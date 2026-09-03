@@ -29,8 +29,9 @@ func (s *Server) mountAdmin(m *mux.Router) {
 	m.HandleFunc("/api/v1/fleet/overview", adm(s.handleOverview)).Methods(http.MethodGet)    // Task 12
 	m.HandleFunc("/api/v1/fleet/settings", adm(s.handleSettingsGet)).Methods(http.MethodGet) // Task 14
 	m.HandleFunc("/api/v1/fleet/settings", adm(s.handleSettingsUpdate)).Methods(http.MethodPut)
-	s.mountAdminEnrollment(m, adm) // Task 9/11: tokens + agents
-	s.mountAdminJobs(m, adm)       // Task 28: scheduled jobs
+	m.HandleFunc("/api/v1/fleet/settings/smtp/test", adm(s.handleSMTPTest)).Methods(http.MethodPost) // Task 30
+	s.mountAdminEnrollment(m, adm)                                                                   // Task 9/11: tokens + agents
+	s.mountAdminJobs(m, adm)                                                                         // Task 28: scheduled jobs
 }
 
 func pathID(r *http.Request) (int64, bool) {
