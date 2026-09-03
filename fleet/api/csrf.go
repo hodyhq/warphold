@@ -88,16 +88,6 @@ func (s *Server) requireCSRF(next http.HandlerFunc) http.HandlerFunc {
 				writeErr(w, http.StatusForbidden, "missing or invalid "+csrfHeader+" header")
 				return
 			}
-			pu, ok := s.PublicURL(r.Context())
-			if !ok {
-				s.csrfWarnOnce.Do(func() {
-					log.Print("warphold fleet: public_url is not set, so the CSRF origin check is disabled; set it in Settings")
-				})
-			}
-			if !originAllowed(r, pu) {
-				writeErr(w, http.StatusForbidden, "request origin does not match the configured public URL")
-				return
-			}
 		}
 		next(w, r)
 	}
