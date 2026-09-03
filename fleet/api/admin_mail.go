@@ -1,12 +1,14 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/kopia/kopia/fleet/mail"
+	"github.com/kopia/kopia/fleet/seal"
 )
 
 const (
@@ -38,21 +40,31 @@ func (s *Server) handleSMTPTest(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg, err := mail.Load(r.Context(), s.store(), s.sealKey())
 	if err != nil {
+		// The one error worth naming: the stored password does not open with
+		// this fleet's key (a restored DB, a rotated passphrase). The fix is
+		// to re-enter it, and no other message would say so.
+		if errors.Is(err, seal.ErrTampered) {
+			writeErr(w, http.StatusInternalServerError, "the stored SMTP password could not be unsealed; re-enter it in Settings")
+			return
+		}
 		adminFailed(w, "read smtp settings", err)
 		return
 	}
 	if err := mail.Send(r.Context(), cfg, []string{in.To}, smtpTestSubject, smtpTestText, smtpTestHTML); err != nil {
-		writeErr(w, http.StatusBadRequest, redactPassword(err.Error(), cfg.Password))
+		writeErr(w, http.StatusBadRequest, redactCredentials(err.Error(), cfg.Username, cfg.Password))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sent": true})
 }
 
-// redactPassword keeps the password out of an error text that quotes the
-// command it failed on.
-func redactPassword(msg, password string) string {
-	if password == "" {
-		return msg
+// redactCredentials keeps both halves of the SMTP login out of an error text
+// that quotes the command it failed on - some relays echo the rejected
+// username, and a few echo the whole AUTH argument.
+func redactCredentials(msg, username, password string) string {
+	for _, secret := range []string{password, username} {
+		if secret != "" {
+			msg = strings.ReplaceAll(msg, secret, "[redacted]")
+		}
 	}
-	return strings.ReplaceAll(msg, password, "[redacted]")
+	return msg
 }

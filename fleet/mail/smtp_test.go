@@ -324,12 +324,14 @@ func TestSendRequiresSTARTTLSWhenTLSIsOn(t *testing.T) {
 }
 
 func TestSubjectIsRFC2047EncodedOnlyWhenItNeedsIt(t *testing.T) {
-	ascii, err := buildMessage(Config{From: "fleet@example.com"}, []string{"ops@example.com"}, "Weekly digest", "t", "<p>h</p>")
+	ascii, from, rcpt, err := buildMessage(Config{From: "fleet@example.com"}, []string{"ops@example.com"}, "Weekly digest", "t", "<p>h</p>")
 	require.NoError(t, err)
+	require.Equal(t, "fleet@example.com", from, "the envelope is parsed once, here")
+	require.Equal(t, []string{"ops@example.com"}, rcpt)
 	require.Contains(t, string(ascii), "Subject: Weekly digest")
 	require.Contains(t, string(ascii), "@localhost>", "no public host configured")
 
-	utf8, err := buildMessage(Config{From: "fleet@example.com"}, []string{"ops@example.com"}, "Wöchentlich", "t", "<p>h</p>")
+	utf8, _, _, err := buildMessage(Config{From: "fleet@example.com"}, []string{"ops@example.com"}, "Wöchentlich", "t", "<p>h</p>")
 	require.NoError(t, err)
 	require.Contains(t, string(utf8), "Subject: =?utf-8?")
 	require.NotContains(t, string(utf8), "Wöchentlich")

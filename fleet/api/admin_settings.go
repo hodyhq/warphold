@@ -61,9 +61,12 @@ func (s *Server) currentSettings(ctx context.Context) (settingsOut, error) {
 	if err != nil {
 		return settingsOut{}, err
 	}
-	// Load applies the SMTP2GO-shaped defaults, so a fleet that has never
+	// Settings applies the SMTP2GO-shaped defaults, so a fleet that has never
 	// touched the mail settings still shows the host and port it would use.
-	sm, err := mail.Load(ctx, s.store(), s.sealKey())
+	// It takes no sealing key: the settings screen reports whether a password
+	// is stored, never what it is, so a corrupt or wrongly-keyed sealed value
+	// cannot take the page down with it.
+	sm, err := mail.Settings(ctx, s.store())
 	if err != nil {
 		return settingsOut{}, err
 	}

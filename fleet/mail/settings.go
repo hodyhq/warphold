@@ -55,10 +55,11 @@ func SealPassword(k seal.Key, pw string) (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// Load reads the stored SMTP settings over Defaults and unseals the password.
-// An unopenable password is an error rather than an empty one: sending with a
-// silently blank password would fail at the server with a misleading message.
-func Load(ctx context.Context, st *store.Store, k seal.Key) (Config, error) {
+// Settings reads the non-secret SMTP settings over Defaults. It takes no
+// sealing key on purpose: the settings screen must never unseal the password,
+// so a wrong, rotated or corrupt sealed value cannot take the whole page down
+// with it - PasswordSet reports presence, and only the sending paths open it.
+func Settings(ctx context.Context, st *store.Store) (Config, error) {
 	if st == nil {
 		return Config{}, errors.New("fleet is not activated")
 	}
@@ -71,7 +72,7 @@ func Load(ctx context.Context, st *store.Store, k seal.Key) (Config, error) {
 		return v
 	}
 	host, port, user, from := get(HostKey), get(PortKey), get(UsernameKey), get(FromKey)
-	tlsOn, sealed, pub := get(TLSKey), get(PasswordKey), get(publicURLKey)
+	tlsOn, pub := get(TLSKey), get(publicURLKey)
 	if firstErr != nil {
 		return Config{}, firstErr
 	}
@@ -91,6 +92,26 @@ func Load(ctx context.Context, st *store.Store, k seal.Key) (Config, error) {
 		c.TLS = tlsOn == "true"
 	}
 	c.Username, c.From = user, from
+	if pub != "" {
+		if u, err := url.Parse(pub); err == nil {
+			c.MessageIDHost = u.Hostname()
+		}
+	}
+	return c, nil
+}
+
+// Load is Settings plus the unsealed password: the sending paths only. An
+// unopenable password is an error rather than an empty one, because sending
+// with a silently blank password fails at the server with a misleading message.
+func Load(ctx context.Context, st *store.Store, k seal.Key) (Config, error) {
+	c, err := Settings(ctx, st)
+	if err != nil {
+		return Config{}, err
+	}
+	sealed, err := st.Setting(ctx, PasswordKey)
+	if err != nil {
+		return Config{}, err
+	}
 	if sealed != "" {
 		raw, err := hex.DecodeString(sealed)
 		if err != nil {
@@ -101,11 +122,6 @@ func Load(ctx context.Context, st *store.Store, k seal.Key) (Config, error) {
 			return Config{}, err
 		}
 		c.Password = string(plain)
-	}
-	if pub != "" {
-		if u, err := url.Parse(pub); err == nil {
-			c.MessageIDHost = u.Hostname()
-		}
 	}
 	return c, nil
 }

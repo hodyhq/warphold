@@ -67,15 +67,7 @@ func Defaults() Config {
 func Send(ctx context.Context, c Config, to []string, subject, textBody, htmlBody string) error {
 	// The message is built (and so validated) before anything is dialled, so
 	// a rejected header never reaches a server.
-	msg, err := buildMessage(c, to, subject, textBody, htmlBody)
-	if err != nil {
-		return err
-	}
-	from, err := parseAddress("smtp_from", c.From)
-	if err != nil {
-		return err
-	}
-	rcpt, err := parseAddresses(to)
+	msg, from, rcpt, err := buildMessage(c, to, subject, textBody, htmlBody)
 	if err != nil {
 		return err
 	}
@@ -137,11 +129,11 @@ func Send(ctx context.Context, c Config, to []string, subject, textBody, htmlBod
 			return err
 		}
 	}
-	if err := cl.Mail(from.Address); err != nil {
+	if err := cl.Mail(from); err != nil {
 		return err
 	}
 	for _, a := range rcpt {
-		if err := cl.Rcpt(a.Address); err != nil {
+		if err := cl.Rcpt(a); err != nil {
 			return err
 		}
 	}
@@ -206,24 +198,28 @@ func parseAddresses(to []string) ([]*netmail.Address, error) {
 
 // buildMessage renders the RFC 5322 message: headers, then a
 // multipart/alternative body with the text part first, as the standard wants.
-func buildMessage(c Config, to []string, subject, textBody, htmlBody string) ([]byte, error) {
+// It also returns the envelope Send needs - the bare From and recipient
+// addresses - so the addresses are parsed and validated exactly once.
+func buildMessage(c Config, to []string, subject, textBody, htmlBody string) (msg []byte, envFrom string, envRcpt []string, err error) {
 	if strings.ContainsAny(subject, "\r\n") {
-		return nil, errors.New("subject must not contain a line break")
+		return nil, "", nil, errors.New("subject must not contain a line break")
 	}
 	if textBody == "" && htmlBody == "" {
-		return nil, errors.New("message has no body")
+		return nil, "", nil, errors.New("message has no body")
 	}
 	from, err := parseAddress("smtp_from", c.From)
 	if err != nil {
-		return nil, err
+		return nil, "", nil, err
 	}
 	rcpt, err := parseAddresses(to)
 	if err != nil {
-		return nil, err
+		return nil, "", nil, err
 	}
 	list := make([]string, 0, len(rcpt))
+	envRcpt = make([]string, 0, len(rcpt))
 	for _, a := range rcpt {
 		list = append(list, formatAddress(a))
+		envRcpt = append(envRcpt, a.Address)
 	}
 
 	var body strings.Builder
@@ -246,13 +242,13 @@ func buildMessage(c Config, to []string, subject, textBody, htmlBody string) ([]
 		return qp.Close()
 	}
 	if err := add("text/plain", textBody); err != nil {
-		return nil, err
+		return nil, "", nil, err
 	}
 	if err := add("text/html", htmlBody); err != nil {
-		return nil, err
+		return nil, "", nil, err
 	}
 	if err := mp.Close(); err != nil {
-		return nil, err
+		return nil, "", nil, err
 	}
 
 	host := c.MessageIDHost
@@ -261,7 +257,7 @@ func buildMessage(c Config, to []string, subject, textBody, htmlBody string) ([]
 	}
 	id, err := messageID(host)
 	if err != nil {
-		return nil, err
+		return nil, "", nil, err
 	}
 	var out strings.Builder
 	for _, h := range [][2]string{
@@ -277,7 +273,7 @@ func buildMessage(c Config, to []string, subject, textBody, htmlBody string) ([]
 	}
 	out.WriteString("\r\n")
 	out.WriteString(body.String())
-	return []byte(out.String()), nil
+	return []byte(out.String()), from.Address, envRcpt, nil
 }
 
 // formatAddress renders a bare address as itself; net/mail's String would

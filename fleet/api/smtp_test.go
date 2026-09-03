@@ -2,12 +2,16 @@ package api_test
 
 import (
 	"context"
+	"encoding/hex"
+	"net"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/kopia/kopia/fleet"
+	"github.com/kopia/kopia/fleet/mail"
 	"github.com/kopia/kopia/fleet/store"
 )
 
@@ -132,4 +136,85 @@ func TestSMTPTestSendReportsTheRawErrorAndIsRateLimited(t *testing.T) {
 
 	resp, body = h.do("POST", "/api/v1/fleet/settings/smtp/test", map[string]any{"to": "ops@example.com"})
 	require.Equal(t, 429, resp.StatusCode, body)
+}
+
+// A sealed password that will not open (a restored DB, a rotated passphrase)
+// must not take the settings screen down with it: the read path never
+// unseals, so GET still answers with every other setting and "set".
+func TestCorruptSealedPasswordLeavesTheSettingsReadable(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+	h.activateAndLogin()
+	resp, body := h.do("PUT", "/api/v1/fleet/settings", smtpSettings())
+	require.Equal(t, 200, resp.StatusCode, body)
+
+	st, err := store.Open(fleet.PathsFor(h.stateDir).DB)
+	require.NoError(t, err)
+	defer st.Close()
+	sealed, err := st.Setting(ctx, "sealed_smtp_password")
+	require.NoError(t, err)
+	// Flip the last byte of the ciphertext: it is now unopenable but present.
+	// XOR rather than an assignment, so it always differs from what was there.
+	raw, err := hex.DecodeString(sealed)
+	require.NoError(t, err)
+	raw[len(raw)-1] ^= 0xff
+	require.NoError(t, st.SetSetting(ctx, "sealed_smtp_password", hex.EncodeToString(raw)))
+
+	resp, body = h.do("GET", "/api/v1/fleet/settings", nil)
+	require.Equal(t, 200, resp.StatusCode, body)
+	require.Equal(t, true, body["smtp_password_set"], "the row is there, whatever it holds")
+	require.Equal(t, "mail.example.com", body["smtp_host"], "every other setting is intact")
+	require.Equal(t, float64(587), body["smtp_port"])
+	require.Equal(t, "fleet@example.com", body["smtp_from"])
+
+	// A PUT that touches something else must not unseal it either.
+	resp, body = h.do("PUT", "/api/v1/fleet/settings", map[string]any{"smtp_username": "u2"})
+	require.Equal(t, 200, resp.StatusCode, body)
+	require.Equal(t, "u2", body["smtp_username"])
+
+	// The send path is the one that has to say what is wrong.
+	resp, body = h.do("POST", "/api/v1/fleet/settings/smtp/test", map[string]any{"to": "ops@example.com"})
+	require.Equal(t, 500, resp.StatusCode)
+	require.Contains(t, body["error"], "could not be unsealed")
+	require.Contains(t, body["error"], "re-enter it in Settings")
+}
+
+// Some relays quote the credentials they just rejected. Neither half may
+// reach the admin's browser (or the fleet log) in the surfaced error.
+func TestTestSendRedactsBothCredentialsFromTheServersError(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			// Rejected on the greeting, quoting both credentials back.
+			c.Write([]byte("554 5.7.1 rejected: user=leaky-user pass=leaky-pass\r\n")) //nolint:errcheck
+			c.Close()                                                                  //nolint:errcheck
+		}
+	}()
+	port := ln.Addr().(*net.TCPAddr).Port
+	// The port whitelist is what the UI offers; widen it for the stub.
+	restore := mail.AllowedPorts
+	mail.AllowedPorts = append(append([]int{}, restore...), port)
+	t.Cleanup(func() { mail.AllowedPorts = restore })
+
+	h := newHarness(t)
+	h.activateAndLogin()
+	resp, body := h.do("PUT", "/api/v1/fleet/settings", map[string]any{
+		"smtp_host": "127.0.0.1", "smtp_port": port, "smtp_username": "leaky-user",
+		"smtp_password": "leaky-pass", "smtp_from": "fleet@example.com",
+	})
+	require.Equal(t, 200, resp.StatusCode, body)
+
+	resp, body = h.do("POST", "/api/v1/fleet/settings/smtp/test", map[string]any{"to": "ops@example.com"})
+	require.Equal(t, 400, resp.StatusCode)
+	msg, _ := body["error"].(string)
+	require.Contains(t, msg, "554", "the raw error still reaches the admin")
+	require.NotContains(t, msg, "leaky-pass")
+	require.NotContains(t, msg, "leaky-user")
+	require.Equal(t, 2, strings.Count(msg, "[redacted]"))
 }
