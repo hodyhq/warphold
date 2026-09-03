@@ -19,6 +19,7 @@ type gatewayDeps struct {
 	mu     sync.Mutex
 	st     *store.Store
 	gw     *gateway.Gateway
+	keys   *gateway.Keys
 	stores map[int64]gateway.ObjectStore
 }
 
@@ -26,9 +27,14 @@ type gatewayDeps struct {
 // Fleet is served, activated or not: before activation there are no device keys,
 // so every request is an unknown key and answers 403, which is exactly what a
 // revoked device sees too.
+// Device requests go through sealHeld as well: they unseal a device secret,
+// so a passphrase rotation must wait for the ones in flight (bounded by the
+// gateway's own object-size cap) rather than let one 403 on a secret that was
+// re-sealed underneath it.
 func (s *Server) mountGateway(m *mux.Router) {
-	m.Path("/" + gateway.BucketName).Handler(gatewayHandler{s})
-	m.PathPrefix(gateway.PathPrefix).Handler(gatewayHandler{s})
+	h := http.HandlerFunc(s.sealHeld(gatewayHandler{s}.ServeHTTP))
+	m.Path("/" + gateway.BucketName).Handler(h)
+	m.PathPrefix(gateway.PathPrefix).Handler(h)
 }
 
 // gatewayHandler defers building the Gateway until the first request, because
@@ -63,8 +69,9 @@ func (s *Server) gateway() *gateway.Gateway {
 
 	s.gwDeps.st = st
 	s.gwDeps.stores = map[int64]gateway.ObjectStore{}
+	s.gwDeps.keys = gateway.NewKeys(st, s.sealKey())
 	s.gwDeps.gw = gateway.NewGateway(gateway.Config{
-		Keys:     gateway.NewKeys(st, s.sealKey()),
+		Keys:     s.gwDeps.keys,
 		StoreFor: s.storeForAgent,
 		Now:      s.now,
 	})
@@ -133,4 +140,19 @@ func (s *Server) targetStore(t store.Target) (gateway.ObjectStore, error) {
 	s.gwDeps.stores[t.ID] = objs
 
 	return objs, nil
+}
+
+// resetGateway drops the cached key entries and the Gateway itself. The
+// Gateway holds the sealing key by value, so a passphrase rotation has to
+// rebuild it: invalidating the cache alone would only re-read secrets the old
+// key can no longer open.
+func (s *Server) resetGateway() {
+	s.gwDeps.mu.Lock()
+	defer s.gwDeps.mu.Unlock()
+
+	if s.gwDeps.keys != nil {
+		s.gwDeps.keys.InvalidateAll()
+	}
+
+	s.gwDeps.gw, s.gwDeps.keys = nil, nil
 }

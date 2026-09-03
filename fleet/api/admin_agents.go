@@ -16,7 +16,7 @@ var allowedCommands = map[string]bool{"snapshot-now": true, "pause": true, "resu
 func (s *Server) mountAdminAgents(m *mux.Router, adm func(http.HandlerFunc) http.HandlerFunc) {
 	m.HandleFunc("/api/v1/fleet/agents", adm(s.handleAgentList)).Methods(http.MethodGet)
 	m.HandleFunc("/api/v1/fleet/agents/{id}", adm(s.handleAgentGet)).Methods(http.MethodGet)
-	m.HandleFunc("/api/v1/fleet/agents/{id}/revoke", adm(s.handleAgentRevoke)).Methods(http.MethodPost)
+	m.HandleFunc("/api/v1/fleet/agents/{id}/revoke", adm(s.sealHeld(s.handleAgentRevoke))).Methods(http.MethodPost)
 	m.HandleFunc("/api/v1/fleet/agents/{id}/commands", adm(s.handleAgentCommand)).Methods(http.MethodPost)
 }
 

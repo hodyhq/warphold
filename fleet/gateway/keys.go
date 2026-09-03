@@ -103,6 +103,17 @@ func (k *Keys) Invalidate(agentID string) {
 	}
 }
 
+// InvalidateAll drops every cached key. A passphrase rotation calls it: every
+// cached secret was unsealed with the old key, and every sealed secret has to
+// be read and unsealed again under the new one.
+func (k *Keys) InvalidateAll() {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
+	k.gen++
+	k.cache = map[string]keyEntry{}
+}
+
 func (k *Keys) forget(accessKeyID string) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
