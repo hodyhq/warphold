@@ -52,6 +52,10 @@ type fixture struct {
 	srv  *httptest.Server
 	root string
 	logs *logSink
+	// st and key are the fixture's Fleet store and sealing key, so a test can
+	// provision a device into the same store the gateway authenticates against.
+	st  *store.Store
+	key seal.Key
 }
 
 type logSink struct {
@@ -105,7 +109,7 @@ func newFixture(t *testing.T, opt fixtureOpts) *fixture {
 	srv := httptest.NewServer(gw.Handler())
 	t.Cleanup(srv.Close)
 
-	return &fixture{srv: srv, root: root, logs: logs}
+	return &fixture{srv: srv, root: root, logs: logs, st: st, key: key}
 }
 
 // testStore builds a Fleet store holding one hosted target, two devices and

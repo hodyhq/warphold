@@ -656,7 +656,14 @@ func (s *Server) SetRepository(ctx context.Context, rep repo.Repository) error {
 		return err
 	}
 
-	s.maint = maybeStartMaintenanceManager(ctx, s.rep, s, s.options.MinMaintenanceInterval)
+	// warphold: the equivalent of the CLI's --no-auto-maintenance for a
+	// server-mode engine. WarpHold devices never run maintenance: the Fleet
+	// identity owns it (spec 7.1 step 5), and the repository's owner field is
+	// not the only thing standing between a device and a compaction that the
+	// append-only gateway would reject.
+	if !s.options.DisableMaintenance {
+		s.maint = maybeStartMaintenanceManager(ctx, s.rep, s, s.options.MinMaintenanceInterval)
+	}
 
 	s.sched = scheduler.Start(context.WithoutCancel(ctx), s.getSchedulerItems, scheduler.Options{
 		TimeNow:        clock.Now,
@@ -868,6 +875,7 @@ type Options struct {
 	UITitlePrefix            string
 	DebugScheduler           bool
 	MinMaintenanceInterval   time.Duration
+	DisableMaintenance       bool // warphold: never start the maintenance manager (--no-auto-maintenance)
 	EnableErrorNotifications bool
 	NotifyTemplateOptions    notifytemplate.Options
 }

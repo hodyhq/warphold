@@ -98,9 +98,20 @@ func NewBearer() (string, []byte, error) {
 	return plain, enroll.HashToken(plain), nil
 }
 
-func (s *Server) provisioner() *enroll.Provisioner {
+// errPublicURLUnset is what specFor answers for a hosted target while
+// public_url is empty: the device would be handed an S3 endpoint we cannot
+// name. Enrollment turns it into a 409, the same answer token issuing gives.
+var errPublicURLUnset = errors.New("public_url is not set")
+
+func (s *Server) provisioner(ctx context.Context) *enroll.Provisioner {
+	// The maintenance owner devices must never be: it is the public host when
+	// there is one, so a repository names the Fleet that owns it rather than
+	// whatever the server's hostname happens to be (spec 7.1 step 5).
 	host, _ := os.Hostname()
-	return &enroll.Provisioner{B2: s.b2, Owner: "fleet@" + host}
+	if u, ok := s.PublicURL(ctx); ok {
+		host = hostOnly(u.Host)
+	}
+	return &enroll.Provisioner{B2: s.b2, Owner: "fleet@" + host, Store: s.store(), SealKey: s.sealKey(), Now: s.now}
 }
 
 func (s *Server) specFor(ctx context.Context, t *store.Target) (enroll.TargetSpec, error) {
@@ -108,7 +119,16 @@ func (s *Server) specFor(ctx context.Context, t *store.Target) (enroll.TargetSpe
 	if err != nil {
 		return enroll.TargetSpec{}, err
 	}
-	return enroll.TargetSpec{Kind: t.Kind, Bucket: t.Bucket, Path: t.Path, AdminKeyID: kid, AdminKey: key}, nil
+	spec := enroll.TargetSpec{Kind: t.Kind, Bucket: t.Bucket, Path: t.Path, AdminKeyID: kid, AdminKey: key}
+	if t.Kind == "hosted" {
+		u, ok := s.PublicURL(ctx)
+		if !ok {
+			return enroll.TargetSpec{}, errPublicURLUnset
+		}
+		spec.StorageMode, spec.HostedRoot = t.StorageMode, t.Path
+		spec.PublicHost, spec.TLS = u.Host, u.Scheme == "https"
+	}
+	return spec, nil
 }
 
 func (s *Server) bundleFor(_ context.Context, a *store.Agent) (*enroll.Bundle, error) {
@@ -153,6 +173,10 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	}
 	spec, err := s.specFor(ctx, target)
 	if err != nil {
+		if errors.Is(err, errPublicURLUnset) {
+			enrollFailed(w, http.StatusConflict, "set the public URL before enrolling devices on a hosted target", "target spec", err)
+			return
+		}
 		enrollFailed(w, http.StatusInternalServerError, "enrollment failed", "target spec", err)
 		return
 	}
@@ -161,16 +185,27 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		enrollFailed(w, http.StatusInternalServerError, "enrollment failed", "id", err)
 		return
 	}
-	prov := s.provisioner()
-	bundle, err := prov.Provision(ctx, spec, id)
+	bearer, bearerHash, err := NewBearer()
 	if err != nil {
-		enrollFailed(w, http.StatusBadGateway, "provisioning failed", "provision", err)
+		enrollFailed(w, http.StatusInternalServerError, "enrollment failed", "bearer", err)
 		return
 	}
-	// Provision has already created the agent's B2 keys. Every failure from
-	// here on must hand them back, or the keys outlive an enrollment that
-	// never completed while the one-shot token is already spent.
+	// The agent row goes in before provisioning: a hosted device's gateway
+	// credential is a device_keys row whose agent_id references it, and the
+	// foreign key is enforced. The bundle lands in a moment, once there is
+	// one; until then the row is unusable - its bearer has not been returned.
+	a := &store.Agent{ID: id, Name: in.Hostname, Hostname: in.Hostname, OS: in.OS, Arch: in.Arch, Version: in.Version, Scope: in.Scope, GroupID: group.ID, BearerHash: bearerHash, SealedBundle: []byte{}, EnrolledAt: s.now()}
+	if err := s.store().CreateAgent(ctx, a); err != nil {
+		enrollFailed(w, http.StatusInternalServerError, "enrollment failed", "create agent", err)
+		return
+	}
+	// Every failure from here on must hand back what has been minted - the
+	// agent's B2 keys, its gateway key, the half-finished row - or they
+	// outlive an enrollment that never completed while the one-shot token is
+	// already spent.
+	prov := s.provisioner(ctx)
 	enrolled := false
+	var bundle *enroll.Bundle
 	defer func() {
 		if enrolled {
 			return
@@ -179,13 +214,25 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		// cancels ctx, and that is precisely when the keys need handing back.
 		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), revokeTimeout)
 		defer cancel()
-		if err := prov.Revoke(rctx, spec, bundle); err != nil {
-			// Agent id + stage is what makes an orphaned B2 key findable;
-			// the error text itself may quote key material, so only its
-			// category is logged.
-			log.Printf("warphold fleet: enroll %s failed at stage revoke: b2 keys may be orphaned (%s)", id, errCategory(err))
+		if bundle != nil {
+			if err := prov.Revoke(rctx, spec, bundle); err != nil {
+				// Agent id + stage is what makes an orphaned B2 key findable;
+				// the error text itself may quote key material, so only its
+				// category is logged.
+				log.Printf("warphold fleet: enroll %s failed at stage revoke: b2 keys may be orphaned (%s)", id, errCategory(err))
+			}
+		}
+		// Removes the gateway key with the agent, so a failed enrollment
+		// leaves no credential and no half-agent behind.
+		if err := s.store().DeleteAgent(rctx, id); err != nil {
+			log.Printf("warphold fleet: enroll %s failed at stage cleanup: agent row may remain (%s)", id, errCategory(err))
 		}
 	}()
+	bundle, err = prov.Provision(ctx, spec, id)
+	if err != nil {
+		enrollFailed(w, http.StatusBadGateway, "provisioning failed", "provision", err)
+		return
+	}
 	sealedBundle, err := json.Marshal(bundle)
 	if err == nil {
 		sealedBundle, err = s.sealKey().Seal(sealedBundle)
@@ -194,14 +241,8 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		enrollFailed(w, http.StatusInternalServerError, "enrollment failed", "seal bundle", err)
 		return
 	}
-	bearer, bearerHash, err := NewBearer()
-	if err != nil {
-		enrollFailed(w, http.StatusInternalServerError, "enrollment failed", "bearer", err)
-		return
-	}
-	a := &store.Agent{ID: id, Name: in.Hostname, Hostname: in.Hostname, OS: in.OS, Arch: in.Arch, Version: in.Version, Scope: in.Scope, GroupID: group.ID, BearerHash: bearerHash, SealedBundle: sealedBundle, EnrolledAt: s.now()}
-	if err := s.store().CreateAgent(ctx, a); err != nil {
-		enrollFailed(w, http.StatusInternalServerError, "enrollment failed", "create agent", err)
+	if err := s.store().SetAgentBundle(ctx, id, sealedBundle); err != nil {
+		enrollFailed(w, http.StatusInternalServerError, "enrollment failed", "store bundle", err)
 		return
 	}
 	enrolled = true

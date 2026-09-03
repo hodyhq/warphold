@@ -70,3 +70,22 @@ func (s *Store) RevokeAgent(ctx context.Context, id string, at time.Time) error 
 	_, err := s.db.ExecContext(ctx, `UPDATE agents SET revoked_at=? WHERE id=?`, ts(at), id)
 	return err
 }
+
+// SetAgentBundle replaces an agent's sealed bundle. Enrollment inserts the
+// agent row before it provisions -- device_keys.agent_id references it -- and
+// fills the bundle in once provisioning has produced one.
+func (s *Store) SetAgentBundle(ctx context.Context, id string, sealed []byte) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE agents SET sealed_bundle=? WHERE id=?`, sealed, id)
+	return err
+}
+
+// DeleteAgent removes an agent and its gateway keys. It exists for one caller:
+// unwinding an enrollment that failed after the agent row was inserted. A
+// device that finished enrolling is revoked, never deleted.
+func (s *Store) DeleteAgent(ctx context.Context, id string) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM device_keys WHERE agent_id=?`, id); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM agents WHERE id=?`, id)
+	return err
+}

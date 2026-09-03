@@ -120,7 +120,7 @@ func (s *Server) handleAgentRevoke(w http.ResponseWriter, r *http.Request) {
 		log.Printf("warphold fleet: revoke %s: b2 key cleanup skipped (%s)", a.ID, errCategory(err))
 	} else if b, err := s.bundleFor(ctx, a); err != nil {
 		log.Printf("warphold fleet: revoke %s: b2 key cleanup skipped (%s)", a.ID, errCategory(err))
-	} else if err := s.provisioner().Revoke(ctx, spec, b); err != nil {
+	} else if err := s.provisioner(ctx).Revoke(ctx, spec, b); err != nil {
 		log.Printf("warphold fleet: revoke %s: b2 key cleanup skipped (%s)", a.ID, errCategory(err))
 	}
 	if err := s.store().RevokeAgent(ctx, a.ID, s.now()); err != nil {

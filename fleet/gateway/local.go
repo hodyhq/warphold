@@ -33,6 +33,11 @@ type LocalOptions struct {
 	// MaxObjectSize is the largest object Put will store, in bytes.
 	// Zero means DefaultMaxObjectSize.
 	MaxObjectSize int64
+
+	// SkipTempSweep leaves abandoned partial writes alone. Set it whenever
+	// this is not the only store open on the root: the sweep cannot tell a
+	// crashed write from one another process is making right now.
+	SkipTempSweep bool
 }
 
 // local is the Fleet-disk backend (§4.3). Every path goes through an os.Root,
@@ -86,7 +91,7 @@ func NewLocal(dir string, opts LocalOptions) (ObjectStore, error) {
 		l.maxSize = DefaultMaxObjectSize
 	}
 
-	if n := l.sweepTemp(); n > 0 {
+	if n := l.sweepTemp(opts.SkipTempSweep); n > 0 {
 		log.Printf("warphold gateway: removed %d abandoned temp file(s) from %s/%s", n, dir, tmpDir)
 	}
 
@@ -95,7 +100,11 @@ func NewLocal(dir string, opts LocalOptions) (ObjectStore, error) {
 
 // sweepTemp removes partial writes left by a crash. Nothing links to them: a
 // temp file is only ever named by the Put that is writing it.
-func (l *local) sweepTemp() int {
+func (l *local) sweepTemp(skip bool) int {
+	if skip {
+		return 0
+	}
+
 	ents, err := fs.ReadDir(l.root.FS(), tmpDir)
 	if err != nil {
 		return 0
@@ -469,6 +478,11 @@ func (l *local) Delete(ctx context.Context, key string) error {
 // Versioned is false: the disk backend keeps one copy of each object, and
 // append-only plus the mirror job is what protects history (§4.3).
 func (l *local) Versioned(context.Context) bool { return false }
+
+// Close releases the root directory handle. It is not part of ObjectStore:
+// only a caller that opened its own store (blob.NewStorage, via the hosted
+// adapter) may close one, never a shared handle out of the gateway's cache.
+func (l *local) Close() error { return l.root.Close() }
 
 // open validates key and opens it as an object. It Lstats first, so a symlink
 // is ErrNotFound rather than something read through, and re-checks the open

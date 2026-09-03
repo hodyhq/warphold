@@ -12,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/kopia/kopia/fleet/enroll"
 	"github.com/kopia/kopia/fleet/gateway"
 	"github.com/kopia/kopia/fs/localfs"
 	"github.com/kopia/kopia/internal/gather"
@@ -244,4 +245,95 @@ func assertNoDeniedRequests(t *testing.T, f *fixture) {
 
 	require.Empty(t, denied, "the gateway denied a request stock Kopia needed: %+v", denied)
 	require.Positive(t, sessionDeletes, "the session-marker delete allowlist was never exercised")
+}
+
+// TestKopiaRepositoryFromServerProvisionedRepo is the other half of the round
+// trip: the repository is created by the *Fleet server*, through the hosted
+// blob adapter and never over HTTP (spec §7.1 step 4), and the device then
+// reads and writes it with the credential it was enrolled with. If the
+// server's on-disk layout ever diverged from the one the gateway serves --
+// Kopia's own filesystem provider shards, this adapter does not -- the device
+// would not find kopia.repository here.
+func TestKopiaRepositoryFromServerProvisionedRepo(t *testing.T) {
+	ctx := testlogging.Context(t)
+	f, srv := tlsFixture(t)
+
+	u, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+
+	owner := "fleet@" + u.Hostname()
+	p := &enroll.Provisioner{Owner: owner, Store: f.st, SealKey: f.key}
+
+	b, err := p.Provision(ctx, enroll.TargetSpec{
+		Kind: "hosted", StorageMode: "disk", HostedRoot: f.root,
+		PublicHost: u.Host, TLS: true, Region: testRegion,
+	}, devA)
+	require.NoError(t, err)
+
+	// The device connects with nothing but its token: no Initialize here, the
+	// repository already exists.
+	ci, password, err := repo.DecodeToken(b.ConnectToken)
+	require.NoError(t, err)
+	require.Equal(t, b.Password, password)
+
+	o, ok := ci.Config.(*s3.Options)
+	require.True(t, ok)
+	o.DoNotVerifyTLS = true // httptest's certificate is self-signed
+
+	st, err := s3.New(ctx, o, false)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { st.Close(ctx) }) //nolint:errcheck // test cleanup
+
+	dir := t.TempDir()
+	configFile := filepath.Join(dir, "repo.config")
+
+	require.NoError(t, repo.Connect(ctx, configFile, st, password, &repo.ConnectOptions{
+		CachingOptions: content.CachingOptions{CacheDirectory: filepath.Join(dir, "cache")},
+	}))
+
+	rep, err := repo.Open(ctx, configFile, password, &repo.Options{})
+	require.NoError(t, err)
+
+	defer rep.Close(ctx) //nolint:errcheck // test cleanup
+
+	// Provisioning already handed maintenance to Fleet, so the device does not
+	// have to (and its engine runs with maintenance disabled anyway).
+	params, err := maintenance.GetParams(ctx, rep)
+	require.NoError(t, err)
+	require.Equal(t, owner, params.Owner)
+
+	source := filepath.Join(dir, "src")
+	require.NoError(t, os.MkdirAll(source, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(source, "hello.txt"), []byte("hello\nmore\n"), 0o600))
+
+	si := snapshot.SourceInfo{Host: "device", UserName: "user", Path: source}
+
+	require.NoError(t, repo.WriteSession(ctx, rep, repo.WriteSessionOptions{Purpose: "snapshot"},
+		func(ctx context.Context, w repo.RepositoryWriter) error {
+			entry, err := localfs.NewEntry(source)
+			if err != nil {
+				return err
+			}
+
+			tree, err := policy.TreeForSource(ctx, w, si)
+			if err != nil {
+				return err
+			}
+
+			man, err := upload.NewUploader(w).Upload(ctx, entry, tree, si)
+			if err != nil {
+				return err
+			}
+
+			_, err = snapshot.SaveSnapshot(ctx, w, man)
+
+			return err
+		}))
+
+	mans, err := snapshot.ListSnapshots(ctx, rep, si)
+	require.NoError(t, err)
+	require.Len(t, mans, 1)
+
+	assertNoDeniedRequests(t, f)
 }
