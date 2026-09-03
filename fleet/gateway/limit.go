@@ -1,6 +1,8 @@
 package gateway
 
 import (
+	"net"
+	"net/http"
 	"sync"
 	"time"
 )
@@ -11,6 +13,13 @@ import (
 const (
 	defaultRatePerSecond = 50
 	defaultRateBurst     = 200
+
+	// The pre-auth limiter is keyed by client IP and sits ahead of SigV4, so
+	// its only job is to stop an unauthenticated flood from buying HMAC work.
+	// It is deliberately looser than the per-device one: a whole fleet can
+	// share one IP behind a proxy that does not set X-Forwarded-For.
+	defaultIPRatePerSecond = 200
+	defaultIPRateBurst     = 800
 
 	// idleEvict is how long an unused bucket is kept before the next sweep
 	// drops it, and sweepEvery is how often a sweep runs. Both exist only to
@@ -48,6 +57,19 @@ func newLimiter(ratePerSecond, burst float64) *limiter {
 	}
 
 	return &limiter{rate: ratePerSecond, burst: burst, buckets: map[string]*bucket{}}
+}
+
+// newIPLimiter is newLimiter with the looser pre-auth defaults.
+func newIPLimiter(ratePerSecond, burst float64) *limiter {
+	if ratePerSecond <= 0 {
+		ratePerSecond = defaultIPRatePerSecond
+	}
+
+	if burst <= 0 {
+		burst = defaultIPRateBurst
+	}
+
+	return newLimiter(ratePerSecond, burst)
 }
 
 // allow takes one token for id, reporting whether it was available.
@@ -92,4 +114,23 @@ func (l *limiter) sweepLocked(now time.Time) {
 			delete(l.buckets, id)
 		}
 	}
+}
+
+// clientIP is the address the pre-auth limiter keys on: the peer as this
+// process sees it. X-Forwarded-For is deliberately NOT read -- anything that
+// can reach the gateway on loopback could otherwise forge it and pick its own
+// limiter bucket -- which matches fleet/api's own clientIP; a configured
+// trusted-proxy list is Plan 2 for both.
+//
+// ponytail: behind a reverse proxy the whole fleet shares one bucket, which is
+// why the pre-auth defaults are generous and the real per-device limit runs
+// after the signature check. Add the trusted-proxy list if a deployment ever
+// needs per-client pre-auth limiting.
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+
+	return host
 }

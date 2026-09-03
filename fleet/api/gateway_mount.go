@@ -27,16 +27,18 @@ type gatewayDeps struct {
 // so every request is an unknown key and answers 403, which is exactly what a
 // revoked device sees too.
 func (s *Server) mountGateway(m *mux.Router) {
-	m.Path("/" + gateway.BucketName).Handler(gatewayHandler{s})
-	m.PathPrefix(gateway.PathPrefix).Handler(gatewayHandler{s})
+	// requireHost like every other Fleet route: once public_url is set, a
+	// request arriving under another Host is 421, so a device that resolved a
+	// stale or spoofed name never reaches the signature check.
+	h := s.requireHost(s.serveGateway)
+	m.Path("/" + gateway.BucketName).Handler(h)
+	m.PathPrefix(gateway.PathPrefix).Handler(h)
 }
 
-// gatewayHandler defers building the Gateway until the first request, because
-// the key cache needs the store and the sealing key that activation creates.
-type gatewayHandler struct{ s *Server }
-
-func (h gatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	g := h.s.gateway()
+// serveGateway defers building the Gateway until the first request, because the
+// key cache needs the store and the sealing key that activation creates.
+func (s *Server) serveGateway(w http.ResponseWriter, r *http.Request) {
+	g := s.gateway()
 	if g == nil {
 		notActivatedGateway.ServeHTTP(w, r)
 		return

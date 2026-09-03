@@ -73,19 +73,30 @@ func (l *logSink) all() []gateway.LogEntry {
 }
 
 type fixtureOpts struct {
-	now                      func() time.Time
-	ratePerSecond, rateBurst float64
-	maxObjectBytes           int64
+	now                          func() time.Time
+	ratePerSecond, rateBurst     float64
+	ipRatePerSecond, ipRateBurst float64
+	maxObjectBytes               int64
+
+	// prefixOverride replaces every device key's prefix with a fixed string,
+	// for the malformed-prefix cases.
+	prefixOverride *string
+	// wrapStore wraps the backing store, for the fail-closed cases.
+	wrapStore func(gateway.ObjectStore) gateway.ObjectStore
 }
 
 func newFixture(t *testing.T, opt fixtureOpts) *fixture {
 	t.Helper()
 
 	root := t.TempDir()
-	st, key := testStore(t)
+	st, key := testStore(t, opt.prefixOverride)
 
 	objs, err := gateway.NewLocal(root, gateway.LocalOptions{MaxObjectSize: opt.maxObjectBytes})
 	require.NoError(t, err)
+
+	if opt.wrapStore != nil {
+		objs = opt.wrapStore(objs)
+	}
 
 	logs := &logSink{}
 	gw := gateway.NewGateway(gateway.Config{
@@ -97,9 +108,11 @@ func newFixture(t *testing.T, opt fixtureOpts) *fixture {
 		StoreFor: func(context.Context, string) (gateway.ObjectStore, error) {
 			return objs, nil
 		},
-		RatePerSecond:  opt.ratePerSecond,
-		RateBurst:      opt.rateBurst,
-		MaxObjectBytes: opt.maxObjectBytes,
+		RatePerSecond:   opt.ratePerSecond,
+		RateBurst:       opt.rateBurst,
+		IPRatePerSecond: opt.ipRatePerSecond,
+		IPRateBurst:     opt.ipRateBurst,
+		MaxObjectBytes:  opt.maxObjectBytes,
 	})
 
 	srv := httptest.NewServer(gw.Handler())
@@ -110,7 +123,7 @@ func newFixture(t *testing.T, opt fixtureOpts) *fixture {
 
 // testStore builds a Fleet store holding one hosted target, two devices and
 // four keys: A, B, a read-only key on A, and a disabled key on A.
-func testStore(t *testing.T) (*store.Store, seal.Key) {
+func testStore(t *testing.T, prefixOverride *string) (*store.Store, seal.Key) {
 	t.Helper()
 
 	st, err := store.Open(filepath.Join(t.TempDir(), "fleet.db"))
@@ -152,9 +165,15 @@ func testStore(t *testing.T) (*store.Store, seal.Key) {
 	} {
 		sealed, err := key.Seal([]byte(k.secret))
 		require.NoError(t, err)
+
+		prefix := k.agent + "/"
+		if prefixOverride != nil {
+			prefix = *prefixOverride
+		}
+
 		require.NoError(t, st.CreateDeviceKey(ctx, &store.DeviceKey{
 			AccessKeyID: k.akid, AgentID: k.agent, SealedSecret: sealed,
-			Prefix: k.agent + "/", ReadOnly: k.readOnly, CreatedAt: now, DisabledAt: k.disabledAt,
+			Prefix: prefix, ReadOnly: k.readOnly, CreatedAt: now, DisabledAt: k.disabledAt,
 		}))
 	}
 
@@ -388,8 +407,8 @@ func TestGatewayPutIsCreateOnly(t *testing.T) {
 	require.NotEmpty(t, resp.Header.Get("ETag"))
 
 	resp = f.put(t, akidA, testSecret, devA+"/"+packKey, []byte("second write"))
-	require.Equal(t, http.StatusForbidden, resp.StatusCode)
-	require.Equal(t, "AppendOnlyOverwriteDenied", errorCode(t, resp))
+	require.Equal(t, http.StatusConflict, resp.StatusCode)
+	require.Equal(t, "ObjectAlreadyExists", errorCode(t, resp))
 
 	// No header can talk the handler into an overwrite: it passes a constant
 	// false to the store, whatever the request carries.
@@ -406,7 +425,7 @@ func TestGatewayPutIsCreateOnly(t *testing.T) {
 			akid: akidA, secret: testSecret, method: http.MethodPut, path: objectPath(devA + "/" + packKey),
 			body: []byte("overwrite attempt"), payloadHash: unsigned, header: h,
 		})
-		require.Equal(t, http.StatusForbidden, resp.StatusCode, "headers %v", h)
+		require.Equal(t, http.StatusConflict, resp.StatusCode, "headers %v", h)
 	}
 
 	// The first write survives untouched.
@@ -864,4 +883,145 @@ func TestGatewayLogsWithoutSecrets(t *testing.T) {
 	blob := fmt.Sprintf("%+v", e)
 	require.NotContains(t, blob, testSecret)
 	require.NotContains(t, blob, "Signature=")
+}
+
+// --- fix round 1: the credential's own prefix is a trust boundary ----------
+
+// TestGatewayRefusesMalformedCredentialPrefix is the CRITICAL case: a
+// device_keys row whose prefix is not exactly "<agent-id>/" would turn every
+// downstream HasPrefix test into a confinement hole. The gateway refuses the
+// credential outright rather than confining against a bad boundary.
+func TestGatewayRefusesMalformedCredentialPrefix(t *testing.T) {
+	for _, tc := range []struct{ name, prefix string }{
+		{"empty", ""},
+		{"no trailing slash", devA},
+		{"another agent", devB + "/"},
+		{"traversal", devA + "/../"},
+		{"root", "/"},
+		{"reserved temp directory", ".tmp/"},
+		{"control byte", devA + "\x01/"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t, fixtureOpts{prefixOverride: &tc.prefix})
+
+			for _, c := range []call{
+				{method: http.MethodPut, path: objectPath(devA + "/" + packKey), body: []byte("x"), payloadHash: unsigned,
+					header: http.Header{"Content-Md5": {contentMD5([]byte("x"))}}},
+				{method: http.MethodGet, path: objectPath(devA + "/" + packKey)},
+				{method: http.MethodHead, path: objectPath(devA + "/" + packKey)},
+				{method: http.MethodDelete, path: objectPath(devA + "/" + sessionKey)},
+				{method: http.MethodGet, path: "/" + gateway.BucketName + "/", query: url.Values{"list-type": {"2"}}},
+			} {
+				c.akid, c.secret = akidA, testSecret
+				resp := f.do(t, c)
+				require.Equal(t, http.StatusForbidden, resp.StatusCode, "%s %s", c.method, c.path)
+			}
+		})
+	}
+}
+
+// --- fix round 1: the list re-checks what the store hands back -------------
+
+// leakyStore returns a key outside the prefix it was asked for. The handler
+// must refuse the whole page rather than emit it.
+type leakyStore struct{ gateway.ObjectStore }
+
+func (leakyStore) List(context.Context, string, string, int) ([]gateway.ObjectInfo, bool, error) {
+	return []gateway.ObjectInfo{{Key: devB + "/secret", Size: 1}}, false, nil
+}
+
+func TestGatewayListRefusesAKeyOutsideThePrefix(t *testing.T) {
+	f := newFixture(t, fixtureOpts{wrapStore: func(o gateway.ObjectStore) gateway.ObjectStore {
+		return leakyStore{o}
+	}})
+
+	resp, _ := f.list(t, akidA, testSecret, url.Values{"prefix": {devA + "/"}})
+	require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+	require.Equal(t, "InternalError", errorCode(t, resp))
+}
+
+// --- fix round 3: a store that never reads the body fails closed ----------
+
+type lyingStore struct{ gateway.ObjectStore }
+
+func (lyingStore) Put(_ context.Context, key string, _ io.Reader, size int64, _ bool) (gateway.ObjectInfo, error) {
+	// Returns success without reading r, so the Content-MD5 was never checked.
+	return gateway.ObjectInfo{Key: key, Size: size, ETag: "00000000000000000000000000000000"}, nil
+}
+
+func TestGatewayFailsClosedWhenTheStoreSkipsTheBody(t *testing.T) {
+	f := newFixture(t, fixtureOpts{wrapStore: func(o gateway.ObjectStore) gateway.ObjectStore {
+		return lyingStore{o}
+	}})
+
+	resp := f.put(t, akidA, testSecret, devA+"/"+packKey, []byte("unverified bytes"))
+	require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+	require.Equal(t, "InternalError", errorCode(t, resp))
+}
+
+// --- fix round 5: the pre-auth limiter ------------------------------------
+
+func TestGatewayRateLimitsBeforeVerifying(t *testing.T) {
+	frozen := clock.Now()
+	f := newFixture(t, fixtureOpts{now: func() time.Time { return frozen }, ipRatePerSecond: 1, ipRateBurst: 5})
+
+	var throttled int
+
+	// Every request is unsigned, so it never reaches Verify: the only thing
+	// that can refuse it is the pre-auth bucket.
+	for range 20 {
+		resp := f.do(t, call{method: http.MethodGet, path: objectPath(devA + "/x"), unsign: true})
+		if resp.StatusCode == http.StatusServiceUnavailable {
+			throttled++
+
+			require.Equal(t, "1", resp.Header.Get("Retry-After"))
+			require.Equal(t, "SlowDown", errorCode(t, resp))
+		}
+	}
+
+	require.Equal(t, 15, throttled, "burst 5 of 20 unsigned requests should get as far as the 403")
+}
+
+// --- fix round 7: unknown query parameters ---------------------------------
+
+func TestGatewayRefusesUnknownQueryParameters(t *testing.T) {
+	f := newFixture(t, fixtureOpts{})
+	f.mustPut(t, devA+"/"+packKey, []byte("payload"))
+
+	for _, q := range []url.Values{
+		{"acl": {""}},
+		{"tagging": {""}},
+		{"policy": {""}},
+		{"legal-hold": {""}},
+		{"x-id": {"GetObject"}},
+		{"attributes": {""}},
+	} {
+		resp := f.do(t, call{
+			akid: akidA, secret: testSecret, method: http.MethodGet,
+			path: objectPath(devA + "/" + packKey), query: q,
+		})
+		require.Equal(t, http.StatusBadRequest, resp.StatusCode, "query %v", q)
+		require.Equal(t, "InvalidArgument", errorCode(t, resp))
+	}
+
+	// A plain GET with no query is unaffected.
+	resp := f.do(t, call{akid: akidA, secret: testSecret, method: http.MethodGet, path: objectPath(devA + "/" + packKey)})
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// --- fix round 10: a zero-length range ------------------------------------
+
+func TestGatewayZeroLengthRangeIsAPlain200(t *testing.T) {
+	f := newFixture(t, fixtureOpts{})
+	f.mustPut(t, devA+"/"+packKey, []byte{})
+
+	// Kopia probes a zero-length blob with bytes=0-1; there is no valid
+	// Content-Range to name for an empty answer.
+	resp := f.do(t, call{
+		akid: akidA, secret: testSecret, method: http.MethodGet, path: objectPath(devA + "/" + packKey),
+		header: http.Header{"Range": {"bytes=0-1"}},
+	})
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Empty(t, resp.Header.Get("Content-Range"))
+	require.Equal(t, "0", resp.Header.Get("Content-Length"))
 }

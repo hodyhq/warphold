@@ -16,8 +16,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/gorilla/mux"
 )
 
 // BucketName is the single bucket every device sees, whatever backs it.
@@ -75,6 +73,22 @@ const deviceOverwrite = false
 // cannot serve yet; the handler answers 501 rather than 500.
 var ErrUnsupportedStorageMode = errors.New("gateway: unsupported target storage mode")
 
+// knownQueryKeys is every query parameter the gateway understands: the
+// ListObjectsV2 set, the two bucket sub-resources it answers, and the four
+// out-of-scope sub-resources it answers 501 to. Anything else is refused
+// before dispatch with 400 InvalidArgument rather than silently ignored, so a
+// client cannot smuggle an unimplemented sub-resource (?acl, ?tagging, ?policy)
+// past the verb switch and have it read as a plain GET or PUT.
+var knownQueryKeys = map[string]bool{
+	// ListObjectsV2 (RECONCILE §5.3).
+	"list-type": true, "prefix": true, "start-after": true, "continuation-token": true,
+	"max-keys": true, "delimiter": true, "encoding-type": true, "fetch-owner": true,
+	// Bucket sub-resources the gateway answers.
+	"location": true, "versioning": true,
+	// Out of scope, answered 501 by name so the message can say why.
+	"uploads": true, "uploadId": true, "delete": true, "retention": true,
+}
+
 // ErrAccessDenied is what StoreFor returns when a credential resolves to
 // nothing it may use -- a revoked device, most of all. The handler answers the
 // same 403 an unknown key gets, so the two are indistinguishable.
@@ -116,6 +130,10 @@ type Config struct {
 	// the spec §11 defaults (50/s, burst 200).
 	RatePerSecond, RateBurst float64
 
+	// IPRatePerSecond and IPRateBurst are the pre-auth, client-IP-keyed bucket
+	// that runs ahead of signature verification; zero means 200/s, burst 800.
+	IPRatePerSecond, IPRateBurst float64
+
 	Now func() time.Time
 	Log func(LogEntry)
 }
@@ -130,6 +148,7 @@ type Gateway struct {
 	region   string
 	maxBytes int64
 	limit    *limiter
+	ipLimit  *limiter
 	now      func() time.Time
 	logf     func(LogEntry)
 }
@@ -143,6 +162,7 @@ func NewGateway(c Config) *Gateway {
 		region:   c.Region,
 		maxBytes: c.MaxObjectBytes,
 		limit:    newLimiter(c.RatePerSecond, c.RateBurst),
+		ipLimit:  newIPLimiter(c.IPRatePerSecond, c.IPRateBurst),
 		now:      c.Now,
 		logf:     c.Log,
 	}
@@ -187,12 +207,6 @@ func orDash(s string) string {
 // path (bucket segment included), because that is what the client signed -- do
 // not wrap it in http.StripPrefix.
 func (g *Gateway) Handler() http.Handler { return g }
-
-// Mount registers the gateway on m. It must run before the SPA's catch-all.
-func (g *Gateway) Mount(m *mux.Router) {
-	m.Path("/" + g.bucket).Handler(g)
-	m.PathPrefix("/" + g.bucket + "/").Handler(g)
-}
 
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := g.now()
@@ -239,9 +253,31 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request, e *LogEntry) {
 			return "", false
 		}
 
+		// The prefix is the entire confinement boundary, so it is validated
+		// here -- once, where it enters the request -- rather than trusted
+		// because a provisioning path is believed to have written it well.
+		// "p == a+\"/\"" is three conditions at once: non-empty, ends in a
+		// slash (so no HasPrefix test downstream can match a neighbouring
+		// device), and names this agent and no other. checkKey on a synthetic
+		// key under it then runs the agent id through the same boundary every
+		// real key crosses -- UTF-8, control bytes, backslash, relative
+		// segments, the flat shape and the reserved temp directory -- rather
+		// than re-implementing any of it here.
+		if p != a+"/" || checkKey(p+"x") != nil {
+			log.Printf("warphold gateway: device key with malformed prefix, refusing: agent=%q key=%q", a, accessKeyID)
+			return "", false
+		}
+
 		agentID, prefix, readOnly = a, p, ro
 
 		return secret, true
+	}
+
+	// The pre-auth limiter runs before Verify, so an unauthenticated flood
+	// cannot buy four HMAC chains per request.
+	if !g.ipLimit.allow(clientIP(r), g.now()) {
+		writeSlowDown(w, r)
+		return
 	}
 
 	if r.Header.Get("Authorization") == "" {
@@ -261,10 +297,11 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request, e *LogEntry) {
 
 	e.AccessKeyID, e.DeviceID = akid, agentID
 
-	if !g.limit.allow(akid, g.now()) {
-		w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds))
-		writeError(w, r, http.StatusServiceUnavailable, codeSlowDown, "too many requests; slow down")
-
+	// Keyed on the device, not the access key id: a device with two keys
+	// (rotation, or the recovery kit's read-only key) gets one budget, not one
+	// per key.
+	if !g.limit.allow(agentID, g.now()) {
+		writeSlowDown(w, r)
 		return
 	}
 
@@ -272,6 +309,15 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request, e *LogEntry) {
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, codeInvalidURI, "malformed query string")
 		return
+	}
+
+	for k := range query {
+		if !knownQueryKeys[k] {
+			// The key is not echoed: a fixed message says as much to a real
+			// client and reflects nothing a caller controls.
+			writeError(w, r, http.StatusBadRequest, codeInvalidArgument, "unsupported query parameter")
+			return
+		}
 	}
 
 	// Multipart and server-side copy are out of scope (spec §15), and both are
@@ -441,13 +487,25 @@ func (g *Gateway) put(w http.ResponseWriter, r *http.Request, st ObjectStore, ke
 
 	switch {
 	case err == nil:
+		if !body.verified {
+			// The store reported success without reading the body to EOF, so
+			// the Content-MD5 was never checked. That is a backend contract
+			// bug, not a client error: fail closed rather than acknowledge
+			// bytes whose integrity nothing verified.
+			log.Printf("warphold gateway: BUG: store accepted a %q blob without reading the body to EOF; Content-MD5 unverified", blobName2Class(key))
+			writeError(w, r, http.StatusInternalServerError, codeInternalError, "could not store the object")
+
+			return
+		}
 	case errors.Is(err, errBadDigest):
 		writeError(w, r, http.StatusBadRequest, codeBadDigest, "the Content-MD5 does not match the body")
 		return
 	case errors.Is(err, ErrExists):
-		// The append-only rule (RECONCILE §6.1). A distinct code so a device's
-		// log names the rule rather than reading as a permissions problem.
-		writeError(w, r, http.StatusForbidden, codeAppendOnlyOverwriteDenied,
+		// The append-only rule (spec §4.2, RECONCILE §6.1). 409, not 403: the
+		// credential was allowed to write, the object's prior existence is what
+		// refused it, and a 409 is the signal that the maintenance-owner lever
+		// failed rather than a permissions problem (RECONCILE §7.6).
+		writeError(w, r, http.StatusConflict, codeObjectAlreadyExists,
 			"append-only: this object already exists and cannot be replaced")
 
 		return
@@ -498,7 +556,9 @@ func (g *Gateway) get(w http.ResponseWriter, r *http.Request, st ObjectStore, ke
 
 	status := http.StatusOK
 
-	if ranged {
+	// A zero-length range has no valid Content-Range to name ("bytes 5-4/10"
+	// is malformed), so it is answered as a plain empty 200.
+	if ranged && served > 0 {
 		h.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", offset, offset+served-1, info.Size))
 		status = http.StatusPartialContent
 	}
@@ -630,6 +690,11 @@ func writeStoreError(w http.ResponseWriter, r *http.Request, err error) {
 	}
 }
 
+func writeSlowDown(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds))
+	writeError(w, r, http.StatusServiceUnavailable, codeSlowDown, "too many requests; slow down")
+}
+
 func writeNotImplemented(w http.ResponseWriter, r *http.Request, msg string) {
 	writeError(w, r, http.StatusNotImplemented, codeNotImplemented, msg)
 }
@@ -692,6 +757,13 @@ func (m *md5Check) Read(p []byte) (int, error) {
 	return n, err //nolint:wrapcheck // pass the reader's own error through untouched.
 }
 
+// blobName2Class is keyClass over a full key: the log never carries the key
+// itself, only the class, so a blob name cannot end up in an operator's log.
+func blobName2Class(key string) string {
+	_, name, _ := strings.Cut(key, "/")
+	return keyClass(name)
+}
+
 // keyClass names the Kopia blob class of a key for the request log, so a log
 // line says "s" or "xn" rather than a content hash.
 func keyClass(blobName string) string {
@@ -747,9 +819,15 @@ func (rec *recorder) Write(p []byte) (int, error) {
 func (g *Gateway) list(w http.ResponseWriter, r *http.Request, query url.Values, st ObjectStore, devPrefix string) {
 	askedPrefix := query.Get("prefix")
 
-	prefix := askedPrefix
-	if !strings.HasPrefix(prefix, devPrefix) {
-		prefix = devPrefix
+	// The device prefix is the floor (spec §4.1.5 first half): a prefix
+	// parameter outside it is replaced rather than refused, so an accidental
+	// enumeration lists the device's own keys instead of erroring. This
+	// HasPrefix is sound only because the credential's prefix was validated as
+	// exactly "<agent-id>/" where it was read -- an unterminated prefix would
+	// let "agenta" match "agenta-evil/".
+	prefix := devPrefix
+	if strings.HasPrefix(askedPrefix, devPrefix) {
+		prefix = askedPrefix
 	}
 
 	maxKeys := maxListKeys
@@ -804,6 +882,17 @@ func (g *Gateway) list(w http.ResponseWriter, r *http.Request, query url.Values,
 	}
 
 	for _, o := range objs {
+		if !strings.HasPrefix(o.Key, devPrefix) {
+			// Spec §4.1.5 second half. The store was only ever asked for a
+			// prefix at or below devPrefix, so this is unreachable; if a
+			// backend ever returns it anyway, the whole list is refused rather
+			// than partially leaked.
+			log.Printf("warphold gateway: BUG: store returned a %q blob outside the device prefix", blobName2Class(o.Key))
+			writeError(w, r, http.StatusInternalServerError, codeInternalError, "storage error")
+
+			return
+		}
+
 		entry := objectEntry{
 			Key:          o.Key,
 			LastModified: s3Time(o.LastModified),

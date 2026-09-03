@@ -9,9 +9,7 @@ import (
 	"time"
 )
 
-// S3 error codes the gateway emits. The two AppendOnly* codes are WarpHold's
-// own: they are not S3 codes, deliberately, so a device's log names the rule it
-// hit (docs/RECONCILE-append-only.md) instead of a generic AccessDenied.
+// S3 error codes the gateway emits.
 const (
 	codeAccessDenied         = "AccessDenied"
 	codeNoSuchBucket         = "NoSuchBucket"
@@ -33,8 +31,14 @@ const (
 	codeInvalidAccessKeyID           = "InvalidAccessKeyId"
 	codeSignatureDoesNotMatch        = "SignatureDoesNotMatch"
 
-	codeAppendOnlyDeleteDenied    = "AppendOnlyDeleteDenied"
-	codeAppendOnlyOverwriteDenied = "AppendOnlyOverwriteDenied"
+	// codeAppendOnlyDeleteDenied is WarpHold's own, not an S3 code: a device's
+	// log names the rule it hit (docs/RECONCILE-append-only.md) instead of a
+	// generic AccessDenied. An existing-key PUT uses the spec's
+	// ObjectAlreadyExists (§4.2) rather than a WarpHold code, because 409 is
+	// already unambiguous.
+	codeAppendOnlyDeleteDenied = "AppendOnlyDeleteDenied"
+	codeObjectAlreadyExists    = "ObjectAlreadyExists"
+	codeInvalidArgument        = "InvalidArgument"
 )
 
 // errorResponse is S3's error document.
