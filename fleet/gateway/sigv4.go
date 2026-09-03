@@ -1,4 +1,3 @@
-// Package gateway implements WarpHold's append-only, S3-compatible gateway.
 package gateway
 
 import (
