@@ -27,12 +27,14 @@ type gatewayDeps struct {
 // Fleet is served, activated or not: before activation there are no device keys,
 // so every request is an unknown key and answers 403, which is exactly what a
 // revoked device sees too.
-// Device requests go through sealHeld as well: they unseal a device secret,
-// so a passphrase rotation must wait for the ones in flight (bounded by the
-// gateway's own object-size cap) rather than let one 403 on a secret that was
-// re-sealed underneath it.
+//
+// Unlike the admin routes it is not wrapped in sealHeld: a device request can
+// stream 64 MiB, and holding the sealing lock for that long would block the
+// rotation - and, behind Go's queued writer, every other device - for the
+// length of one slow upload. The lock is taken inside Keys.Lookup instead (see
+// Keys.Guard), which is the only part of the request that touches the key.
 func (s *Server) mountGateway(m *mux.Router) {
-	h := http.HandlerFunc(s.sealHeld(gatewayHandler{s}.ServeHTTP))
+	h := http.HandlerFunc(gatewayHandler{s}.ServeHTTP)
 	m.Path("/" + gateway.BucketName).Handler(h)
 	m.PathPrefix(gateway.PathPrefix).Handler(h)
 }
@@ -70,6 +72,7 @@ func (s *Server) gateway() *gateway.Gateway {
 	s.gwDeps.st = st
 	s.gwDeps.stores = map[int64]gateway.ObjectStore{}
 	s.gwDeps.keys = gateway.NewKeys(st, s.sealKey())
+	s.gwDeps.keys.Guard = s.sealMu.RLocker()
 	s.gwDeps.gw = gateway.NewGateway(gateway.Config{
 		Keys:     s.gwDeps.keys,
 		StoreFor: s.storeForAgent,

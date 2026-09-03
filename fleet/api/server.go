@@ -93,6 +93,11 @@ type Server struct {
 	// and the key-file rename; nil outside tests.
 	rotateCrash func() error
 
+	// stateErr is set when the state on disk cannot be used safely - today, a
+	// pending sealing key that could not be resolved. It is not "not activated":
+	// the caller mounting Fleet must refuse to serve (see StateError).
+	stateErr error
+
 	// gwDeps carries the device-facing S3 gateway, built on first use because
 	// it needs the store and sealing key that activation creates.
 	gwDeps gatewayDeps
@@ -152,7 +157,14 @@ func ensureSetupToken(dir string) (path, token string, err error) {
 func (s *Server) load() error {
 	// A rotation may have crashed between its transaction and its rename, in
 	// which case the key that opens this store is still sitting in seal.key.new.
-	s.recoverPendingKey()
+	// An unresolved one is fatal, not a warning: see recoverPendingKey.
+	if err := s.recoverPendingKey(); err != nil {
+		s.mu.Lock()
+		s.stateErr = err
+		s.mu.Unlock()
+
+		return err
+	}
 
 	key, err := seal.ReadKeyFile(s.paths.KeyFile)
 	if err != nil {
@@ -163,7 +175,7 @@ func (s *Server) load() error {
 		return err
 	}
 	s.mu.Lock()
-	s.key, s.st, s.closed = key, st, false
+	s.key, s.st, s.closed, s.stateErr = key, st, false, nil
 	s.mu.Unlock()
 	return nil
 }
@@ -182,6 +194,18 @@ func (s *Server) SetNowForTesting(f func() time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.nowFn = f
+}
+
+// StateError reports state on disk that must stop this Fleet from serving,
+// rather than degrade it to "not activated": a rotation's pending sealing key
+// that could not be resolved may be the only key that opens the store, and
+// serving on the old one would seal new secrets it cannot be read back with.
+// `server start` refuses to come up while this is set.
+func (s *Server) StateError() error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.stateErr
 }
 
 // Activated reports whether the store and key are loaded.
@@ -277,7 +301,7 @@ func (s *Server) writeActivation(ctx context.Context, salt []byte, passphrase, e
 	if _, err := st.CreateAdmin(ctx, email, pwHash, s.now()); err != nil {
 		return err
 	}
-	if err := st.SetSetting(ctx, "seal_salt", hex.EncodeToString(salt)); err != nil {
+	if err := st.SetSetting(ctx, store.SealSaltSetting, hex.EncodeToString(salt)); err != nil {
 		return err
 	}
 	if err := st.Close(); err != nil {

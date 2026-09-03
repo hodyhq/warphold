@@ -5,8 +5,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/cookiejar"
+	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -269,4 +271,28 @@ func TestServerServesSPAWithoutUIAuth(t *testing.T) {
 		res, _ := get(t, p, false)
 		require.Equal(t, http.StatusUnauthorized, res.StatusCode, p)
 	}
+}
+
+// `server start` must refuse to serve a Fleet whose pending sealing key could
+// not be resolved: that key may be the only one that opens the store, and
+// serving on the old one would seal new secrets into a store nothing can read
+// back. A malformed seal.key.new is the cheapest way to produce that state.
+func TestServerStartRefusesUnresolvedPendingSealKey(t *testing.T) {
+	runner := testenv.NewInProcRunner(t)
+	e := testenv.NewCLITest(t, nil, runner)
+
+	stateDir := fleet.StateDirFor(filepath.Join(e.ConfigDir, ".kopia.config"))
+
+	e.RunAndExpectSuccess(t, "fleet", "activate",
+		"--email", "hody@hody.dev", "--admin-password", "pw12345678", "--passphrase", "seal-me-please")
+
+	pending := filepath.Join(stateDir, "seal.key.new")
+	require.NoError(t, os.WriteFile(pending, []byte("nonsense\n"), 0o600))
+
+	_, stderr := e.RunAndExpectFailure(t, "server", "start",
+		"--insecure", "--without-password", "--no-ui", "--no-grpc",
+		"--address=127.0.0.1:0", "--server-control-password=admin-pwd")
+	require.Contains(t, strings.Join(stderr, "\n"), "cannot be used")
+
+	require.FileExists(t, pending, "the pending key must not be deleted to make the server start")
 }

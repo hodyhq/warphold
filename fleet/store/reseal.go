@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -16,6 +17,11 @@ import (
 // secretbox ciphertext is not valid UTF-8. Reseal fails loudly on a value that
 // is not hex rather than writing back something it cannot decode.
 const SealedSettingPrefix = "sealed_"
+
+// ErrSealedNotHex marks a sealed setting whose value is not hex, so the API
+// can name the setting instead of answering "internal error" on a fleet that
+// will refuse to rotate until someone finds it.
+var ErrSealedNotHex = errors.New("sealed settings must be hex-encoded")
 
 // SealSaltSetting holds the hex salt the fleet key is derived from.
 const SealSaltSetting = "seal_salt"
@@ -206,7 +212,7 @@ func resealSettings(ctx context.Context, tx *sql.Tx, counts map[string]int, rese
 		raw, err := hex.DecodeString(value)
 		if err != nil {
 			rows.Close()
-			return fmt.Errorf("setting %s: sealed settings must be hex-encoded: %w", key, err)
+			return fmt.Errorf("%w: setting %s: %w", ErrSealedNotHex, key, err)
 		}
 		found = append(found, sealedRow{id: key, sealed: raw})
 	}

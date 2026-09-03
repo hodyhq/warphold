@@ -30,8 +30,28 @@ func (c *commandFleet) setup(svc advancedAppServices, parent commandParent) {
 	c.rotate.setup(svc, cmd)
 
 	registerFleetHandlersOnce.Do(func() {
-		RegisterServerHandlers(func(srv *server.Server, m *mux.Router, configFile string) {
-			fs := api.New(fleet.StateDirFor(configFile))
+		RegisterServerHandlers(func(srv *server.Server, m *mux.Router, configFile string) error {
+			stateDir := fleet.StateDirFor(configFile)
+			fs := api.New(stateDir)
+
+			// State that cannot be used safely is fatal here, not a warning:
+			// serving Fleet on a key that may no longer open its own store
+			// would seal every new secret into a store nothing can read back.
+			if err := fs.StateError(); err != nil {
+				fs.Close() //nolint:errcheck
+
+				return errors.Join(errors.New("fleet state in "+stateDir+" cannot be used"), err)
+			}
+
+			// Held for as long as this server serves, so `fleet
+			// rotate-passphrase` can tell a running Fleet from a stopped one.
+			// Best effort: if it cannot be taken, something else already holds
+			// it and the offline command is refused either way.
+			lock, lockErr := fleet.TryLock(stateDir)
+			if lockErr != nil {
+				log(context.Background()).Warnf("warphold fleet: cannot hold %s: %v", fleet.PathsFor(stateDir).LockFile, lockErr)
+			}
+
 			fs.Mount(m)
 
 			// This hook is the one place that runs before setupHandlers
@@ -59,8 +79,14 @@ func (c *commandFleet) setup(svc advancedAppServices, parent commandParent) {
 					err = prev(ctx)
 				}
 
+				if lock != nil {
+					err = errors.Join(err, lock.Unlock())
+				}
+
 				return errors.Join(err, fs.Close())
 			}
+
+			return nil
 		})
 	})
 }

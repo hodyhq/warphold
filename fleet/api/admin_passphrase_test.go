@@ -404,6 +404,19 @@ func TestRotatePassphraseKeepsTheGatewayWorking(t *testing.T) {
 
 	st := deviceStore(t, body["connect_token"].(string))
 
+	// A second device, enrolled under the old key and never used: its secret
+	// is not in the gateway's key cache, so the lookup after the rotation has
+	// to unseal it from the store under the new key. Without that, a warm
+	// cache entry would answer for the first device and prove nothing.
+	h.jar = admin
+	_, tok2 := h.do("POST", "/api/v1/fleet/tokens", map[string]any{"group_id": gid})
+	h.jar = nil
+	resp, body2 := h.do("POST", "/api/v1/fleet/enroll",
+		map[string]any{"token": tok2["token"], "hostname": "fw13", "os": "linux", "arch": "amd64", "scope": "user"})
+	require.Equal(t, 201, resp.StatusCode, body2)
+
+	coldToken := body2["connect_token"].(string)
+
 	// Warms the gateway's key cache with a secret unsealed under the old key.
 	found, err := blob.ListAllBlobs(ctx, st, "kopia.repository")
 	require.NoError(t, err)
@@ -417,4 +430,114 @@ func TestRotatePassphraseKeepsTheGatewayWorking(t *testing.T) {
 	found, err = blob.ListAllBlobs(ctx, st, "kopia.repository")
 	require.NoError(t, err, "the device's credential must survive a passphrase rotation")
 	require.Len(t, found, 1)
+
+	// Built only now, so nothing about this device has been through the
+	// gateway's key cache before the rotation.
+	cold := deviceStore(t, coldToken)
+
+	found, err = blob.ListAllBlobs(ctx, cold, "kopia.repository")
+	require.NoError(t, err, "a device whose secret was never cached must unseal under the new key")
+	require.Len(t, found, 1)
+}
+
+// pendingFor writes a committed-looking pending key: its salt is the one the
+// store holds, so recovery must finish the rename rather than delete it.
+func pendingFor(t *testing.T, h *harness) string {
+	t.Helper()
+
+	const newPassphrase = "a-much-longer-passphrase"
+
+	h.s.SetRotateCrashForTesting(func() error { return errors.New("power cut") })
+
+	_, err := h.s.RotatePassphrase(context.Background(), oldPassphrase, newPassphrase, false)
+	require.Error(t, err)
+
+	pending := filepath.Join(h.stateDir, "seal.key.new")
+	require.FileExists(t, pending)
+	require.NoError(t, h.s.Close())
+
+	return pending
+}
+
+// The pending key file is the only thing that can open a store whose rotation
+// committed, so it must never be deleted on a read the recovery cannot
+// interpret: an unopenable store is "unknown", not "never committed".
+func TestRecoverPendingKeyKeepsItWhenTheStoreCannotBeRead(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+	h.seedSealed(t)
+
+	pending := pendingFor(t, h)
+
+	// The store can no longer be opened: not a SQLite file any more.
+	require.NoError(t, os.WriteFile(filepath.Join(h.stateDir, "fleet.db"), []byte("not a database"), 0o600))
+
+	s2 := api.New(h.stateDir)
+	defer s2.Close() //nolint:errcheck
+
+	require.FileExists(t, pending, "an unreadable store must not cost the pending key its life")
+	require.Error(t, s2.StateError(), "the server must refuse to come up")
+	require.False(t, s2.Activated())
+}
+
+// A malformed pending file is not proof of anything either: it is written
+// atomically, so garbage there means something else went wrong.
+func TestRecoverPendingKeyKeepsAMalformedFile(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+	h.seedSealed(t)
+
+	pending := filepath.Join(h.stateDir, "seal.key.new")
+	require.NoError(t, os.WriteFile(pending, []byte("nonsense\n"), 0o600))
+	require.NoError(t, h.s.Close())
+
+	s2 := api.New(h.stateDir)
+	defer s2.Close() //nolint:errcheck
+
+	require.FileExists(t, pending)
+	require.Error(t, s2.StateError())
+	require.False(t, s2.Activated())
+}
+
+// A recovery whose rename fails leaves the store on the new key and seal.key
+// on the old one: serving from there would seal new secrets with a key the
+// store cannot be read with, so the server must not come up at all.
+func TestRecoverPendingKeyFailsClosedWhenTheRenameFails(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+	h.seedSealed(t)
+
+	pending := pendingFor(t, h)
+
+	// A directory where seal.key belongs: the rename is the only step that
+	// fails, and it fails the way a read-only or full filesystem would.
+	keyFile := filepath.Join(h.stateDir, "seal.key")
+	require.NoError(t, os.Remove(keyFile))
+	require.NoError(t, os.Mkdir(keyFile, 0o700))
+
+	s2 := api.New(h.stateDir)
+	defer s2.Close() //nolint:errcheck
+
+	require.FileExists(t, pending, "the committed rotation's key must survive a failed rename")
+	require.Error(t, s2.StateError(), "the server must refuse to come up")
+	require.False(t, s2.Activated())
+}
+
+// A sealed setting that is not hex stops the rotation before it writes
+// anything, and the admin is told which setting to look at - "internal error"
+// would leave them with a fleet that refuses to rotate and no way to find out why.
+func TestRotatePassphraseReportsANonHexSealedSetting(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+	h.seedSealed(t)
+
+	require.NoError(t, h.s.StoreForTesting().SetSetting(context.Background(), "sealed_broken", "not-hex"))
+
+	oldFile := keyFileBytes(t, h.stateDir)
+
+	resp, body := h.do("POST", "/api/v1/fleet/settings/passphrase",
+		map[string]any{"current": oldPassphrase, "new": "a-much-longer-passphrase"})
+	require.Equal(t, 500, resp.StatusCode, body)
+	require.Contains(t, body["error"], "sealed_broken", "the admin must be told which setting is broken")
+	require.Equal(t, oldFile, keyFileBytes(t, h.stateDir), "a failed rotation must not move seal.key")
 }

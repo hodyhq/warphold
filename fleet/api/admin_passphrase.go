@@ -5,6 +5,8 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -53,11 +55,11 @@ func (s *Server) RotatePassphrase(ctx context.Context, current, next string, dry
 		return nil, ErrWeakPassphrase
 	}
 
-	// Exclusive for the whole rotation: every handler that seals or unseals
-	// holds this for reading across its own store write, so none of them can
-	// seal with the old key while the transaction below re-seals.
-	s.sealMu.Lock()
-	defer s.sealMu.Unlock()
+	// A pending key nobody could resolve means the store may already be on a
+	// key this process does not hold; rotating on top of that would bury it.
+	if err := s.StateError(); err != nil {
+		return nil, err
+	}
 
 	st := s.store()
 	if st == nil {
@@ -74,19 +76,32 @@ func (s *Server) RotatePassphrase(ctx context.Context, current, next string, dry
 		return nil, errors.New("the stored sealing salt is missing or malformed")
 	}
 
-	old := s.sealKey()
-	derived := seal.Derive(current, salt)
-
-	if subtle.ConstantTimeCompare(derived[:], old[:]) != 1 {
-		return nil, ErrWrongPassphrase
-	}
-
 	newSalt, err := seal.NewSalt()
 	if err != nil {
 		return nil, err
 	}
 
-	newKey := seal.Derive(next, newSalt)
+	// Both argon2id runs (64 MiB, ~100 ms each) happen before the exclusive
+	// lock: holding it across them would let a wrong guess - the one thing an
+	// attacker can send in bulk - stall every enroll and poll in the fleet.
+	derived, newKey := seal.Derive(current, salt), seal.Derive(next, newSalt)
+
+	// Exclusive for the whole rotation: every handler that seals or unseals
+	// holds this for reading across its own store write, so none of them can
+	// seal with the old key while the transaction below re-seals.
+	s.sealMu.Lock()
+	defer s.sealMu.Unlock()
+
+	// Read under the lock, and compared against a key derived from the salt
+	// read before it: a rotation that committed in between leaves a different
+	// key here, and this one reports a wrong passphrase rather than re-sealing
+	// from a stale starting point.
+	old := s.sealKey()
+
+	if subtle.ConstantTimeCompare(derived[:], old[:]) != 1 {
+		return nil, ErrWrongPassphrase
+	}
+
 	pending := s.paths.KeyFile + pendingKeySuffix
 
 	if !dryRun {
@@ -103,9 +118,16 @@ func (s *Server) RotatePassphrase(ctx context.Context, current, next string, dry
 		return newKey.Seal(plain)
 	})
 	if err != nil {
+		// The pending key stays on disk even though this run failed: the last
+		// thing Reseal does is Commit, and a Commit that reports an error is
+		// not proof that nothing was written. If it did commit, this file is
+		// the only key that opens the store, and recoverPendingKey settles it
+		// at the next start by comparing salts. A stale one costs nothing: its
+		// salt will not match, so it is dropped then.
 		if !dryRun {
-			_ = os.Remove(pending)
+			log.Printf("warphold fleet: rotation failed, leaving %s for the next start to settle: %v", pending, err)
 		}
+
 		return nil, err
 	}
 
@@ -145,57 +167,87 @@ func (s *Server) RotatePassphrase(ctx context.Context, current, next string, dry
 // recoverPendingKey finishes or discards a seal.key.new left behind by a
 // rotation that crashed between its transaction and the rename. The pending
 // file records the salt its key was derived from: if the store already holds
-// that salt the transaction committed and the rename must finish, otherwise it
-// did not and the pending key can never open anything.
-func (s *Server) recoverPendingKey() {
+// that salt the transaction committed and the rename must finish.
+//
+// It deletes the file in exactly one case - the store handed back a salt, and
+// it is not this file's - because that is the only reading that proves the
+// transaction did not commit. Every other outcome (an unreadable store, an
+// unreadable or malformed pending file, a failed rename) is ambiguous, and the
+// ambiguous case is the one where this file is the only key that can open the
+// store. Those keep the file and return an error, which stops the server from
+// coming up: serving on the old key would seal new secrets into a store the
+// rest of which needs the pending one.
+func (s *Server) recoverPendingKey() error {
 	pending := s.paths.KeyFile + pendingKeySuffix
 
 	_, salt, err := seal.ReadPendingKeyFile(pending)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
 		}
-		// The pending file is written atomically before the transaction, so a
-		// malformed one belongs to a rotation that never got as far as
-		// committing: it is safe to drop, and leaving it would block the next.
-		log.Printf("warphold fleet: discarding malformed %s: %v", pending, err)
-		_ = os.Remove(pending)
 
-		return
+		return keepPending(pending, fmt.Errorf("cannot read the pending sealing key: %w", err))
 	}
 
-	if storedSalt(s.paths.DB) == hex.EncodeToString(salt) {
+	stored, err := storedSalt(s.paths.DB)
+	if err != nil {
+		return keepPending(pending, fmt.Errorf("cannot read %s from %s: %w", store.SealSaltSetting, s.paths.DB, err))
+	}
+
+	if stored == hex.EncodeToString(salt) {
+		// The transaction committed: this key, and only this key, opens the store.
 		if err := os.Rename(pending, s.paths.KeyFile); err != nil {
-			// Loud: the store holds ciphertexts only the pending key opens.
-			log.Printf("warphold fleet: cannot finish the passphrase rotation (%s -> %s): %v", pending, s.paths.KeyFile, err)
+			return keepPending(pending, fmt.Errorf("cannot finish the passphrase rotation (%s -> %s): %w", pending, s.paths.KeyFile, err))
 		}
 
-		return
+		return nil
 	}
 
-	_ = os.Remove(pending)
+	// The store holds a different salt, so the rotation this file belongs to
+	// never committed and its key can never open anything.
+	if err := os.Remove(pending); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("cannot remove the dead pending sealing key %s: %w", pending, err)
+	}
+
+	return nil
 }
 
-// storedSalt reads the sealing salt straight from the database file, without
-// creating one: a missing database means nothing was ever committed.
-func storedSalt(dbPath string) string {
+// keepPending is the fail-closed exit: it says what is on disk, what it is
+// worth and what not to do with it, and returns the error that stops the start.
+func keepPending(pending string, err error) error {
+	log.Printf("warphold fleet: %v", err)
+	log.Printf("warphold fleet: refusing to start. %s is kept: it may be the only key that opens this fleet's store. "+
+		"Fix the underlying problem (disk space, permissions, a restored or moved fleet.db) and start again; "+
+		"do not delete it until a start has succeeded without it.", pending)
+
+	return err
+}
+
+// storedSalt reads the sealing salt straight from the database file. Every
+// failure is an error rather than an empty string: "no salt" and "could not
+// read the salt" have opposite consequences for the pending key.
+func storedSalt(dbPath string) (string, error) {
 	if _, err := os.Stat(dbPath); err != nil {
-		return ""
+		return "", err
 	}
 
 	st, err := store.Open(dbPath)
 	if err != nil {
-		return ""
+		return "", err
 	}
 
 	defer st.Close() //nolint:errcheck
 
 	v, err := st.Setting(context.Background(), store.SealSaltSetting)
 	if err != nil {
-		return ""
+		return "", err
 	}
 
-	return v
+	if v == "" {
+		return "", errors.New("the store holds no sealing salt")
+	}
+
+	return v, nil
 }
 
 // SetRotateCrashForTesting installs a hook that runs after the rotation's
@@ -246,6 +298,10 @@ func (s *Server) handlePassphraseRotate(w http.ResponseWriter, r *http.Request) 
 		writeErr(w, http.StatusForbidden, err.Error())
 	case errors.Is(err, ErrWeakPassphrase):
 		writeErr(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, store.ErrSealedNotHex):
+		// Admin-only, and the setting name is the whole diagnosis: without it
+		// this is an "internal error" on a fleet that will never rotate again.
+		writeErr(w, http.StatusInternalServerError, err.Error())
 	case err != nil:
 		adminFailed(w, "rotate the sealing passphrase", err)
 	default:
