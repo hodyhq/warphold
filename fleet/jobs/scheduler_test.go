@@ -107,6 +107,27 @@ func TestSchedulerRecordsAFailingRunner(t *testing.T) {
 	require.Equal(t, "partial work", jobsOf(t, st, "stats")[0].Detail)
 }
 
+func TestSchedulerRecordsASkippedRunner(t *testing.T) {
+	st := openTemp(t)
+	ctx := context.Background()
+
+	s := NewScheduler(st, map[string]Runner{"digest": func(context.Context, store.Job) (string, error) {
+		return "smtp not configured", ErrSkipped
+	}}, time.Millisecond)
+
+	_, err := st.EnqueueJob(ctx, &store.Job{Kind: "digest", ScheduledFor: time.Now()})
+	require.NoError(t, err)
+
+	s.Start(ctx)
+	defer s.Stop()
+
+	eventually(t, func() bool { return jobsOf(t, st, "digest")[0].Status != "pending" })
+
+	j := jobsOf(t, st, "digest")[0]
+	require.Equal(t, "skipped", j.Status, "a deliberate no-op is not an error")
+	require.Equal(t, "smtp not configured", j.Detail)
+}
+
 func TestSchedulerRecordsAnUnknownKind(t *testing.T) {
 	st := openTemp(t)
 	ctx := context.Background()

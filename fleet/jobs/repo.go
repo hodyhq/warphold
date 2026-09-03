@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/kopia/kopia/fleet/enroll"
+	"github.com/kopia/kopia/fleet/mail"
 	"github.com/kopia/kopia/fleet/seal"
 	"github.com/kopia/kopia/fleet/store"
 	"github.com/kopia/kopia/repo"
@@ -288,6 +289,10 @@ var runnerFor = map[string]func(*store.Store, seal.Key) Runner{
 	"test-restore": TestRestore,
 	"maintenance":  Maintenance,
 	"reap":         Reap,
+	"stats":        Stats,
+	"digest": func(st *store.Store, k seal.Key) Runner {
+		return Digest(st, k, mail.SenderFor(st, k))
+	},
 }
 
 // Runners is every runner, keyed by kind. The scheduler enqueues the

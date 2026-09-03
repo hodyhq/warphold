@@ -20,6 +20,13 @@ import (
 // whether or not it also returns an error, so a partial run can explain itself.
 type Runner func(ctx context.Context, j store.Job) (detail string, err error)
 
+// ErrSkipped marks a job that deliberately did nothing - a fleet with no SMTP
+// configured skipping its digest, say - as distinct from a failure: the row
+// is recorded 'skipped', not 'error', and does not count against a job kind's
+// health. A Runner that skips should wrap or return this, with a detail
+// explaining why.
+var ErrSkipped = errors.New("job skipped")
+
 // DefaultTimeout bounds a single job run. It doubles as the staleness
 // threshold: a row still 'running' after this long was left behind by a crash,
 // because the scheduler is one goroutine in one process and never abandons a
@@ -50,6 +57,8 @@ var intervals = map[string]interval{
 	"test-restore": {setting: "test_restore_interval", def: 30 * day, min: time.Hour},
 	"maintenance":  {setting: "maintenance_interval", def: day, min: time.Hour},
 	"reap":         {setting: "reap_interval", def: day, min: time.Hour},
+	"stats":        {setting: "stats_interval", def: day, min: time.Hour},
+	"digest":       {setting: "digest_interval", def: 7 * day, min: day},
 }
 
 const day = 24 * time.Hour
@@ -263,7 +272,13 @@ func (s *Scheduler) runOne(ctx context.Context) bool {
 
 	status := "ok"
 
-	if runErr != nil {
+	switch {
+	case errors.Is(runErr, ErrSkipped):
+		// Deliberate, not a failure: the row still needs a detail, but
+		// nothing here should look like an error to the UI or count against
+		// requeueStale's next-run math.
+		status = "skipped"
+	case runErr != nil:
 		status = "error"
 		// A runner that returned a detail has already said what happened, in
 		// the shape it wants the UI to show; the error only sets the status.

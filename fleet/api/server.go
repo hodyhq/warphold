@@ -585,6 +585,14 @@ func (s *Server) AgentForTesting(ctx context.Context, id string) *store.Agent {
 	return a
 }
 
+// SetRepoStatsForTesting records one agent's repository size, as the "stats"
+// job would, without opening a real repository: overview and the agent
+// endpoints only read the row, and building one per test would only slow it
+// down.
+func (s *Server) SetRepoStatsForTesting(ctx context.Context, agentID string, logicalBytes, storedBytes, blobCount int64) error {
+	return s.store().SetStats(ctx, agentID, s.now(), logicalBytes, storedBytes, blobCount)
+}
+
 // requireActivated wraps admin handlers so they 409 before activation.
 func (s *Server) requireActivated(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

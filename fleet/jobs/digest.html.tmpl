@@ -1,0 +1,34 @@
+<!doctype html>
+<html>
+<body style="font-family:sans-serif;color:#111">
+<h2 style="margin-bottom:0">{{if .FleetName}}{{.FleetName}}{{else}}WarpHold Fleet{{end}} &mdash; weekly digest</h2>
+<p style="color:#666;margin-top:4px">
+  Generated {{.GeneratedAt}}{{if .PublicURL}} for <a href="{{.PublicURL}}">{{.PublicURL}}</a>{{end}}
+</p>
+
+<h3>Fleet totals</h3>
+<p>Stored: {{.TotalBytes}}{{if .DedupRatio}} (dedup ratio {{.DedupRatio}}){{end}}</p>
+
+{{if .Failing}}
+<h3 style="color:#b00">Needs attention</h3>
+<ul>
+{{range .Failing}}<li>{{.}} has been failing for over a week</li>
+{{end}}</ul>
+{{end}}
+
+<h3>Devices</h3>
+{{if .Devices}}
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse">
+<tr><th>Device</th><th>Health</th><th>Last snapshot</th><th>Stored</th><th>Offsite</th></tr>
+{{range .Devices}}<tr><td>{{.Name}}</td><td>{{.Health}}</td><td>{{.LastOK}}</td><td>{{.Bytes}}</td><td>{{.Offsite}}</td></tr>
+{{end}}</table>
+{{else}}
+<p>No devices enrolled yet.</p>
+{{end}}
+
+<h3>Recent jobs</h3>
+<ul>
+{{range .JobResults}}<li>{{.Kind}}: {{.Status}}{{if .Since}} ({{.Since}}){{end}}</li>
+{{end}}</ul>
+</body>
+</html>

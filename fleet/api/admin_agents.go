@@ -33,10 +33,13 @@ type agentOut struct {
 	LastSeenAt *time.Time `json:"last_seen_at"`
 	RevokedAt  *time.Time `json:"revoked_at"`
 	Health     string     `json:"health"`
+	// SizeBytes is repo_stats.stored_bytes, 0 until the stats job has
+	// measured this device's repository at least once.
+	SizeBytes int64 `json:"size_bytes"`
 }
 
-func (s *Server) agentOut(a store.Agent, latest *store.Report, lastOK *time.Time) agentOut {
-	return agentOut{ID: a.ID, Name: a.Name, Hostname: a.Hostname, OS: a.OS, Arch: a.Arch, Version: a.Version, Scope: a.Scope, GroupID: a.GroupID, EnrolledAt: a.EnrolledAt, LastSeenAt: a.LastSeenAt, RevokedAt: a.RevokedAt, Health: s.healthOf(a, latest, lastOK)}
+func (s *Server) agentOut(a store.Agent, latest *store.Report, lastOK *time.Time, sizeBytes int64) agentOut {
+	return agentOut{ID: a.ID, Name: a.Name, Hostname: a.Hostname, OS: a.OS, Arch: a.Arch, Version: a.Version, Scope: a.Scope, GroupID: a.GroupID, EnrolledAt: a.EnrolledAt, LastSeenAt: a.LastSeenAt, RevokedAt: a.RevokedAt, Health: s.healthOf(a, latest, lastOK), SizeBytes: sizeBytes}
 }
 
 // healthOf takes the last successful snapshot time rather than looking it up:
@@ -62,6 +65,7 @@ func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 	// One batch query, not one LastOKReport per agent: this endpoint renders
 	// the whole fleet and the per-row lookup made it O(agents) round trips.
 	lastOK, _ := s.store().LastOKReports(ctx)
+	repoStats, _ := s.store().RepoStats(ctx)
 	out := make([]agentOut, 0, len(as))
 	for _, a := range as {
 		var lr *store.Report
@@ -72,7 +76,7 @@ func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 		if t, found := lastOK[a.ID]; found {
 			ok = &t
 		}
-		out = append(out, s.agentOut(a, lr, ok))
+		out = append(out, s.agentOut(a, lr, ok, repoStats[a.ID].StoredBytes))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -94,11 +98,15 @@ func (s *Server) handleAgentGet(w http.ResponseWriter, r *http.Request) {
 		t := ok.FinishedAt
 		lastOK = &t
 	}
+	var sizeBytes int64
+	if rs, err := s.store().RepoStat(ctx, a.ID); err == nil {
+		sizeBytes = rs.StoredBytes
+	}
 	// Flatten agentOut's fields alongside reports (spec: "same object + reports:[last 20]").
 	writeJSON(w, http.StatusOK, struct {
 		agentOut
 		Reports []store.Report `json:"reports"`
-	}{s.agentOut(*a, lr, lastOK), reports})
+	}{s.agentOut(*a, lr, lastOK, sizeBytes), reports})
 }
 
 func (s *Server) handleAgentRevoke(w http.ResponseWriter, r *http.Request) {

@@ -53,6 +53,27 @@ func TestEnrollHappyPathAndRevoke(t *testing.T) {
 	require.NotNil(t, detail["revoked_at"])
 }
 
+// TestAgentListAndGetIncludeSizeBytes: the stats job's repo_stats row is the
+// source for the agent list and detail endpoints' size_bytes, same as the
+// overview's per-device size.
+func TestAgentListAndGetIncludeSizeBytes(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+	gid := h.mkGroup(t)
+	id, _ := enrollInto(t, h, gid, "laptop-1")
+
+	_, list := h.doList("GET", "/api/v1/fleet/agents")
+	require.Equal(t, float64(0), list[0]["size_bytes"], "never measured yet")
+
+	require.NoError(t, h.s.SetRepoStatsForTesting(t.Context(), id, 4000, 1234, 3))
+
+	_, list = h.doList("GET", "/api/v1/fleet/agents")
+	require.Equal(t, float64(1234), list[0]["size_bytes"])
+
+	_, detail := h.do("GET", "/api/v1/fleet/agents/"+id, nil)
+	require.Equal(t, float64(1234), detail["size_bytes"])
+}
+
 const wellFormedEnrollToken = "wh_deadbeefdeadbeefdead1234"
 
 func TestEnrollShIsServed(t *testing.T) {
