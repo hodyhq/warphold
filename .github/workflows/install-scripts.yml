@@ -22,6 +22,8 @@ jobs:
       with:
         go-version-file: 'go.mod'
     - name: ShellCheck
-      run: shellcheck -s sh scripts/install/fleet.sh && shellcheck scripts/test-fleet-sh.sh
+      run: shellcheck -s sh scripts/install/fleet.sh scripts/install/app.sh && shellcheck scripts/test-fleet-sh.sh scripts/test-app-sh.sh
     - name: Fleet installer
       run: bash scripts/test-fleet-sh.sh
+    - name: App installer
+      run: bash scripts/test-app-sh.sh
