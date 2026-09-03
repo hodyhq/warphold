@@ -575,3 +575,46 @@ func mapErr(key string, err error) error {
 
 // unquote strips the quotes S3 wraps an ETag in.
 func unquote(etag string) string { return strings.Trim(etag, `"`) }
+
+// ErrNoObjectLock is returned by ProbeObjectLock when the bucket has no Object
+// Lock configuration. Without it a mirrored or cloud-direct bucket has nothing
+// stopping a stolen admin key from deleting every backup, so such a bucket must
+// not back a target.
+var ErrNoObjectLock = errors.New("bucket does not have Object Lock enabled")
+
+// ProbeObjectLock proves an S3-compatible bucket has Object Lock enabled, by
+// reading its lock configuration (S3 GetObjectLockConfiguration).
+//
+// This is the S3 half of spec §14.5: B2 buckets configured as a native `b2`
+// target are read through b2_list_buckets' fileLockConfiguration instead, which
+// is a different call against a different API. Both are verified against a real
+// bucket in docs/RECONCILE-object-lock.md.
+//
+// Only the *enabled* flag is checked. A default retention period is a bucket
+// policy the admin owns; WarpHold neither requires nor sets one, because
+// per-object retention is deliberately not passed through (spec §14 note 00).
+func ProbeObjectLock(ctx context.Context, ci blob.ConnectionInfo) error {
+	cli, tr, opt, err := s3Client(ci)
+	if err != nil {
+		return err
+	}
+
+	defer tr.CloseIdleConnections()
+
+	enabled, _, _, _, err := cli.GetObjectLockConfig(ctx, opt.BucketName)
+	if err != nil {
+		// A bucket created without Object Lock answers 404
+		// ObjectLockConfigurationNotFoundError rather than an empty config.
+		if minio.ToErrorResponse(err).Code == "ObjectLockConfigurationNotFoundError" {
+			return ErrNoObjectLock
+		}
+
+		return fmt.Errorf("reading the bucket's Object Lock configuration: %w", err)
+	}
+
+	if !strings.EqualFold(enabled, "Enabled") {
+		return ErrNoObjectLock
+	}
+
+	return nil
+}

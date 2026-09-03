@@ -418,3 +418,26 @@ func TestHostedTargetRoundTrip(t *testing.T) {
 	require.Len(t, list, 1)
 	require.Equal(t, *got, list[0])
 }
+
+func TestCloudDirectTargetRoundTrip(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	now := clock.Now().UTC().Truncate(time.Second)
+	verified := now.Add(-time.Minute)
+
+	id, err := s.CreateTarget(ctx, &store.Target{
+		Name: "cloud", Kind: "hosted", StorageMode: "cloud",
+		Bucket: "hody-hosted", Region: "us-west-004", Endpoint: "s3.us-west-004.backblazeb2.com",
+		SealedAdminKey: []byte("sealed"), ObjectLockVerifiedAt: &verified, CreatedAt: now,
+	})
+	require.NoError(t, err)
+
+	got, err := s.Target(ctx, id)
+	require.NoError(t, err)
+	require.Equal(t, "cloud", got.StorageMode)
+	require.Equal(t, "s3.us-west-004.backblazeb2.com", got.Endpoint)
+	require.Equal(t, []byte("sealed"), got.SealedAdminKey)
+	require.NotNil(t, got.ObjectLockVerifiedAt)
+	require.True(t, verified.Equal(*got.ObjectLockVerifiedAt))
+	require.Empty(t, got.MirrorKind)
+}

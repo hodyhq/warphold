@@ -112,7 +112,7 @@ func TestMigrateAddsColumnsAndKeepsRows(t *testing.T) {
 	require.NoError(t, s.Close())
 
 	tc := columns(t, p, "targets")
-	for _, c := range []string{"storage_mode", "mirror_kind", "mirror_bucket", "mirror_region", "sealed_mirror_key", "mirror_lock_verified_at"} {
+	for _, c := range []string{"storage_mode", "endpoint", "mirror_kind", "mirror_bucket", "mirror_region", "sealed_mirror_key", "mirror_lock_verified_at"} {
 		require.True(t, tc[c], "targets.%s should have been added", c)
 	}
 	require.True(t, columns(t, p, "agents")["retired_at"])
