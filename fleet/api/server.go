@@ -470,12 +470,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 // session has nothing to revoke and just gets its cookies cleared.
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if sess := s.currentSession(r); sess != nil {
-		if !csrfOK(r) {
-			writeErr(w, http.StatusForbidden, "missing or invalid "+csrfHeader+" header")
-			return
-		}
+		// Origin first, token second: a foreign origin must never learn
+		// whether its guessed token was right (same order as requireCSRF).
 		if pu, _ := s.PublicURL(r.Context()); !originAllowed(r, pu) {
 			writeErr(w, http.StatusForbidden, "request origin does not match the configured public URL")
+			return
+		}
+		if !csrfOK(r) {
+			writeErr(w, http.StatusForbidden, "missing or invalid "+csrfHeader+" header")
 			return
 		}
 		if err := s.store().RevokeSession(r.Context(), sess.ID, s.now()); err != nil {
