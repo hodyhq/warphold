@@ -382,16 +382,36 @@ func TestMirrorIntervalSettingIsClampedToItsFloor(t *testing.T) {
 
 	s := NewScheduler(st, nil, time.Millisecond)
 
-	require.Equal(t, iv.def, s.intervalFor(ctx, iv), "unset means the default")
+	require.Equal(t, iv.def, intervalFor(ctx, s.st, iv), "unset means the default")
 
 	require.NoError(t, st.SetSetting(ctx, iv.setting, "not a number"))
-	require.Equal(t, iv.def, s.intervalFor(ctx, iv))
+	require.Equal(t, iv.def, intervalFor(ctx, s.st, iv))
 
 	require.NoError(t, st.SetSetting(ctx, iv.setting, "1"))
-	require.Equal(t, iv.min, s.intervalFor(ctx, iv), "a fat-fingered interval is floored")
+	require.Equal(t, iv.min, intervalFor(ctx, s.st, iv), "a fat-fingered interval is floored")
 
 	require.NoError(t, st.SetSetting(ctx, iv.setting, strconv.Itoa(int((2*time.Hour).Seconds()))))
-	require.Equal(t, 2*time.Hour, s.intervalFor(ctx, iv))
+	require.Equal(t, 2*time.Hour, intervalFor(ctx, s.st, iv))
+}
+
+// TestMirrorIntervalIsTheExportedSameClock: fleet/api calls staleness against
+// this, so it must resolve the setting exactly as the scheduler does - the two
+// drifting apart is how a device gets called stale an hour early.
+func TestMirrorIntervalIsTheExportedSameClock(t *testing.T) {
+	st := openTemp(t)
+	ctx := context.Background()
+	iv := intervals["mirror"]
+
+	require.Equal(t, time.Hour, MirrorInterval(ctx, st), "unset means one hour")
+
+	require.NoError(t, st.SetSetting(ctx, iv.setting, "1800"))
+	require.Equal(t, 30*time.Minute, MirrorInterval(ctx, st), "the setting is seconds")
+
+	require.NoError(t, st.SetSetting(ctx, iv.setting, "1"))
+	require.Equal(t, 5*time.Minute, MirrorInterval(ctx, st), "floored, so staleness cannot go sub-minute")
+
+	require.NoError(t, st.SetSetting(ctx, iv.setting, "half an hour"))
+	require.Equal(t, time.Hour, MirrorInterval(ctx, st), "garbage falls back to the default")
 }
 
 func TestSchedulerTimeoutFallsBackToTheDefault(t *testing.T) {

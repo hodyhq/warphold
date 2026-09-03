@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kopia/kopia/fleet/gateway"
+	"github.com/kopia/kopia/fleet/jobs"
 	"github.com/kopia/kopia/fleet/store"
 	"github.com/kopia/kopia/repo/blob"
 	"github.com/kopia/kopia/repo/blob/s3"
@@ -70,6 +71,13 @@ type targetOut struct {
 	MirrorBucket         string     `json:"mirror_bucket,omitempty"`
 	MirrorRegion         string     `json:"mirror_region,omitempty"`
 	MirrorLockVerifiedAt *time.Time `json:"mirror_lock_verified_at,omitempty"`
+
+	// Derived, not stored: when anything under this target last reached the
+	// mirror bucket, and whether any of its devices is behind. A target row
+	// has to say "offsite 2 h ago" or "offsite stale", and neither is
+	// answerable from the targets table alone.
+	MirroredAt  *time.Time `json:"mirrored_at,omitempty"`
+	MirrorStale bool       `json:"mirror_stale,omitempty"`
 }
 
 func toTargetOut(t store.Target) targetOut {
@@ -406,9 +414,92 @@ func (s *Server) handleTargetList(w http.ResponseWriter, r *http.Request) {
 		adminFailed(w, "list targets", err)
 		return
 	}
-	out := make([]targetOut, 0, len(ts))
-	for _, t := range ts {
-		out = append(out, toTargetOut(t))
+	newest, stale, err := s.targetMirrorState(r.Context(), ts)
+	if err != nil {
+		// A store failure here would otherwise render every mirrored target
+		// green ("no offsite problem") when the truth is that we do not know.
+		// The page already 500s when store.Targets fails; be consistent.
+		adminFailed(w, "read offsite state", err)
+		return
 	}
+
+	out := make([]targetOut, 0, len(ts))
+
+	for _, t := range ts {
+		o := toTargetOut(t)
+		o.MirroredAt, o.MirrorStale = newest[t.ID], stale[t.ID]
+		out = append(out, o)
+	}
+
 	writeJSON(w, http.StatusOK, out)
+}
+
+// targetMirrorState folds every device's offsite progress onto its target: the
+// newest mirror under it, and whether any device in it is behind. Three batch
+// queries on a page load, never a query per target.
+//
+// Every failure is returned rather than swallowed: an empty result here is
+// indistinguishable from "every mirror is fine", and a green offsite row on a
+// broken store is the one lie a backup dashboard must not tell.
+func (s *Server) targetMirrorState(ctx context.Context, targets []store.Target) (newest map[int64]*time.Time, stale map[int64]bool, err error) {
+	newest, stale = map[int64]*time.Time{}, map[int64]bool{}
+
+	mirrored := make(map[int64]bool, len(targets))
+	for _, t := range targets {
+		if t.MirrorKind != "" {
+			mirrored[t.ID] = true
+		}
+	}
+
+	if len(mirrored) == 0 {
+		return newest, stale, nil
+	}
+
+	st := s.store()
+
+	groups, err := st.Groups(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	agents, err := st.Agents(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	stats, err := st.RepoStats(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	groupTarget := make(map[int64]int64, len(groups))
+	for _, g := range groups {
+		groupTarget[g.ID] = g.TargetID
+	}
+
+	now, every := s.now(), jobs.MirrorInterval(ctx, st)
+
+	for _, a := range agents {
+		tid := groupTarget[a.GroupID]
+		// A revoked device is not part of "protected right now" (the overview
+		// drops it too), so it can neither hold a target back nor freshen it.
+		if a.RevokedAt != nil || !mirrored[tid] {
+			continue
+		}
+
+		var at *time.Time
+		if rs, ok := stats[a.ID]; ok {
+			at = rs.MirroredAt
+		}
+
+		if at != nil && (newest[tid] == nil || at.After(*newest[tid])) {
+			newest[tid] = at
+		}
+
+		if mirrorStale(at, now, every) {
+			stale[tid] = true
+		}
+	}
+
+	return newest, stale, nil
 }

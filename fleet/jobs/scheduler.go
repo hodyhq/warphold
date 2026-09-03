@@ -198,7 +198,7 @@ func (s *Scheduler) enqueueIntervals(ctx context.Context) {
 			continue
 		}
 
-		every := s.intervalFor(ctx, iv)
+		every := intervalFor(ctx, s.st, iv)
 
 		recent, err := s.st.RecentJobs(ctx, kind, 1)
 		if err != nil {
@@ -224,8 +224,15 @@ func (s *Scheduler) enqueueIntervals(ctx context.Context) {
 	}
 }
 
-func (s *Scheduler) intervalFor(ctx context.Context, iv interval) time.Duration {
-	v, err := s.st.Setting(ctx, iv.setting)
+// MirrorInterval is the gap between mirror runs the scheduler is currently
+// using, clamped the same way. The API reads it so a device's offsite copy is
+// called stale by the scheduler's clock rather than a second hard-coded one.
+func MirrorInterval(ctx context.Context, st *store.Store) time.Duration {
+	return intervalFor(ctx, st, intervals["mirror"])
+}
+
+func intervalFor(ctx context.Context, st *store.Store, iv interval) time.Duration {
+	v, err := st.Setting(ctx, iv.setting)
 	if err != nil || v == "" {
 		return iv.def
 	}
