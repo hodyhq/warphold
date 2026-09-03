@@ -6,17 +6,18 @@ builds:
 # dist/warphold_<os>_<arch>/warphold. The Makefile's kopia_ui_embedded_exe
 # paths are pointed at the same location (one of the upstream files the fork
 # may touch), so `make kopia-ui` and the release build agree.
+# warphold: released platforms pruned to linux/amd64+arm64 only (D8). freebsd,
+# openbsd and 32-bit arm are dropped from the release matrix entirely; darwin
+# and windows are compile-only portability checks in CI (see release.yml),
+# never published here.
 - id: warphold
   binary: warphold
   env:
   - CGO_ENABLED=0
   goos:
   - linux
-  - freebsd
-  - openbsd
   goarch:
     - amd64
-    - arm
     - arm64
   flags:
     - -trimpath
@@ -24,20 +25,21 @@ builds:
   - -s -w -X "github.com/kopia/kopia/repo.BuildVersion={{.Version}}" -X "github.com/kopia/kopia/repo.BuildInfo={{.Commit}}" -X "github.com/kopia/kopia/repo.BuildGitHubRepo={{.Env.GITHUB_REPOSITORY}}"
 release:
   draft: false
+  # warphold: attach the install scripts to every release so
+  # releases/latest/download/{fleet,app}.sh always serves the script that
+  # shipped with the latest binary (this is what get.warphold.com redirects
+  # to — see Task 17).
+  extra_files:
+    - glob: scripts/install/fleet.sh
+    - glob: scripts/install/app.sh
 archives:
+  # warphold: only linux ships, so the name template no longer needs the
+  # upstream os/arch `replacements` map (removed — unsupported by goreleaser
+  # v1.21+ anyway); amd64 keeps the historical "x64" label, arm64 is used as-is.
   - id: default
-    replacements:
-      darwin: macOS
-      linux: linux
-      windows: windows
-      freebsd: freebsd-experimental
-      openbsd: openbsd-experimental
-      amd64: x64
-    name_template: "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+    name_template: >-
+      {{ .ProjectName }}-{{ .Version }}-linux-{{ if eq .Arch "amd64" }}x64{{ else }}{{ .Arch }}{{ end }}
     wrap_in_directory: true
-    format_overrides:
-    - goos: windows
-      format: zip
     files:
       - LICENSE
       - README.md
@@ -46,29 +48,36 @@ checksum:
 snapshot:
   name_template: '{{ .Env.KOPIA_VERSION_NO_PREFIX }}'
 nfpms:
-  - homepage: https://kopia.io
-    vendor: Kopia Project
-    maintainer: Kopia Project <kopia-pmc@googlegroups.com>
-    description: Fast and secure open source backup.
+  # warphold: package metadata rebranded from Kopia; conflicts with the
+  # upstream kopia package since both install the same binary path.
+  - homepage: https://warphold.com
+    vendor: WarpHold
+    maintainer: Hodahel Moinzadeh <hody@hody.dev>
+    description: "Backups that hold — single-machine app and Fleet server"
     license: Apache 2.0
+    conflicts:
+      - kopia
     file_name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
-    replacements:
-      arm: armhf
     formats:
     - deb
     - rpm
     bindir: /usr/bin
+    scripts:
+      postinstall: packaging/postinstall.sh
+      postremove: packaging/postremove.sh
     overrides:
       rpm:
-        file_name_template: "{{ .ProjectName }}-{{ .Version }}.{{ .Arch }}"
-        replacements:
-          amd64: x86_64
-          arm64: aarch64
-          arm: armhfp
+        file_name_template: >-
+          {{ .ProjectName }}-{{ .Version }}.{{ if eq .Arch "amd64" }}x86_64{{ else if eq .Arch "arm64" }}aarch64{{ else }}{{ .Arch }}{{ end }}
 signs:
+  # warphold: signing key is a HUMAN CHECKPOINT (WARPHOLD_SIGNING_KEY /
+  # WARPHOLD_SIGNING_PASSPHRASE repo secrets, see release.yml and
+  # docs/RELEASING.md). tools/sign.sh is upstream and untouched (it hardcodes
+  # the "Kopia Builder" gpg key name); tools/warphold-sign.sh is the WarpHold
+  # replacement, reading the key id/passphrase goreleaser exports.
   - id: all
     artifacts: checksum
-    cmd: tools/sign.sh
+    cmd: tools/warphold-sign.sh
     args: ["${artifact}", "${signature}"]
 changelog:
   filters:

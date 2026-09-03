@@ -2,6 +2,7 @@ package engine
 
 import (
 	"encoding/json"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -84,6 +85,22 @@ func ReadInfo(scope string) (*Info, error) {
 	}
 
 	return &i, nil
+}
+
+// SessionURL is the one-URL handoff into a running engine's web UI: the
+// caller reads engine.json and opens
+// http://127.0.0.1:<port>/local/session?t=<token> in a browser, which trades
+// the token for a session cookie.
+//
+// The token is in the URL, so the URL is handed to a browser and to nothing
+// else - never a log, never a notification.
+func SessionURL(scope string) (string, error) {
+	i, err := ReadInfo(scope)
+	if err != nil {
+		return "", errors.Wrap(err, "the engine is not running")
+	}
+
+	return i.BaseURL + localSessionPath + "?t=" + url.QueryEscape(i.LocalToken), nil
 }
 
 // RemoveInfo deletes engine.json; a missing file is not an error.

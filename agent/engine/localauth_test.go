@@ -13,6 +13,7 @@ import (
 	"github.com/kopia/kopia/agent/engine"
 	"github.com/kopia/kopia/agent/state"
 	"github.com/kopia/kopia/internal/apiclient"
+	"github.com/kopia/kopia/internal/passwordpersist"
 	"github.com/kopia/kopia/internal/serverapi"
 )
 
@@ -72,7 +73,7 @@ func TestLocalSessionHandoff(t *testing.T) {
 
 	cfg, pw := provisionedRepo(t)
 
-	h, err := engine.StartHeadless(ctx, cfg, pw, "user")
+	h, err := engine.StartHeadless(ctx, cfg, pw, "user", passwordpersist.None())
 	require.NoError(t, err)
 
 	stopped := false
@@ -190,7 +191,7 @@ func TestLocalInfo(t *testing.T) {
 
 	cfg, pw := provisionedRepo(t)
 
-	h, err := engine.StartHeadless(ctx, cfg, pw, "user")
+	h, err := engine.StartHeadless(ctx, cfg, pw, "user", passwordpersist.None())
 	require.NoError(t, err)
 
 	defer h.Stop(ctx) //nolint:errcheck
@@ -259,7 +260,7 @@ func TestLocalInfoWithoutEnrollment(t *testing.T) {
 
 	cfg, pw := provisionedRepo(t)
 
-	h, err := engine.StartHeadless(ctx, cfg, pw, "user")
+	h, err := engine.StartHeadless(ctx, cfg, pw, "user", passwordpersist.None())
 	require.NoError(t, err)
 
 	defer h.Stop(ctx) //nolint:errcheck

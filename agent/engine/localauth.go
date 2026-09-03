@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"os"
 
 	"github.com/kopia/kopia/agent/state"
 )
@@ -157,9 +158,14 @@ func (a *localAuth) info(w http.ResponseWriter, r *http.Request) {
 	// A missing agent.json is not an error here: an engine can run before (or
 	// without) enrollment, and the page falls back to its own default label
 	// rather than showing a failure where a name belongs.
+	//
+	// The standalone app has no enrollment to name it at all, so it answers
+	// with this machine's hostname - the same label its tray shows.
 	var out localInfo
 
-	if cfg, err := state.Load(a.scope); err == nil {
+	if a.scope == state.ScopeApp {
+		out.Name, _ = os.Hostname() //nolint:errcheck
+	} else if cfg, err := state.Load(a.scope); err == nil {
 		out.Name = cfg.Name
 	}
 

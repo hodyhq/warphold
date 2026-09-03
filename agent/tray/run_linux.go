@@ -10,6 +10,9 @@ import (
 
 	"fyne.io/systray"
 	"github.com/pkg/errors"
+
+	"github.com/kopia/kopia/agent/install"
+	"github.com/kopia/kopia/agent/state"
 )
 
 // Poll cadence: every 5 seconds while the engine answers, backing off to at
@@ -271,16 +274,25 @@ func (t *tray) openDetails() error {
 	return nil
 }
 
-// startAgent starts the systemd unit 'agent install' wrote.
+// startAgent starts the systemd unit the install wrote: the app's when the
+// tray is watching the standalone app, the agent's otherwise.
 func (t *tray) startAgent(ctx context.Context) error {
-	args := []string{"--user", "start", "warphold-agent"}
-	if t.opts.Scope == "system" {
-		args = []string{"start", "warphold-agent"}
+	unit := "warphold-agent"
+
+	switch t.opts.Scope {
+	case state.ScopeSystem:
+		return t.systemctl(ctx, "start", unit)
+	case state.ScopeApp:
+		unit = install.AppUnitName
 	}
 
+	return t.systemctl(ctx, "--user", "start", unit)
+}
+
+func (t *tray) systemctl(ctx context.Context, args ...string) error {
 	out, err := exec.CommandContext(ctx, "systemctl", args...).CombinedOutput()
 	if err != nil {
-		return errors.Wrapf(err, "unable to start the agent: %s", string(out))
+		return errors.Wrapf(err, "unable to start the service: %s", string(out))
 	}
 
 	return nil

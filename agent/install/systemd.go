@@ -9,15 +9,22 @@ import (
 
 	"github.com/pkg/errors"
 
+	"github.com/kopia/kopia/agent/state"
 	"github.com/kopia/kopia/internal/ospath"
 )
 
-// unitName is the service file both scopes install; systemUnitDir is the only
-// directory a system-scope install may write to.
+// unitName is the service file both agent scopes install, appUnitName the one
+// the standalone app installs; systemUnitDir is the only directory a
+// system-scope install may write to.
 const (
 	unitName      = "warphold-agent.service"
+	appUnitName   = "warphold-app.service"
 	systemUnitDir = "/etc/systemd/system"
 )
+
+// AppUnitName is the standalone app's systemd unit, without the extension:
+// what "systemctl --user <verb>" takes.
+const AppUnitName = "warphold-app"
 
 // Plan is what an install will do, so it can be printed (--dry-run) or applied.
 type Plan struct {
@@ -30,14 +37,14 @@ type Plan struct {
 // forever. Five starts inside ten minutes (RestartSec=30 between them) put the
 // unit into "failed", where an operator can see it.
 const unitTmpl = `[Unit]
-Description=WarpHold backup agent
+Description=%s
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=600
 StartLimitBurst=5
 
 [Service]
-%sExecStart="%s" agent run --scope %s
+%sExecStart="%s" %s
 Restart=on-failure
 RestartSec=30
 RestartPreventExitStatus=3
@@ -54,8 +61,8 @@ WantedBy=%s
 // somewhere relative to the current working directory, where systemd will
 // never find it.
 func Systemd(scope, binary string) (Plan, error) {
-	if scope == "system" {
-		u, err := unit(binary, "system", "multi-user.target")
+	if scope == state.ScopeSystem {
+		u, err := unit(binary, agentUnit(state.ScopeSystem), "multi-user.target")
 		if err != nil {
 			return Plan{}, err
 		}
@@ -65,12 +72,12 @@ func Systemd(scope, binary string) (Plan, error) {
 		}, [][]string{{"systemctl", "daemon-reload"}, {"systemctl", "enable", "--now", "warphold-agent"}})
 	}
 
-	cfg, err := userConfigDir()
+	cfg, err := UserConfigDir()
 	if err != nil {
 		return Plan{}, err
 	}
 
-	u, err := unit(binary, "user", "default.target")
+	u, err := unit(binary, agentUnit(state.ScopeUser), "default.target")
 	if err != nil {
 		return Plan{}, err
 	}
@@ -78,7 +85,7 @@ func Systemd(scope, binary string) (Plan, error) {
 	// The tray is a login-session program, not a service: it needs the
 	// user's D-Bus session bus and their panel, so it autostarts with the
 	// desktop rather than with systemd.
-	desktop, err := Autostart(binary)
+	desktop, err := Autostart(binary, state.ScopeUser)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -89,12 +96,50 @@ func Systemd(scope, binary string) (Plan, error) {
 	}, [][]string{{"systemctl", "--user", "daemon-reload"}, {"systemctl", "--user", "enable", "--now", "warphold-agent"}, {"loginctl", "enable-linger"}})
 }
 
-// userConfigDir resolves the user's config directory for a user-scope
+// agentUnit is the ExecStart argument list and unit description for an agent
+// of the given scope.
+func agentUnit(scope string) unitSpec {
+	return unitSpec{desc: "WarpHold backup agent", args: "agent run --scope " + scope}
+}
+
+// SystemdApp is the standalone single-machine app: a user-scope service
+// running the local engine, plus the tray autostart pointed at it. There is
+// no system scope - the app is one person's backup engine, running as them,
+// reachable only on their loopback.
+func SystemdApp(binary string) (Plan, error) {
+	cfg, err := UserConfigDir()
+	if err != nil {
+		return Plan{}, err
+	}
+
+	u, err := unit(binary, unitSpec{desc: "WarpHold app", args: "app run"}, "default.target")
+	if err != nil {
+		return Plan{}, err
+	}
+
+	desktop, err := Autostart(binary, state.ScopeApp)
+	if err != nil {
+		return Plan{}, err
+	}
+
+	return planUnder(cfg, map[string]string{
+		AppUnitPath(cfg):      u,
+		AppAutostartPath(cfg): desktop,
+	}, [][]string{{"systemctl", "--user", "daemon-reload"}, {"systemctl", "--user", "enable", "--now", AppUnitName}, {"loginctl", "enable-linger"}})
+}
+
+// AppUnitPath is where the standalone app's unit lives. dir is the user's
+// config directory.
+func AppUnitPath(dir string) string {
+	return filepath.Join(dir, "systemd", "user", appUnitName)
+}
+
+// UserConfigDir resolves the user's config directory for a user-scope
 // install: XDG_CONFIG_HOME when set, otherwise ~/.config. An unresolvable or
 // relative directory is an error rather than a unit written somewhere
 // relative to the current working directory, where systemd will never find
 // it.
-func userConfigDir() (string, error) {
+func UserConfigDir() (string, error) {
 	cfg := os.Getenv("XDG_CONFIG_HOME")
 	if cfg == "" {
 		home, err := os.UserHomeDir()
@@ -143,11 +188,20 @@ func planUnder(root string, files map[string]string, commands [][]string) (Plan,
 	return Plan{Files: files, Commands: commands}, nil
 }
 
+// unitSpec is what differs between the units this package writes: the
+// Description and the arguments after the binary in ExecStart. Both are
+// package constants, never user input.
+type unitSpec struct {
+	desc string
+	args string
+}
+
 // unit renders the service file. A WARPHOLD_STATE_DIR set at install time is
 // carried into the unit: systemd starts services in a clean environment, so
-// without it the installed service would look for agent.json in the default
-// directory and report itself unenrolled.
-func unit(binary, scope, wantedBy string) (string, error) {
+// without it the installed service would look for its state in the default
+// directory - an agent would report itself unenrolled, and the app would open
+// the wrong repository.
+func unit(binary string, spec unitSpec, wantedBy string) (string, error) {
 	if err := checkBinary(binary); err != nil {
 		return "", err
 	}
@@ -167,7 +221,7 @@ func unit(binary, scope, wantedBy string) (string, error) {
 		env = fmt.Sprintf("Environment=\"WARPHOLD_STATE_DIR=%s\"\n", strings.ReplaceAll(d, "%", "%%"))
 	}
 
-	return strings.TrimSpace(fmt.Sprintf(unitTmpl, env, systemdArg(binary), scope, wantedBy)) + "\n", nil
+	return strings.TrimSpace(fmt.Sprintf(unitTmpl, spec.desc, env, systemdArg(binary), spec.args, wantedBy)) + "\n", nil
 }
 
 // systemdArg escapes a path for the inside of a double-quoted systemd

@@ -15,6 +15,7 @@ import (
 	"github.com/kopia/kopia/agent/engine"
 	"github.com/kopia/kopia/agent/poll"
 	"github.com/kopia/kopia/fleet/enroll"
+	"github.com/kopia/kopia/internal/passwordpersist"
 	"github.com/kopia/kopia/internal/uitask"
 	"github.com/kopia/kopia/repo"
 	"github.com/kopia/kopia/repo/blob"
@@ -44,7 +45,7 @@ func TestApplySnapshotAndReport(t *testing.T) {
 	ctx := context.Background()
 	t.Setenv("WARPHOLD_STATE_DIR", t.TempDir())
 	cfg, pw := provisionedRepo(t)
-	h, err := engine.StartHeadless(ctx, cfg, pw, "user")
+	h, err := engine.StartHeadless(ctx, cfg, pw, "user", passwordpersist.None())
 	require.NoError(t, err)
 	defer h.Stop(ctx)
 	api, err := h.Client()
@@ -111,7 +112,7 @@ func TestStatus(t *testing.T) {
 	ctx := context.Background()
 	t.Setenv("WARPHOLD_STATE_DIR", t.TempDir())
 	cfg, pw := provisionedRepo(t)
-	h, err := engine.StartHeadless(ctx, cfg, pw, "user")
+	h, err := engine.StartHeadless(ctx, cfg, pw, "user", passwordpersist.None())
 	require.NoError(t, err)
 	defer h.Stop(ctx)
 	api, err := h.Client()
@@ -144,7 +145,7 @@ func TestHeadlessServesUI(t *testing.T) {
 	ctx := context.Background()
 	t.Setenv("WARPHOLD_STATE_DIR", t.TempDir())
 	cfg, pw := provisionedRepo(t)
-	h, err := engine.StartHeadless(ctx, cfg, pw, "user")
+	h, err := engine.StartHeadless(ctx, cfg, pw, "user", passwordpersist.None())
 	require.NoError(t, err)
 
 	defer h.Stop(ctx) //nolint:errcheck

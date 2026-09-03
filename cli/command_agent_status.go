@@ -8,6 +8,7 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/kopia/kopia/agent/engine"
+	"github.com/kopia/kopia/agent/state"
 	"github.com/kopia/kopia/internal/apiclient"
 	"github.com/kopia/kopia/internal/clock"
 	"github.com/kopia/kopia/internal/serverapi"
@@ -41,7 +42,7 @@ func (c *commandAgentStatus) run(ctx context.Context) error {
 		// unreadable one is a real failure and must not be reported as a
 		// stopped agent.
 		if os.IsNotExist(err) {
-			return c.engineDown(errors.New("the agent engine is not running; start it with 'warphold agent run'"))
+			return c.engineDown(errors.Errorf("the %s engine is not running; start it with %s", c.noun(), c.startHint()))
 		}
 
 		return errors.Wrap(err, "unable to read engine.json")
@@ -57,7 +58,7 @@ func (c *commandAgentStatus) run(ctx context.Context) error {
 	if err := api.Get(ctx, "sources", nil, &sr); err != nil {
 		// engine.json points at a loopback port; nothing answering there
 		// means the process that wrote it is gone.
-		return c.engineDown(errors.Wrap(err, "the agent engine is not reachable"))
+		return c.engineDown(errors.Wrapf(err, "the %s engine is not reachable", c.noun()))
 	}
 
 	if len(sr.Sources) == 0 {
@@ -71,6 +72,25 @@ func (c *commandAgentStatus) run(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// noun and startHint name what the caller is actually looking at: 'app
+// status' shares this command's body, and telling someone with no Fleet
+// server to run 'agent run' sends them to a command that will refuse.
+func (c *commandAgentStatus) noun() string {
+	if c.scope == state.ScopeApp {
+		return "app"
+	}
+
+	return "agent"
+}
+
+func (c *commandAgentStatus) startHint() string {
+	if c.scope == state.ScopeApp {
+		return "'warphold app install' (or 'warphold app run' to run it in this terminal)"
+	}
+
+	return "'warphold agent run'"
 }
 
 // engineDown prints why and exits 2. It returns an error only so callers can
