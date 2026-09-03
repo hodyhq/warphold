@@ -1,0 +1,78 @@
+package api_test
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+
+	"github.com/kopia/kopia/fleet/api"
+)
+
+// TestSetupDefaultsLeavesAFleetThatCanEnroll is the brief's acceptance shape: a
+// fresh install ends up with a target, a template, a group and a token that can
+// be issued right away, without anyone opening the dashboard.
+func TestSetupDefaultsLeavesAFleetThatCanEnroll(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+
+	hostedRoot := filepath.Join(t.TempDir(), "hosted")
+
+	oneLiner, err := h.s.SetupDefaults(t.Context(), h.srv.URL, "disk", hostedRoot)
+	require.NoError(t, err)
+	require.Contains(t, oneLiner, "WARPHOLD_ENROLL_TOKEN=wh_", "the command carries a real token")
+	require.Contains(t, oneLiner, h.srv.URL+"/enroll.sh")
+
+	fi, err := os.Stat(hostedRoot)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o750), fi.Mode().Perm(), "the hosted root is not world-readable")
+
+	resp, targets := h.doList("GET", "/api/v1/fleet/targets")
+	require.Equal(t, 200, resp.StatusCode)
+	require.Len(t, targets, 1)
+	require.Equal(t, "Fleet disk", targets[0]["name"])
+	require.Equal(t, "hosted", targets[0]["kind"])
+	require.Equal(t, hostedRoot, targets[0]["path"])
+
+	resp, templates := h.doList("GET", "/api/v1/fleet/templates")
+	require.Equal(t, 200, resp.StatusCode)
+	require.Len(t, templates, 1)
+	require.Equal(t, "Home", templates[0]["name"])
+	require.Equal(t, []any{"~"}, templates[0]["sources"])
+
+	resp, groups := h.doList("GET", "/api/v1/fleet/groups")
+	require.Equal(t, 200, resp.StatusCode)
+	require.Len(t, groups, 1)
+	require.Equal(t, "Devices", groups[0]["name"])
+	require.Equal(t, targets[0]["id"], groups[0]["target_id"])
+	require.Equal(t, templates[0]["id"], groups[0]["template_id"])
+
+	// ... and the API can issue another token for that group immediately.
+	resp, body := h.do("POST", "/api/v1/fleet/tokens", map[string]any{"group_id": groups[0]["id"]})
+	require.Equal(t, 201, resp.StatusCode)
+	require.True(t, strings.HasPrefix(body["token"].(string), "wh_"))
+
+	// Second run: nothing is created twice.
+	again, err := h.s.SetupDefaults(t.Context(), h.srv.URL, "disk", hostedRoot)
+	require.NoError(t, err)
+	require.Empty(t, again, "a second run has nothing to enroll into")
+
+	_, targets = h.doList("GET", "/api/v1/fleet/targets")
+	require.Len(t, targets, 1, "no second Fleet disk")
+}
+
+func TestSetupDefaultsRefusesCloudAndBadStorage(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+
+	_, err := h.s.SetupDefaults(t.Context(), "", "cloud", t.TempDir())
+	require.ErrorIs(t, err, api.ErrCloudNeedsWizard)
+
+	_, err = h.s.SetupDefaults(t.Context(), "", "tape", t.TempDir())
+	require.ErrorContains(t, err, "storage must be disk or cloud")
+
+	_, targets := h.doList("GET", "/api/v1/fleet/targets")
+	require.Empty(t, targets, "a refused storage mode creates nothing")
+}

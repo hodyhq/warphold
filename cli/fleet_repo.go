@@ -23,6 +23,10 @@ const (
 	// configured" and nowhere to put its own snapshots.
 	fleetRepoDirName = "fleet-repo"
 
+	// fleetHostedDirName is the default root for enrolled devices' backups,
+	// one subdirectory per device (spec 8.2: /srv/warphold/hosted).
+	fleetHostedDirName = "hosted"
+
 	// fleetRepoConfigName and fleetRepoCacheName live in the Fleet state
 	// directory. The Fleet host's repository deliberately does not use the
 	// installation's own --config-file: that one belongs to whoever runs the

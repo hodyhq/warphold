@@ -609,3 +609,60 @@ func TestFleetActivateDataDirIsAbsoluteAndNotASymlink(t *testing.T) {
 		require.NoFileExists(t, filepath.Join(fleet.StateDirFor(fleetConfigFile(e)), "seal.key"), "refused before activation")
 	})
 }
+
+// TestFleetActivateCreatesDefaultsAndPrintsTheOneLiner: the point of the
+// non-interactive path is that the machine is ready to enroll a device when
+// the command returns, so setup creates the first target, template and group
+// and prints the command that joins a device to it.
+func TestFleetActivateCreatesDefaultsAndPrintsTheOneLiner(t *testing.T) {
+	runner := testenv.NewInProcRunner(t)
+	e := testenv.NewCLITest(t, nil, runner)
+
+	stdout := e.RunAndExpectSuccess(t, "fleet", "activate",
+		"--email", "hody@hody.dev",
+		"--admin-password", "pw12345678",
+		"--passphrase", "seal-me-please",
+		"--public-url", "https://fleet.example.com")
+
+	joined := strings.Join(stdout, "\n")
+	hostedRoot := filepath.Join(e.ConfigDir, "data", "hosted")
+	require.Contains(t, joined, hostedRoot)
+	require.Contains(t, joined, "WARPHOLD_ENROLL_TOKEN=wh_")
+	require.Contains(t, joined, "https://fleet.example.com/enroll.sh")
+	require.DirExists(t, hostedRoot)
+
+	st, err := store.Open(filepath.Join(fleet.StateDirFor(fleetConfigFile(e)), "fleet.db"))
+	require.NoError(t, err)
+
+	defer st.Close() //nolint:errcheck
+
+	targets, err := st.Targets(t.Context())
+	require.NoError(t, err)
+	require.Len(t, targets, 1)
+	require.Equal(t, "Fleet disk", targets[0].Name)
+	require.Equal(t, "hosted", targets[0].Kind)
+	require.Equal(t, "disk", targets[0].StorageMode)
+	require.Equal(t, hostedRoot, targets[0].Path)
+
+	groups, err := st.Groups(t.Context())
+	require.NoError(t, err)
+	require.Len(t, groups, 1)
+	require.Equal(t, "Devices", groups[0].Name)
+	require.Equal(t, targets[0].ID, groups[0].TargetID)
+}
+
+// --storage cloud cannot be finished without credentials, so it fails before
+// anything is written rather than half-way through setup.
+func TestFleetActivateRefusesCloudStorage(t *testing.T) {
+	runner := testenv.NewInProcRunner(t)
+	e := testenv.NewCLITest(t, nil, runner)
+
+	_, stderr := e.RunAndExpectFailure(t, "fleet", "activate",
+		"--email", "hody@hody.dev",
+		"--admin-password", "pw12345678",
+		"--passphrase", "seal-me-please",
+		"--storage", "cloud")
+
+	require.Contains(t, strings.Join(stderr, "\n"), "add the cloud target in the dashboard")
+	require.NoFileExists(t, filepath.Join(fleet.StateDirFor(fleetConfigFile(e)), "seal.key"))
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/pkg/errors"
 
@@ -18,6 +19,8 @@ type commandFleetActivate struct {
 	publicURL  string
 	verifyURL  bool
 	dataDir    string
+	storage    string
+	hostedRoot string
 	svc        appServices
 	out        textOutput
 }
@@ -38,6 +41,8 @@ func (c *commandFleetActivate) setup(svc appServices, parent commandParent) {
 	cmd.Flag("public-url", "Public URL devices and browsers reach this Fleet on, e.g. https://fleet.example.com").Envar(svc.EnvName("WARPHOLD_SETUP_PUBLIC_URL")).StringVar(&c.publicURL)
 	cmd.Flag("verify-public-url", "Fetch --public-url end to end before finishing and fail if it does not answer as this Fleet").BoolVar(&c.verifyURL)
 	cmd.Flag("data-dir", "Directory for this host's own Fleet data; its repository is created in <data-dir>/"+fleetRepoDirName).StringVar(&c.dataDir)
+	cmd.Flag("storage", "Where enrolled devices' backups land: disk (this host) or cloud (dashboard only)").Default("disk").EnumVar(&c.storage, "disk", "cloud")
+	cmd.Flag("hosted-root", "Root directory for devices' backups; defaults to <data-dir>/"+fleetHostedDirName).StringVar(&c.hostedRoot)
 	c.svc = svc
 	c.out.setup(svc)
 	cmd.Action(svc.noRepositoryAction(c.run))
@@ -77,6 +82,16 @@ func (c *commandFleetActivate) run(ctx context.Context) error {
 	dataDir, err := resolveDataDir(c.dataDir, c.svc.repositoryConfigFileName())
 	if err != nil {
 		return err
+	}
+
+	// And the same for a storage mode this command cannot finish.
+	if c.storage == "cloud" {
+		return api.ErrCloudNeedsWizard
+	}
+
+	hostedRoot := c.hostedRoot
+	if hostedRoot == "" {
+		hostedRoot = filepath.Join(dataDir, fleetHostedDirName)
 	}
 
 	if c.passphrase == "" {
@@ -143,6 +158,19 @@ func (c *commandFleetActivate) run(ctx context.Context) error {
 		fmt.Fprintf(c.out.stdout(), "Public URL %s answers as this Fleet.\n", c.publicURL) //nolint:errcheck
 	} else if c.publicURL != "" {
 		fmt.Fprintf(c.out.stdout(), "Public URL: %s\n", c.publicURL) //nolint:errcheck
+	}
+
+	// The first target, template and group, so the fresh server can enroll a
+	// device immediately. Like the repository above, a failure here is not
+	// fatal - the dashboard's wizard creates the same three things.
+	oneLiner, err := s.SetupDefaults(ctx, c.publicURL, c.storage, hostedRoot)
+	switch {
+	case err != nil:
+		fmt.Fprintf(c.out.stdout(), "Warning: the default target and group were not created: %v\n", err) //nolint:errcheck
+	case oneLiner != "":
+		fmt.Fprintf(c.out.stdout(), "Devices' backups land in: %s\nEnroll the first device with:\n  %s\n", hostedRoot, oneLiner) //nolint:errcheck
+	default:
+		fmt.Fprintf(c.out.stdout(), "Devices' backups land in: %s\nSet the public URL, then issue an enrollment token in the dashboard.\n", hostedRoot) //nolint:errcheck
 	}
 
 	fmt.Fprintln(c.out.stdout(), "Start the server with 'warphold server start' and sign in at /api/v1/fleet/session.") //nolint:errcheck
