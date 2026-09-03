@@ -36,7 +36,12 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1) // ponytail: single writer; raise with a read pool if the dashboard ever contends
-	if _, err := db.ExecContext(context.Background(), schema); err != nil {
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, schema); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := migrate(ctx, db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
