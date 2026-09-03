@@ -1,0 +1,76 @@
+# warphold: new release workflow (no goreleaser-based release workflow
+# existed upstream to rename/edit — upstream's make.yml build+publish job is
+# gated to `github.repository == 'kopia/kopia'` and uses a different,
+# GCS/Homebrew/Scoop-based staging pipeline that doesn't apply to this fork,
+# so it is left untouched).
+#
+# On a `v*` tag: compile-check darwin/windows for portability (never
+# published, D8), then run goreleaser to build+package linux/amd64+arm64
+# tarballs, .deb/.rpm, and signed checksums. See docs/RELEASING.md for the
+# signing key requirements (HUMAN CHECKPOINT).
+name: Release
+on:
+  push:
+    tags:
+      - 'v*'
+permissions:
+  contents: write
+jobs:
+  compile-check:
+    name: Compile check (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: 'go.mod'
+      - name: go build (compile check only, not published)
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: go build ./...
+
+  release:
+    name: goreleaser
+    needs: compile-check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: 'go.mod'
+      - name: Check for release signing key
+        id: signing
+        env:
+          HAS_KEY: ${{ secrets.WARPHOLD_SIGNING_KEY != '' && secrets.WARPHOLD_SIGNING_PASSPHRASE != '' }}
+        run: |
+          if [ "$HAS_KEY" = "true" ]; then
+            echo "extra_args=" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::WARPHOLD_SIGNING_KEY is not set — publishing this release with UNSIGNED checksums."
+            echo "extra_args=--skip=sign" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          version: '1.26.2'
+          args: release --clean ${{ steps.signing.outputs.extra_args }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WARPHOLD_SIGNING_KEY: ${{ secrets.WARPHOLD_SIGNING_KEY }}
+          WARPHOLD_SIGNING_PASSPHRASE: ${{ secrets.WARPHOLD_SIGNING_PASSPHRASE }}
