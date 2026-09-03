@@ -53,6 +53,8 @@ cli/command_fleet_jobs.go, cli/command_fleet_rotate.go                 (new)
 agent/engine/verify.go                                                 (verify command)
 .goreleaser.yml                                                        (warphold:)  packaging + signing
 scripts/spike-append-only/                                             (Task 1, kept as documentation)
+scripts/install/{fleet.sh,app.sh}      the ONLY copy of each install script; shipped as release assets
+scripts/{test-fleet-sh.sh,test-app-sh.sh,standalone-restore-test.sh}
 docs/superpowers/specs/2026-09-02-…-design.md, docs/superpowers/plans/… (this file)
 docs/RECONCILE-append-only.md                                          (Task 1 output, referenced by §14.1)
 
@@ -64,7 +66,7 @@ hodyhq/warphold-ui:
   README.md                                                            (M6)
 
 hodyhq/warphold-site:                                                  (M6, new repo)
-  index.html, fleet.html, get/{fleet.sh,app.sh}, assets/, CNAME
+  index.html, fleet.html, assets/, CNAME        (no get/ - scripts are never copied here)
 
 hody vault: Homelab/WarpHold/{WarpHold-Admin-Overview,WarpHold-Full-Dev-Guide,WarpHold-Issues-and-Fixes}.md
 ```
@@ -103,7 +105,7 @@ echo more >> /tmp/spike-src/b.txt
 /tmp/wh-spike --config-file /tmp/spike.config snapshot list
 /tmp/wh-spike --config-file /tmp/spike.config maintenance run --full
 ```
-  Verify the exact flag names against `cli/command_repository_create_s3.go` first (§14.4) — the names above are the expected shape, not a quotation.
+  Verify the exact flag names against `cli/storage_s3.go` first (§14.4) — the names above are the expected shape, not a quotation.
 
 - [ ] **Step 3: Record the findings**
 
@@ -369,7 +371,12 @@ git add fleet/gateway fleet/api && git commit -m "fleet/gateway: append-only S3 
 
 **Files:**
 - Create: `fleet/api/publicurl.go`, `fleet/api/publicurl_test.go`
-- Modify: `fleet/api/admin_settings.go` (the `public_url` key), `fleet/api/admin_tokens.go` (the gate), `fleet/api/sessions.go` (`Secure` cookie), `fleet/api/csrf.go` (origin check), `fleet/api/enrollsh.go` (`Server` value), `cli/command_fleet_activate.go` (`--public-url`)
+- Modify: `fleet/api/admin_settings.go` (the `public_url` key), `fleet/api/admin_tokens.go` (the gate), `fleet/api/csrf.go` (**new** origin check), `cli/command_fleet_activate.go` (`--public-url`)
+- **Every `requestIsHTTPS` caller switches to the `public_url`-derived decision** (grepped 2026-09-02; `requestIsHTTPS` itself stays as the fallback when `public_url` is unset, so nothing regresses on a fresh server):
+  - `fleet/api/enrollsh.go:36` — chooses `http`/`https` for the `Server` URL templated into `enroll.sh`; **use `public_url` verbatim when set**, so a device is told the same host the gateway signs for
+  - `fleet/api/sessions.go:66` — the `Secure` flag on the session cookie at login
+  - `fleet/api/sessions.go:109` — the `Secure` flag on the clearing cookie at logout (must match line 66 or the browser keeps the cookie)
+  - `fleet/api/enrollsh.go:52` — `requestIsHTTPS`'s own definition; it gains a doc comment saying it is now the fallback path only
 
 **Interfaces:**
 ```go
@@ -393,9 +400,23 @@ var proxyRequirements = []string{
 
 // PUT /api/v1/fleet/settings {"public_url": "..."} validates before writing.
 // POST /api/v1/fleet/tokens -> 409 while public_url is empty.
+
+// fleet/api/csrf.go - NEW. requireCSRF today is double-submit only; this is
+// the origin half, applied inside it for non-GET/HEAD/OPTIONS.
+//
+//   Origin present   -> must equal publicURL's scheme+host, else 403
+//   else Referer     -> its origin must match, else 403
+//   neither present  -> PASS. Non-browser clients (curl, the agent, CI) send
+//                       no Origin; they are already covered by the
+//                       double-submit token, which a cross-site page cannot
+//                       forge. Failing closed here would break every CLI.
+//   publicURL == nil -> check skipped, and a warning is logged once.
+func originAllowed(r *http.Request, publicURL *url.URL) bool
 ```
 
-- [ ] **Step 1: Failing tests.** `PUT` a URL served by an `httptest` server that answers the real status body → `200` and the setting is stored; one that 404s → `400` whose body lists the proxy requirements; one that redirects → `400`; a non-absolute or non-http(s) URL → `400`. `POST /tokens` before any `public_url` → `409` with the exact message; after → `201`. A session cookie issued under an `https://` public URL has `Secure`; under `http://` it does not. A CSRF-protected request whose `Origin` is a different host → `403`. `GET /enroll.sh` uses the `public_url` host, not the `Host` header, when the setting is present. `warphold fleet activate --public-url <u>` stores it (CLI test in `cli/command_fleet_test.go`).
+- [ ] **Step 1: Failing tests.** `PUT` a URL served by an `httptest` server that answers the real status body → `200` and the setting is stored; one that 404s → `400` whose body lists the proxy requirements; one that redirects → `400`; a non-absolute or non-http(s) URL → `400`. `POST /tokens` before any `public_url` → `409` with the exact message; after → `201`. A session cookie issued under an `https://` public URL has `Secure`, and the logout cookie matches it; under `http://` neither does. `GET /enroll.sh` uses the `public_url` host, not the `Host` header, when the setting is present.
+  **`originAllowed` (five cases, all in `fleet/api/csrf_test.go`):** matching `Origin` → 2xx; foreign `Origin` → `403`; no `Origin` but a matching `Referer` → 2xx; **neither header present → passes** (this is the case that keeps `curl` and the agent working, so it is an assertion, not an omission); `public_url` unset → the check is skipped and the warning is logged. Plus: a safe method with a foreign `Origin` still passes (`GET` is exempt).
+  `warphold fleet activate --public-url <u>` stores it (CLI test in `cli/command_fleet_test.go`).
 
 - [ ] **Step 2: Implement.** Host validation (`421 Misdirected Request`) goes in one middleware in `publicurl.go` that exempts loopback so a local `curl` still works.
 
@@ -689,45 +710,68 @@ gh pr create --title "Plan 3A: hosted target — S3 gateway, device keys, public
 
 **Interfaces:** none (build configuration).
 
-- [ ] **Step 1:** Replace the `nfpms` block's upstream metadata: `homepage: https://warphold.com`, `vendor: WarpHold`, `maintainer: Hodahel Moinzadeh <hody@…>` (the address that is already in `NOTICE`), `description: Backups that hold. For every machine you care about.`, `license: Apache 2.0`, `conflicts: [kopia]`, `scripts.postinstall: packaging/postinstall.sh`, `scripts.postremove: packaging/postremove.sh`. `postinstall.sh` creates the `warphold` system user and `/var/lib/warphold` **only** when `/etc/warphold` exists or `WARPHOLD_SERVER=1` — the app package must not create a server user on a laptop.
-- [ ] **Step 2:** Signing — `signs.artifacts: checksum` stays; confirm `tools/sign.sh` works with the key Hody supplies (**HUMAN CHECKPOINT: release signing key**, from 1Password into a GitHub Actions secret; never in the repo).
-- [ ] **Step 3:** Dry-run locally: `goreleaser release --snapshot --clean --skip=sign,publish` and assert `dist/` holds `.deb`, `.rpm`, the tarballs and `checksums.txt` for `linux/amd64` and `linux/arm64`. Install the `.deb` in a container and run `warphold --version`.
-- [ ] **Step 4:** commit `-m "release: WarpHold deb/rpm packaging metadata and signed checksums"`
+- [ ] **Step 1: Prune `builds` to what WarpHold actually ships.** Upstream builds `linux`/`freebsd`/`openbsd` × `amd64`/`arm`/`arm64`; WarpHold publishes **`goos: [linux]`, `goarch: [amd64, arm64]`** and nothing else (D8). Drop freebsd, openbsd and 32-bit arm from the release matrix; keep darwin and windows as **compile checks in CI** (`GOOS=darwin GOARCH=arm64 go build ./...`, same for windows/amd64) so the fork stays portable without publishing artifacts nobody installs. Assert `dist/` contains no freebsd/openbsd/arm output in Step 3.
+
+- [ ] **Step 2: Replace the `nfpms` block's upstream metadata:** `homepage: https://warphold.com`, `vendor: WarpHold`, `maintainer: Hodahel Moinzadeh <hody@…>` (the address that is already in `NOTICE`), `description: Backups that hold. For every machine you care about.`, `license: Apache 2.0`, `conflicts: [kopia]`, `scripts.postinstall: packaging/postinstall.sh`, `scripts.postremove: packaging/postremove.sh`. `postinstall.sh` creates the `warphold` system user and `/var/lib/warphold` **only** when `/etc/warphold` exists or `WARPHOLD_SERVER=1` — the app package must not create a server user on a laptop.
+- [ ] **Step 3: Attach the install scripts to every release.** An `extra_files` (or equivalent) entry publishes `scripts/install/fleet.sh` and `scripts/install/app.sh` as release assets, so `https://github.com/hodyhq/warphold/releases/latest/download/fleet.sh` always serves the script that shipped with the latest binary. This is what makes the `get.warphold.com` redirect (Task 17) work with no second copy of either script anywhere.
+
+- [ ] **Step 4:** Signing — `signs.artifacts: checksum` stays; confirm `tools/sign.sh` works with the key Hody supplies (**HUMAN CHECKPOINT: release signing key**, from 1Password into a GitHub Actions secret; never in the repo).
+- [ ] **Step 5:** Dry-run locally: `goreleaser release --snapshot --clean --skip=sign,publish`, then assert `dist/` holds `.deb`, `.rpm`, the tarballs and `checksums.txt` for `linux/amd64` and `linux/arm64`, holds both install scripts, and holds **nothing** for freebsd, openbsd or `arm`:
+```bash
+ls dist/ | grep -Ei 'freebsd|openbsd|_arm(_|$)' && echo "FAIL: pruned platform still built" || echo "ok: linux amd64/arm64 only"
+ls dist/fleet.sh dist/app.sh
+```
+  Install the `.deb` in a container and run `warphold --version`.
+- [ ] **Step 6:** commit `-m "release: WarpHold deb/rpm packaging metadata and signed checksums"`
 
 ---
 
-### Task 17: `get.warphold.com` — **HUMAN CHECKPOINTS**
+### Task 17: `get.warphold.com` redirect rules — **HUMAN CHECKPOINT**
 
-**HUMAN CHECKPOINTS:** (a) **Cloudflare DNS** for `get.warphold.com`; (b) **GitHub Pages enablement** on the new repo with the custom domain verified.
+**HUMAN CHECKPOINT:** **Cloudflare redirect rules** on the `warphold.com` zone. There is **no repo and no site** for `get.warphold.com` (D8) — the scripts live in the main repo and ship as release assets (Task 16), and this host is two redirects, so no copy of either script exists anywhere else.
 
-**Files (new repo `hodyhq/get.warphold.com`):** `index.html`, `fleet.sh`, `app.sh`, `CNAME`, `README.md`
+**Files:** none in any repo. The output is DNS/Cloudflare configuration plus the smoke check recorded in the task report.
 
-- [ ] **Step 1:** Create the repo, add `CNAME` containing `get.warphold.com`, enable Pages from `main`, and ask Hody for the DNS record and the domain verification. Poll until `curl -fsS https://get.warphold.com/ -o /dev/null -w '%{http_code}\n'` is `200` with a valid certificate.
-- [ ] **Step 2:** `index.html` shows the two one-liners and nothing else, using the Kinetic tokens (a single inline `<style>`; the site proper comes in M6).
-- [ ] **Step 3:** Note in the repo's README that **M6 moves the scripts to `warphold.com/get/` and turns this host into a redirect** (spec D8), so nobody is surprised later.
-- [ ] **Step 4:** commit `-m "get.warphold.com: pages site serving the install one-liners"`
+- [ ] **Step 1:** Ask Hody for a proxied DNS record for `get.warphold.com` on the `warphold.com` zone and two Cloudflare **redirect rules** (301, preserving the path):
+
+```
+get.warphold.com/fleet.sh -> https://github.com/hodyhq/warphold/releases/latest/download/fleet.sh
+get.warphold.com/app.sh   -> https://github.com/hodyhq/warphold/releases/latest/download/app.sh
+```
+  Anything else on the host redirects to `https://warphold.com/` (which lands in M6; until then it is a 404 nobody links to).
+
+- [ ] **Step 2: Smoke check** — the load-bearing property is that `curl -fsSL` follows **both** hops (Cloudflare's 301 and GitHub's own 302 to the asset CDN):
+
+```bash
+curl -fsSL https://get.warphold.com/fleet.sh | head -5      # must print the script
+curl -fsSL https://get.warphold.com/app.sh   | head -5
+curl -fsS -o /dev/null -w '%{http_code} %{num_redirects} %{url_effective}\n' -L https://get.warphold.com/fleet.sh
+```
+  Show every line. If the redirect drops the path or a rule matches too broadly, fix the rule — never work around it by publishing a copy of the script (that is the duplication D8 exists to prevent).
+
+- [ ] **Step 3:** Record the rules in the vault's Admin-Overview "Public surfaces" section, with the release URL written out, so the next person knows the scripts come from the release and not from a web host.
 
 ---
 
 ### Task 18: `fleet.sh`
 
-**Files (repo `hodyhq/get.warphold.com`):** `fleet.sh`; **tests** in the main repo: `scripts/test-fleet-sh.sh` (container test) and a `shellcheck` step in CI
+**Files (main repo — the only home of this script):** `scripts/install/fleet.sh`; tests: `scripts/test-fleet-sh.sh` (container test) and a `shellcheck` step in CI. Task 16 attaches it to every release; Task 17's redirect is what `get.warphold.com/fleet.sh` resolves to.
 
-- [ ] **Step 1: Failing test first.** `scripts/test-fleet-sh.sh` starts a local HTTP server serving a **fake release** (a real `warphold` binary built from this tree, plus a matching `checksums.txt`), runs `fleet.sh` inside a `debian:12` container with `WARPHOLD_RELEASE_BASE` pointed at it, and asserts: the `warphold` user exists, the unit is enabled and active, `/api/v1/fleet/status` answers, and a **tampered checksum makes the script exit non-zero without installing anything**.
+- [ ] **Step 1: Failing test first.** `scripts/test-fleet-sh.sh` starts a local HTTP server serving a **fake release** (a real `warphold` binary built from this tree, plus a matching `checksums.txt`), runs `scripts/install/fleet.sh` inside a `debian:12` container with `WARPHOLD_RELEASE_BASE` pointed at it, and asserts: the `warphold` user exists, the unit is enabled and active, `/api/v1/fleet/status` answers, and a **tampered checksum makes the script exit non-zero without installing anything**.
 - [ ] **Step 2: Implement** per §8.2: arch detection, packaging family detection, download + `sha256sum -c`, user and directories, the unit (LAN bind, `--insecure`, reverse proxy assumed), `systemctl enable --now`, poll for status, print the URL and the setup token path and value, print the proxy requirements. Non-interactive when `WARPHOLD_SETUP_PUBLIC_URL` / `_EMAIL` / `_PASSWORD` / `_PASSPHRASE` are all set → `warphold fleet activate --public-url …`, reading secrets from the environment so they never reach `ps`.
-- [ ] **Step 3:** `shellcheck fleet.sh` clean; `bash scripts/test-fleet-sh.sh` green (show the output).
-- [ ] **Step 4:** commit in both repos: `-m "fleet.sh: one-command Fleet server install"` and `-m "ci: container test and shellcheck for the install scripts"`
+- [ ] **Step 3:** `shellcheck scripts/install/fleet.sh` clean; `bash scripts/test-fleet-sh.sh` green (show the output).
+- [ ] **Step 4:** one commit, one repo: `git commit -m "scripts: one-command Fleet server install, with a container test and shellcheck"`
 
 ---
 
 ### Task 19: `app.sh` and the single-machine packages
 
-**Files (repo `hodyhq/get.warphold.com`):** `app.sh`; main repo: `scripts/test-app-sh.sh`
+**Files (main repo):** `scripts/install/app.sh`, `scripts/test-app-sh.sh`
 
-- [ ] **Step 1: Failing test.** Same container shape: `app.sh` installs to `~/.local/bin`, writes the user unit and the tray autostart entry (`agent/install` already renders both), and **does not** create a system user, a `/etc/warphold`, or anything Fleet-shaped. Assert the absence explicitly — that is the D11 boundary.
+- [ ] **Step 1: Failing test.** Same container shape: `scripts/install/app.sh` installs to `~/.local/bin`, writes the user unit and the tray autostart entry (`agent/install` already renders both), and **does not** create a system user, a `/etc/warphold`, or anything Fleet-shaped. Assert the absence explicitly — that is the D11 boundary.
 - [ ] **Step 2: Implement** per §8.3, including `--system` and the `xdg-open` of the local app (skipped when `DISPLAY`/`WAYLAND_DISPLAY` are unset).
 - [ ] **Step 3:** `shellcheck` clean, container test green.
-- [ ] **Step 4:** commit `-m "app.sh: one-command single-machine install"`
+- [ ] **Step 4:** commit `-m "scripts: one-command single-machine install"`
 
 ---
 
@@ -770,7 +814,8 @@ createHostedTarget(t: { name: string; storage_mode: "disk" | "cloud"; path?: str
   mirror?: { kind: "b2"; bucket: string; key_id: string; key: string } }): Promise<CreatedTarget>
 ```
 
-- [ ] **Step 1: Failing vitest** for the step order (§8.4): the passphrase step requires two matching entries; step 3 cannot be passed while the server rejects the URL and **renders every `proxy_requirements` line**; step 4 defaults to Fleet disk with `/srv/warphold/hosted` prefilled and reveals the mirror sub-form only when asked; step 5 shows a copyable enrollment one-liner built from `public_url`. Playwright: wizard → enrolled device, end to end against a real server.
+- [ ] **Step 1: Failing vitest** for the step order (§8.4): the passphrase step requires two matching entries; step 3 cannot be passed while the server rejects the URL and **renders every `proxy_requirements` line**; step 4 defaults to Fleet disk with `/srv/warphold/hosted` prefilled and reveals the mirror sub-form only when asked; step 5 shows a copyable enrollment one-liner built from `public_url`.
+  **Visual proof** (the UI repo has no e2e runner and this plan adds no Node dependency): drive the wizard end to end in the **real logged-in app** with the chrome-devtools MCP driver against a running server — hard-reload after deploy — and attach a screenshot of each step plus the enrolled device. Never "verify" by inspecting markup you injected.
 - [ ] **Step 2: Implement.** Steps 1–2 remain the single `POST /activate`; 3–5 are authenticated calls after the session exists, so a death at step 4 leaves an activated, logged-in Fleet.
 - [ ] **Step 3:** UI PR *"Plan 3 UI 2: five-step setup wizard"*; tag; bump the Go module.
 
@@ -778,7 +823,7 @@ createHostedTarget(t: { name: string; storage_mode: "disk" | "cloud"; path?: str
 
 ### Task 22: Move the "Fleet server" card to Settings — **UI PR 2 (same PR)**
 
-- [ ] Remove the "Turn this machine into a Fleet server" card from the Repository page; add one line in Settings linking to the Fleet install documentation (`https://warphold.com/fleet` once M6 lands; `https://get.warphold.com/` until then). vitest asserts the card is gone from Repository and the link is present in Settings. Commit `-m "ui: the standalone app links to the Fleet docs instead of offering to become a Fleet server"`
+- [ ] Remove the "Turn this machine into a Fleet server" card from the Repository page; add one line in Settings linking to the Fleet install documentation (`https://warphold.com/fleet.html` once M6 lands; `https://github.com/hodyhq/warphold#fleet` until then — `get.warphold.com` serves only the two script redirects and has no page to link to). vitest asserts the card is gone from Repository and the link is present in Settings. Commit `-m "ui: the standalone app links to the Fleet docs instead of offering to become a Fleet server"`
 
 ---
 
@@ -830,7 +875,8 @@ func Render(w io.Writer, d Data) error
 
 **Files (UI):** `src/pages/fleet/Device.tsx`, `src/pages/fleet/Devices.tsx`, `src/pages/fleet/Overview.tsx`, `src/api/fleet.ts`, tests
 
-- [ ] vitest: an un-acked device shows the persistent banner on the device page and a marker in the list; acking clears both without a reload; "Open recovery kit" opens the kit in a new tab; "Regenerate" warns that the previous kit's read key stops working. Playwright: ack clears the banner. UI PR *"Plan 3 UI 3: recovery kit banner and acknowledgement"*; tag; bump.
+- [ ] vitest: an un-acked device shows the persistent banner on the device page and a marker in the list; acking clears both without a reload; "Open recovery kit" opens the kit in a new tab; "Regenerate" warns that the previous kit's read key stops working.
+- [ ] **Visual proof** with the chrome-devtools MCP driver in the real logged-in app: banner present before the ack, gone after, screenshot both. No e2e framework, no new Node dependency. UI PR *"Plan 3 UI 3: recovery kit banner and acknowledgement"*; tag; bump.
 
 ---
 
@@ -1033,19 +1079,19 @@ scripts/screenshots.sh [--only <name>]
 
 ### Task 36: `hodyhq/warphold-site`
 
-**Files (new repo):** `index.html` (Home), `fleet.html` (Fleet), `get/fleet.sh`, `get/app.sh`, `assets/` (tokens CSS, self-hosted OFL fonts, screenshots copied from the UI repo), `CNAME`, `README.md`, `.github/workflows/pages.yml`
+**Files (new repo):** `index.html` (Home), `fleet.html` (Fleet), `assets/` (tokens CSS, self-hosted OFL fonts, screenshots copied from the UI repo), `CNAME`, `README.md`, `.github/workflows/pages.yml`. **No `get/` directory** — the install scripts are never copied here (D8).
 
 - [ ] **Step 1:** Static, no build step beyond copying assets; Kinetic tokens and fonts from the UI repo; **no trackers and no third-party requests** — assert with `grep -rn "https\?://" index.html fleet.html | grep -v warphold.com | grep -v github.com` returning only the deliberate links.
 - [ ] **Step 2: Home tab** — the single-machine app: what it does, features, screenshots, the `app.sh` one-liner, the tray. **Fleet tab** — the dashboard, the isolation and security model, hosted and cloud-direct storage, enrollment, the `fleet.sh` one-liner. Full feature detail per tab with the real screenshots, not stubs.
 - [ ] **Step 3:** Footer *"Built on the Kopia engine — Apache 2.0"* with links to upstream, `LICENSE` and `NOTICE`.
-- [ ] **Step 4:** `get/fleet.sh` and `get/app.sh` are the same scripts as Task 18/19 (copied, with a note in both repos that the site is now canonical).
+- [ ] **Step 4:** The site **links to the two install commands and hosts neither script** — `get.warphold.com/fleet.sh` and `/app.sh` already redirect to the release assets (Task 17), and the scripts' only home is `scripts/install/` in the main repo. Copying them here would create the second copy D8 exists to prevent. The install boxes are `<pre>` blocks with a copy button and nothing behind them.
 - [ ] **Step 5:** commit `-m "site: warphold.com with Home and Fleet tabs"`
 
 ---
 
 ### Task 37: Domain wiring and the site smoke check — **HUMAN CHECKPOINTS**
 
-**HUMAN CHECKPOINTS:** (a) **Cloudflare DNS** — apex and `www` → Pages, a **redirect rule** `get.warphold.com/*` → `https://warphold.com/get/$1`, and `warphold.dev` → 301 to `warphold.com`; (b) **GitHub Pages custom-domain verification** and HTTPS enforcement for `warphold.com`.
+**HUMAN CHECKPOINTS:** (a) **Cloudflare DNS** — apex and `www` → Pages, and `warphold.dev` → 301 to `warphold.com`. The `get.warphold.com` rules were set up in Task 17 and are **not touched here**; (b) **GitHub Pages custom-domain verification** and HTTPS enforcement for `warphold.com`.
 
 - [ ] **Step 1:** `CNAME` in the repo, Pages enabled from `main`, ask Hody for the DNS and redirect rules, then poll until the certificate is valid:
 ```bash
@@ -1058,8 +1104,8 @@ curl -fsSL https://get.warphold.com/app.sh  | head -5
 curl -fsS -o /dev/null -w '%{http_code} %{url_effective}\n' -L https://warphold.dev/   # 200, ends at warphold.com
 curl -fsS https://warphold.com/fleet.html -o /dev/null -w '%{http_code}\n'
 ```
-  The `fleet.sh` line is the load-bearing one: it proves D8's redirect keeps `curl -fsSL … | sh` working.
-- [ ] **Step 3:** Once the redirect is live, leave `hodyhq/get.warphold.com` in place but make its README point at the site repo, so the two never drift into two different scripts.
+  The two `get.` lines are a **regression check on Task 17**, not new setup: they prove the apex work did not break the install redirects.
+- [ ] **Step 3:** Confirm the site hosts no copy of either install script: `test -d get && echo "FAIL: scripts copied into the site" || echo ok`.
 - [ ] **Step 4: Vault** — Admin-Overview gains a "Public surfaces" section (warphold.com, get.warphold.com, the GitHub repos) with the DNS shape as placeholders; `INGEST` line. Cross-check the `private-infra-not-public` rule before anything goes live: `grep -rn "hody\.sh" .` in the site repo must be empty.
 
 ---
