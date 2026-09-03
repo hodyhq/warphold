@@ -406,3 +406,32 @@ func TestSchedulerTimeoutFallsBackToTheDefault(t *testing.T) {
 	require.Equal(t, time.Minute, s.timeout("mirror"))
 	require.Equal(t, DefaultTimeout, s.timeout("stats"))
 }
+
+// The spec's cadences (§3.3), and the house rule that an interval setting is a
+// whole number of seconds - the same shape as poll_interval and
+// mirror_interval, so the settings table never mixes units.
+func TestEveryJobKindRunsOnItsDocumentedCadence(t *testing.T) {
+	st := openTemp(t)
+	ctx := context.Background()
+	s := NewScheduler(st, nil, time.Millisecond)
+
+	for kind, want := range map[string]time.Duration{
+		"mirror":       time.Hour,
+		"verify":       7 * 24 * time.Hour,
+		"test-restore": 30 * 24 * time.Hour,
+		"maintenance":  24 * time.Hour,
+		"reap":         24 * time.Hour,
+	} {
+		iv, ok := intervals[kind]
+		require.True(t, ok, "%s has no interval", kind)
+		require.Equal(t, want, iv.def, kind)
+
+		require.NoError(t, st.SetSetting(ctx, iv.setting, strconv.Itoa(int((3*time.Hour).Seconds()))))
+		require.Equal(t, 3*time.Hour, s.intervalFor(ctx, iv), "%s reads its setting as seconds", kind)
+	}
+
+	// An interval whose kind has no runner would be enqueued and never run.
+	for kind := range intervals {
+		require.True(t, HasKind(kind), "%s is scheduled but has no runner", kind)
+	}
+}
