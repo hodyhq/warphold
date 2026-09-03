@@ -74,6 +74,10 @@ type Server struct {
 	// activated (see handleActivate); both are cleared once activation succeeds.
 	setupTokenPath string
 	setupToken     string
+
+	// gwDeps carries the device-facing S3 gateway, built on first use because
+	// it needs the store and sealing key that activation creates.
+	gwDeps gatewayDeps
 }
 
 // New creates a Server for stateDir; if Fleet was activated before, its state is loaded.
@@ -299,6 +303,7 @@ func (s *Server) Mount(m *mux.Router) {
 	s.mountAdmin(m)    // Task 7
 	s.mountAgent(m)    // Tasks 11, 14
 	s.mountDownload(m) // Task 2
+	s.mountGateway(m)  // Plan 3, Task 5 - must precede the SPA catch-all
 }
 
 func decode(r *http.Request, v any) error {

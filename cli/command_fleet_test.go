@@ -70,6 +70,18 @@ func fleetSeamRoundTrip(t *testing.T) {
 	require.NoError(t, json.NewDecoder(res.Body).Decode(&body))
 	require.Equal(t, true, body["activated"], "fleet routes must be mounted and see the activated state dir")
 
+	// The device-facing S3 gateway is mounted on the same mux, at the bucket
+	// path, and it is mounted whether or not the UI is. Unauthenticated is 403
+	// with S3's error document, not the UI's 404.
+	gwRes, err := http.Get(sp.BaseURL + "/warphold/some-device/some-blob") //nolint:noctx
+	require.NoError(t, err)
+
+	gwBody, err := io.ReadAll(gwRes.Body)
+	gwRes.Body.Close()
+	require.NoError(t, err)
+	require.Equal(t, http.StatusForbidden, gwRes.StatusCode, "the gateway must be mounted at /warphold/")
+	require.Contains(t, string(gwBody), "<Code>AccessDenied</Code>")
+
 	// --no-ui must also disable the public SPA bundle: the deep-link handler
 	// probes for upstream's static catch-all and serves nothing without it.
 	for _, p := range []string{"/", "/fleet", "/fleet/login", "/agent", "/assets/"} {
