@@ -18,7 +18,7 @@ import (
 var dlName = regexp.MustCompile(`^warphold-(linux)-([a-z0-9]+)$`)
 
 func (s *Server) mountDownload(m *mux.Router) {
-	m.HandleFunc("/dl/{name}", s.requireActivated(s.handleDownload)).Methods(http.MethodGet)
+	m.HandleFunc("/dl/{name}", s.requireHost(s.requireActivated(s.handleDownload))).Methods(http.MethodGet)
 }
 
 // handleDownload serves the WarpHold agent binary for <os>-<arch>: the

@@ -42,7 +42,54 @@ type fakeS3 struct {
 	// conditionalPuts counts the PUTs that carried If-None-Match: *.
 	conditionalPuts int
 
+	// putsWithoutMD5 and multipartCalls must both stay zero: every PUT this
+	// backend makes is a single, checksummed request.
+	putsWithoutMD5 int
+	multipartCalls int
+
+	// putPaths records every key a PUT addressed, root prefix included.
+	putPaths []string
+
 	versioning string
+}
+
+// stored returns a copy of the fake's objects, so a test never races the
+// server goroutine that serves the requests.
+func (f *fakeS3) stored() map[string][]byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	out := make(map[string][]byte, len(f.objs))
+	for k, v := range f.objs {
+		out[k] = v
+	}
+
+	return out
+}
+
+// inject writes an object behind the backend's back.
+func (f *fakeS3) inject(key, body string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.objs[key] = []byte(body)
+	f.times[key] = time.Now().UTC().Truncate(time.Second)
+}
+
+// paths returns the keys every PUT addressed.
+func (f *fakeS3) paths() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return append([]string(nil), f.putPaths...)
+}
+
+// counts reports the request-shape counters.
+func (f *fakeS3) counts() (conditional, withoutMD5, multipart int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.conditionalPuts, f.putsWithoutMD5, f.multipartCalls
 }
 
 func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -52,6 +99,15 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	bucket, key, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
 	if bucket != testBucket {
 		http.Error(w, "", http.StatusNotFound)
+
+		return
+	}
+
+	// This backend never uploads in parts: a multipart ETag is not an MD5.
+	if q := r.URL.Query(); q.Has("uploads") || q.Has("uploadId") {
+		f.multipartCalls++
+
+		http.Error(w, "", http.StatusBadRequest)
 
 		return
 	}
@@ -77,6 +133,12 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (f *fakeS3) put(w http.ResponseWriter, r *http.Request, key string) {
+	f.putPaths = append(f.putPaths, key)
+
+	if r.Header.Get("Content-Md5") == "" {
+		f.putsWithoutMD5++
+	}
+
 	if inm := r.Header.Get("If-None-Match"); inm != "" {
 		if inm != "*" {
 			http.Error(w, "", http.StatusBadRequest)
@@ -87,7 +149,15 @@ func (f *fakeS3) put(w http.ResponseWriter, r *http.Request, key string) {
 		f.conditionalPuts++
 
 		if _, ok := f.objs[key]; ok && !f.ignorePrecondition {
+			// The real S3 error body, so the client's XML branch is what maps
+			// this to 412 rather than its bare-status fallback.
 			w.WriteHeader(http.StatusPreconditionFailed)
+			writeXML(w, struct {
+				XMLName xml.Name `xml:"Error"`
+				Code    string
+				Message string
+				Key     string
+			}{Code: "PreconditionFailed", Message: "At least one of the pre-conditions you specified did not hold", Key: key})
 
 			return
 		}
@@ -153,6 +223,7 @@ func (f *fakeS3) bucketOp(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 
 	if q.Has("versioning") {
+		w.Header().Set("Content-Type", "application/xml")
 		writeXML(w, struct {
 			XMLName xml.Name `xml:"VersioningConfiguration"`
 			Status  string
@@ -168,9 +239,9 @@ func (f *fakeS3) bucketOp(w http.ResponseWriter, r *http.Request) {
 
 	sort.Strings(keys)
 
-	maxKeys, _ := strconv.Atoi(q.Get("max-keys"))
-	if maxKeys <= 0 {
-		maxKeys = defaultMaxKeys
+	page, _ := strconv.Atoi(q.Get("max-keys"))
+	if page <= 0 {
+		page = maxKeys
 	}
 
 	// A continuation token is just the last key of the previous page.
@@ -195,14 +266,14 @@ func (f *fakeS3) bucketOp(w http.ResponseWriter, r *http.Request) {
 		IsTruncated           bool
 		NextContinuationToken string `xml:",omitempty"`
 		Contents              []contents
-	}{Name: testBucket, Prefix: q.Get("prefix"), MaxKeys: maxKeys}
+	}{Name: testBucket, Prefix: q.Get("prefix"), MaxKeys: page}
 
 	for _, k := range keys {
 		if !strings.HasPrefix(k, q.Get("prefix")) || k <= after {
 			continue
 		}
 
-		if len(res.Contents) == maxKeys {
+		if len(res.Contents) == page {
 			res.IsTruncated, res.NextContinuationToken = true, res.Contents[len(res.Contents)-1].Key
 
 			break
@@ -216,11 +287,11 @@ func (f *fakeS3) bucketOp(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	w.Header().Set("Content-Type", "application/xml")
 	writeXML(w, res)
 }
 
 func writeXML(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/xml")
 	xml.NewEncoder(w).Encode(v) //nolint:errcheck // test server
 }
 
@@ -290,14 +361,20 @@ func TestCloudPutIsAppendOnlyAndAtomic(t *testing.T) {
 	_, err = put(t, s, "dev1/a.blob", "second", false)
 	require.ErrorIs(t, err, ErrExists)
 
-	// The provider refused it: 412, not a Head this backend did itself.
-	require.Equal(t, 2, f.conditionalPuts, "every non-overwrite Put must carry If-None-Match: *")
+	// The provider refused it: 412 off the wire, not a Head this backend did.
+	cond, noMD5, multipart := f.counts()
+	require.Equal(t, 2, cond, "every non-overwrite Put must carry If-None-Match: *")
 	require.Equal(t, "first", read(t, s, "dev1/a.blob", 0, -1))
 
 	_, err = put(t, s, "dev1/a.blob", "third", true)
 	require.NoError(t, err)
-	require.Equal(t, 2, f.conditionalPuts, "an overwrite must not be conditional")
+
+	cond, noMD5, multipart = f.counts()
+	require.Equal(t, 2, cond, "an overwrite must not be conditional")
 	require.Equal(t, "third", read(t, s, "dev1/a.blob", 0, -1))
+
+	require.Zero(t, noMD5, "every PUT must carry Content-MD5")
+	require.Zero(t, multipart, "the backend must never upload in parts")
 }
 
 func TestCloudPutReportsSizeAndETag(t *testing.T) {
@@ -319,12 +396,12 @@ func TestCloudPutRejectsASizeMismatch(t *testing.T) {
 	s, f := newStore(t, &fakeS3{})
 
 	_, err := s.Put(t.Context(), "dev1/a.blob", strings.NewReader("hello"), 4, false)
-	require.ErrorIs(t, err, ErrBadKey)
+	require.ErrorIs(t, err, ErrIncompleteBody)
 
 	_, err = s.Put(t.Context(), "dev1/b.blob", strings.NewReader("hello"), 6, false)
-	require.ErrorIs(t, err, ErrBadKey)
+	require.ErrorIs(t, err, ErrIncompleteBody)
 
-	require.Empty(t, f.objs, "a body that does not match its declared length stores nothing")
+	require.Empty(t, f.stored(), "a body that does not match its declared length stores nothing")
 
 	// An unknown length is accepted (chunked upload) and spooled.
 	info, err := s.Put(t.Context(), "dev1/c.blob", strings.NewReader("hello"), -1, false)
@@ -342,7 +419,7 @@ func TestCloudPutSpoolsALargeObject(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(len(big)), info.Size)
 	require.Greater(t, info.Size, int64(spoolAbove))
-	require.Equal(t, big, string(f.objs[testPrefix+"dev1/big.blob"]))
+	require.Equal(t, big, string(f.stored()[testPrefix+"dev1/big.blob"]))
 	require.Equal(t, big[:16], read(t, s, "dev1/big.blob", 0, 16))
 }
 
@@ -404,7 +481,7 @@ func TestCloudStoresUnderTheFleetPrefix(t *testing.T) {
 	// <bucket>/<root-prefix>/<device-id>/<key>: the root prefix is on the
 	// stored key, so one bucket can hold every device, and it never leaks back
 	// out to the caller.
-	require.Contains(t, f.objs, "wh/dev1/a.blob")
+	require.Contains(t, f.stored(), "wh/dev1/a.blob")
 
 	info, err := s.Head(t.Context(), "dev1/a.blob")
 	require.NoError(t, err)
@@ -414,13 +491,13 @@ func TestCloudStoresUnderTheFleetPrefix(t *testing.T) {
 func TestCloudListOrdersPaginatesAndConfines(t *testing.T) {
 	s, f := newStore(t, &fakeS3{})
 
-	for _, k := range []string{"dev1/c", "dev1/a", "dev1/b", "dev2/a", "other"} {
+	for _, k := range []string{"dev1/c", "dev1/a", "dev1/b", "dev2/a", "dev3/x"} {
 		_, err := put(t, s, k, k, false)
 		require.NoError(t, err)
 	}
 
 	// A blob written by another fleet outside our root prefix is invisible.
-	f.objs["elsewhere/dev1/x"] = []byte("x")
+	f.inject("elsewhere/dev1/x", "x")
 
 	objs, truncated, err := s.List(t.Context(), "dev1/", "", 0)
 	require.NoError(t, err)
@@ -441,7 +518,7 @@ func TestCloudListOrdersPaginatesAndConfines(t *testing.T) {
 	// An empty prefix lists this fleet's objects and nothing else.
 	objs, _, err = s.List(t.Context(), "", "", 0)
 	require.NoError(t, err)
-	require.Equal(t, []string{"dev1/a", "dev1/b", "dev1/c", "dev2/a", "other"}, keys(objs))
+	require.Equal(t, []string{"dev1/a", "dev1/b", "dev1/c", "dev2/a", "dev3/x"}, keys(objs))
 
 	// prefix is a raw string prefix, as S3 and the local backend define it, so
 	// a prefix that stops short of the path boundary reaches a sibling device.
@@ -484,21 +561,27 @@ func TestCloudRejectsHostileKeys(t *testing.T) {
 		require.ErrorIsf(t, s.Delete(t.Context(), key), ErrBadKey, "Delete(%q)", key)
 	}
 
-	require.Empty(t, f.objs, "a rejected key must never reach the provider")
+	require.Empty(t, f.stored(), "a rejected key must never reach the provider")
+
+	// The probe's own device id is reserved, so a device can never collide
+	// with a conditional-write probe.
+	_, err := put(t, s, ".warphold-probe/x", "x", false)
+	require.ErrorIs(t, err, ErrBadKey)
+	require.Empty(t, f.stored())
 }
 
 func TestCloudPutIsBounded(t *testing.T) {
 	s, f := newStore(t, &fakeS3{})
 
 	// A declared size over the cap is refused before a byte is read.
-	_, err := s.Put(t.Context(), "dev1/huge", failReader{}, maxCloudPut+1, false)
-	require.ErrorIs(t, err, ErrBadKey)
+	_, err := s.Put(t.Context(), "dev1/huge", failReader{}, DefaultMaxObjectSize+1, false)
+	require.ErrorIs(t, err, ErrTooLarge)
 
 	// So is an upload of unknown length that runs past it.
 	_, err = s.Put(t.Context(), "dev1/endless", endlessReader{}, -1, false)
-	require.ErrorIs(t, err, ErrBadKey)
+	require.ErrorIs(t, err, ErrTooLarge)
 
-	require.Empty(t, f.objs, "an over-sized upload must never reach the provider")
+	require.Empty(t, f.stored(), "an over-sized upload must never reach the provider")
 }
 
 // failReader fails the test if it is read at all.
@@ -539,6 +622,54 @@ func TestNewCloudRejectsUnusableConnectionInfo(t *testing.T) {
 	// A missing admin key is refused rather than tried anonymously.
 	_, err = NewCloud(t.Context(), blob.ConnectionInfo{Type: "s3", Config: &s3.Options{BucketName: "b"}}, testPrefix)
 	require.ErrorContains(t, err, "admin key")
+
+	for _, tc := range []struct {
+		name string
+		edit func(*s3.Options)
+		want string
+	}{
+		// Without a region minio guesses, and a guess is a redirect on every
+		// request - or the wrong endpoint entirely.
+		{"no region", func(o *s3.Options) { o.Region = "" }, "region"},
+		// Plaintext would put the fleet's admin key on the wire.
+		{"plaintext", func(o *s3.Options) { o.DoNotUseTLS = true }, "plaintext"},
+		// A point-in-time view is read-only; a target must be writable.
+		{"point in time", func(o *s3.Options) { t := time.Now(); o.PointInTime = &t }, "point-in-time"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opt := *ci.Config.(*s3.Options) //nolint:forcetypeassert // built by testCI
+			tc.edit(&opt)
+
+			_, err := NewCloud(t.Context(), blob.ConnectionInfo{Type: "s3", Config: &opt}, testPrefix)
+			require.ErrorContains(t, err, tc.want)
+		})
+	}
+}
+
+func TestNewCloudValidatesTheRootPrefix(t *testing.T) {
+	ci := testCI(t, &fakeS3{})
+
+	// A root prefix is not an object key: it may be several segments deep, and
+	// that is the whole point of validating it separately from NormalizeKey.
+	s, err := NewCloud(t.Context(), ci, "wh/fleet7/")
+	require.NoError(t, err)
+
+	_, err = put(t, s, "dev1/a", "x", false)
+	require.NoError(t, err)
+
+	for _, prefix := range []string{
+		"wh",                                     // unterminated
+		"/wh/",                                   // absolute
+		"wh/../etc/",                             // relative segment
+		"wh//x/",                                 // empty segment
+		"wh/./x/",                                // relative segment
+		"wh\\x/",                                 // Windows separator
+		"wh\u0000/",                              // control byte
+		strings.Repeat("x", maxRootPrefix) + "/", // over the length cap
+	} {
+		_, err := NewCloud(t.Context(), ci, prefix)
+		require.ErrorIsf(t, err, ErrBadKey, "prefix %q", prefix)
+	}
 }
 
 func TestCloudVersionedReflectsTheProvider(t *testing.T) {
@@ -556,13 +687,22 @@ func TestProbeConditionalPut(t *testing.T) {
 	f := &fakeS3{}
 	ci := testCI(t, f)
 
-	require.NoError(t, ProbeConditionalPut(t.Context(), ci))
-	require.Empty(t, f.objs, "the probe object is deleted again")
-	require.Equal(t, 2, f.conditionalPuts)
+	require.NoError(t, ProbeConditionalPut(t.Context(), ci, testPrefix))
+	require.Empty(t, f.stored(), "the probe object is deleted again")
+
+	cond, noMD5, multipart := f.counts()
+	require.Equal(t, 2, cond, "both probe writes are conditional")
+	require.Zero(t, noMD5)
+	require.Zero(t, multipart)
+
+	// Under the fleet root, so a prefix-scoped IAM key can still write it.
+	for _, p := range f.paths() {
+		require.True(t, strings.HasPrefix(p, testPrefix+".warphold-probe/"), "probe key %q", p)
+	}
 
 	// A store that accepts the second conditional write cannot enforce the
 	// append-only rule, so a target must not be created on it.
 	ignoring := &fakeS3{ignorePrecondition: true}
-	require.ErrorIs(t, ProbeConditionalPut(t.Context(), testCI(t, ignoring)), ErrNoConditionalPut)
-	require.Empty(t, ignoring.objs, "the probe object is deleted even when the check fails")
+	require.ErrorIs(t, ProbeConditionalPut(t.Context(), testCI(t, ignoring), testPrefix), ErrNoConditionalPut)
+	require.Empty(t, ignoring.stored(), "the probe object is deleted even when the check fails")
 }

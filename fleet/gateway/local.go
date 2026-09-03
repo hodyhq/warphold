@@ -9,35 +9,53 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"os"
-	"path"
-	"sort"
 	"strings"
+	"syscall"
 )
 
 const (
 	dirMode  fs.FileMode = 0o700
 	fileMode fs.FileMode = 0o600
 
-	// tmpDir holds partially written objects. It lives at the root so it can
-	// never collide with a device key, which is always confined to
-	// "<device-id>/", and it is on the same filesystem so link/rename work.
-	tmpDir = ".tmp"
+	// DefaultMaxObjectSize bounds a single object. Kopia's S3 backend uploads
+	// whole blobs and its blobs are tens of megabytes; this is the ceiling that
+	// keeps a device from filling the disk with one request.
+	DefaultMaxObjectSize int64 = 64 << 20
 
-	// defaultMaxKeys matches S3's cap for ListObjectsV2.
-	defaultMaxKeys = 1000
+	// maxKeys matches S3's cap for ListObjectsV2.
+	maxKeys = 1000
 )
+
+// LocalOptions configures NewLocal. The zero value is the supported default.
+type LocalOptions struct {
+	// MaxObjectSize is the largest object Put will store, in bytes.
+	// Zero means DefaultMaxObjectSize.
+	MaxObjectSize int64
+}
 
 // local is the Fleet-disk backend (§4.3). Every path goes through an os.Root,
 // so a key can neither traverse out of the root nor be walked out of it through
 // a symlink, whatever the caller passed.
 type local struct {
-	root *os.Root
-	dir  string
+	root    *os.Root
+	dir     string
+	maxSize int64
 }
 
 // NewLocal returns an ObjectStore rooted at dir (0700, files 0600).
-func NewLocal(dir string) (ObjectStore, error) {
+//
+// The layout is flat, one directory per device: <dir>/<device-id>/<blob-name>
+// (§4.3), plus the reserved <dir>/.tmp for partial writes, which NewLocal
+// sweeps on start.
+//
+// It assumes Linux on a case-sensitive filesystem, which is what the Fleet
+// server runs on. Device ids are lowercase base32, so two devices can never
+// collide by case even on a case-insensitive filesystem, but list ordering and
+// the ETag xattr are only guaranteed on the supported platform - the ETag falls
+// back to hashing on read wherever xattrs are unavailable.
+func NewLocal(dir string, opts LocalOptions) (ObjectStore, error) {
 	if dir == "" {
 		return nil, errors.New("gateway: local store needs a directory")
 	}
@@ -63,7 +81,35 @@ func NewLocal(dir string) (ObjectStore, error) {
 		return nil, fmt.Errorf("creating %s/%s: %w", dir, tmpDir, err)
 	}
 
-	return &local{root: root, dir: dir}, nil
+	l := &local{root: root, dir: dir, maxSize: opts.MaxObjectSize}
+	if l.maxSize <= 0 {
+		l.maxSize = DefaultMaxObjectSize
+	}
+
+	if n := l.sweepTemp(); n > 0 {
+		log.Printf("warphold gateway: removed %d abandoned temp file(s) from %s/%s", n, dir, tmpDir)
+	}
+
+	return l, nil
+}
+
+// sweepTemp removes partial writes left by a crash. Nothing links to them: a
+// temp file is only ever named by the Put that is writing it.
+func (l *local) sweepTemp() int {
+	ents, err := fs.ReadDir(l.root.FS(), tmpDir)
+	if err != nil {
+		return 0
+	}
+
+	var n int
+
+	for _, e := range ents {
+		if err := l.root.RemoveAll(tmpDir + "/" + e.Name()); err == nil {
+			n++
+		}
+	}
+
+	return n
 }
 
 func (l *local) Put(ctx context.Context, key string, r io.Reader, size int64, overwrite bool) (ObjectInfo, error) {
@@ -75,6 +121,10 @@ func (l *local) Put(ctx context.Context, key string, r io.Reader, size int64, ov
 		return ObjectInfo{}, err
 	}
 
+	if size > l.maxSize {
+		return ObjectInfo{}, fmt.Errorf("%w: declared %d bytes, limit %d", ErrTooLarge, size, l.maxSize)
+	}
+
 	tmp, f, err := l.createTemp()
 	if err != nil {
 		return ObjectInfo{}, err
@@ -84,15 +134,14 @@ func (l *local) Put(ctx context.Context, key string, r io.Reader, size int64, ov
 	// link path leaves it behind on purpose, and after a rename it is gone.
 	defer l.root.Remove(tmp) //nolint:errcheck // best-effort cleanup
 
-	etag, err := writeTemp(f, r, size)
+	etag, err := writeTemp(ctx, f, r, size, l.maxSize)
 	if err != nil {
 		return ObjectInfo{}, err
 	}
 
-	if dir := path.Dir(key); dir != "." {
-		if err := l.root.MkdirAll(dir, dirMode); err != nil {
-			return ObjectInfo{}, fmt.Errorf("creating directory for %q: %w", key, err)
-		}
+	device, _, _ := strings.Cut(key, "/")
+	if err := l.root.MkdirAll(device, dirMode); err != nil {
+		return ObjectInfo{}, mapKeyErr(key, fmt.Errorf("creating directory for %q: %w", key, err))
 	}
 
 	if overwrite {
@@ -107,10 +156,10 @@ func (l *local) Put(ctx context.Context, key string, r io.Reader, size int64, ov
 	}
 
 	if err != nil {
-		return ObjectInfo{}, fmt.Errorf("storing %q: %w", key, err)
+		return ObjectInfo{}, mapKeyErr(key, fmt.Errorf("storing %q: %w", key, err))
 	}
 
-	l.syncDir(path.Dir(key))
+	l.syncDir(device)
 
 	st, err := l.root.Stat(key)
 	if err != nil {
@@ -120,9 +169,39 @@ func (l *local) Put(ctx context.Context, key string, r io.Reader, size int64, ov
 	return ObjectInfo{Key: key, Size: st.Size(), ETag: etag, LastModified: st.ModTime()}, nil
 }
 
+// mapKeyErr turns a filesystem complaint about the name itself into ErrBadKey,
+// so a key the kernel refuses is a 400 and not a 500.
+func mapKeyErr(key string, err error) error {
+	if errors.Is(err, syscall.ENAMETOOLONG) {
+		return fmt.Errorf("%w: %q is too long for this filesystem", ErrBadKey, key)
+	}
+
+	return err
+}
+
+// lstatObject is the one place that decides whether a key names an object: a
+// symlink, a directory or a device node is not one, and a name the filesystem
+// itself rejects is a bad key rather than a missing object.
+func (l *local) lstatObject(key string) (os.FileInfo, error) {
+	st, err := l.root.Lstat(key)
+	if err != nil {
+		if errors.Is(err, syscall.ENAMETOOLONG) {
+			return nil, mapKeyErr(key, err)
+		}
+
+		return nil, ErrNotFound
+	}
+
+	if !st.Mode().IsRegular() {
+		return nil, ErrNotFound
+	}
+
+	return st, nil
+}
+
 // createTemp opens a fresh temp file under tmpDir and returns its key-space name.
 func (l *local) createTemp() (string, *os.File, error) {
-	name := path.Join(tmpDir, rand.Text())
+	name := tmpDir + "/" + rand.Text()
 
 	f, err := l.root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, fileMode)
 	if err != nil {
@@ -132,38 +211,64 @@ func (l *local) createTemp() (string, *os.File, error) {
 	return name, f, nil
 }
 
-// writeTemp streams r into f, hashing as it goes, and fsyncs before returning.
-// It closes f in every case.
-func writeTemp(f *os.File, r io.Reader, size int64) (etag string, err error) {
+// writeTemp streams r into f, hashing as it goes, records the hash as an xattr
+// and fsyncs before returning. It closes f in every case.
+func writeTemp(ctx context.Context, f *os.File, r io.Reader, size, maxSize int64) (etag string, err error) {
 	defer func() {
 		if cerr := f.Close(); err == nil && cerr != nil {
 			err = cerr
 		}
 	}()
 
-	src := r
-	if size >= 0 {
-		// One byte past the declared size is enough to catch a reader that
-		// delivers more than it promised without reading an unbounded body.
-		src = io.LimitReader(r, size+1)
+	// One byte past the limit is enough to catch a reader that delivers more
+	// than it promised, without ever reading an unbounded body.
+	limit := maxSize
+	if size >= 0 && size < limit {
+		limit = size
 	}
 
 	h := md5.New() //nolint:gosec // ETag, not a security control.
 
-	n, err := io.Copy(io.MultiWriter(f, h), src)
+	n, err := io.Copy(io.MultiWriter(f, h), io.LimitReader(ctxReader{ctx, r}, limit+1))
 	if err != nil {
 		return "", fmt.Errorf("writing object: %w", err)
 	}
 
-	if size >= 0 && n != size {
-		return "", fmt.Errorf("%w: declared %d bytes, got %d", ErrBadKey, size, n)
+	switch {
+	case n > maxSize:
+		return "", fmt.Errorf("%w: over %d bytes", ErrTooLarge, maxSize)
+	case size >= 0 && n != size:
+		return "", fmt.Errorf("%w: declared %d bytes, got %d", ErrIncompleteBody, size, n)
 	}
+
+	etag = hex.EncodeToString(h.Sum(nil))
+
+	// Best effort: without the xattr, Head hashes the object on read instead.
+	setETag(f.Fd(), etag) //nolint:errcheck // documented fallback
 
 	if err := f.Sync(); err != nil {
 		return "", fmt.Errorf("syncing object: %w", err)
 	}
 
-	return hex.EncodeToString(h.Sum(nil)), nil
+	return etag, nil
+}
+
+// ctxReader stops a copy when the context is done.
+//
+// ponytail: checks between reads, so it unblocks a slow stream rather than a
+// stuck one. The HTTP server closes the request body on cancellation, which is
+// what actually interrupts a hung client.
+type ctxReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (c ctxReader) Read(p []byte) (int, error) {
+	if err := c.ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	return c.r.Read(p)
 }
 
 // syncDir flushes a directory entry so a crash cannot lose an object that Put
@@ -229,19 +334,29 @@ func (l *local) Head(ctx context.Context, key string) (ObjectInfo, error) {
 
 	defer f.Close() //nolint:errcheck // read-only handle
 
-	// ponytail: hashes the object on every HEAD. Objects are immutable, so if
-	// HEAD ever turns hot the digest can be cached or stored at Put time.
-	h := md5.New() //nolint:gosec // ETag, not a security control.
-	if _, err := io.Copy(h, f); err != nil {
-		return ObjectInfo{}, fmt.Errorf("hashing %q: %w", key, err)
+	etag, err := getETag(f.Fd())
+	if err != nil || !isMD5Hex(etag) {
+		// The xattr is missing, corrupt, or unsupported by this filesystem, so
+		// fall back to hashing the object.
+		h := md5.New() //nolint:gosec // ETag, not a security control.
+		if _, err := io.Copy(h, ctxReader{ctx, f}); err != nil {
+			return ObjectInfo{}, fmt.Errorf("hashing %q: %w", key, err)
+		}
+
+		etag = hex.EncodeToString(h.Sum(nil))
 	}
 
-	return ObjectInfo{
-		Key:          key,
-		Size:         st.Size(),
-		ETag:         hex.EncodeToString(h.Sum(nil)),
-		LastModified: st.ModTime(),
-	}, nil
+	return ObjectInfo{Key: key, Size: st.Size(), ETag: etag, LastModified: st.ModTime()}, nil
+}
+
+func isMD5Hex(s string) bool {
+	if len(s) != hex.EncodedLen(md5.Size) {
+		return false
+	}
+
+	_, err := hex.DecodeString(s)
+
+	return err == nil
 }
 
 func (l *local) List(ctx context.Context, prefix, after string, max int) ([]ObjectInfo, bool, error) {
@@ -249,62 +364,80 @@ func (l *local) List(ctx context.Context, prefix, after string, max int) ([]Obje
 		return nil, false, err
 	}
 
-	if max <= 0 || max > defaultMaxKeys {
-		max = defaultMaxKeys
+	if max <= 0 || max > maxKeys {
+		max = maxKeys
 	}
 
-	// ponytail: collects the whole prefix, then sorts and slices. One device's
-	// blob directory is flat and Kopia lists it whole anyway; if paging a very
-	// large prefix ever matters, seek into the sorted directory instead.
-	var objs []ObjectInfo
+	dirs, name, err := l.listDirs(prefix)
+	if err != nil {
+		return nil, false, err
+	}
 
-	err := fs.WalkDir(l.root.FS(), ".", func(p string, d fs.DirEntry, err error) error {
-		switch {
-		case errors.Is(err, fs.ErrNotExist):
-			return nil // raced with a concurrent Delete
-		case err != nil:
-			return err
-		case p == ".":
-			return nil
-		}
+	objs := make([]ObjectInfo, 0, min(max, 64))
 
-		if d.IsDir() {
-			// Descend only into directories that can hold the prefix.
-			if p == tmpDir || (!strings.HasPrefix(p+"/", prefix) && !strings.HasPrefix(prefix, p+"/")) {
-				return fs.SkipDir
-			}
-
-			return nil
-		}
-
-		if !d.Type().IsRegular() || !strings.HasPrefix(p, prefix) || p <= after {
-			return nil
-		}
-
-		info, err := d.Info()
+	for _, d := range dirs {
+		// ReadDir sorts by name, so one device's keys come out in key order and
+		// the page can stop as soon as it is full. Across devices the order
+		// holds because device ids are lowercase base32 (see NewLocal).
+		ents, err := fs.ReadDir(l.root.FS(), d)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
-				return nil
+				continue
 			}
 
-			return err
+			return nil, false, fmt.Errorf("listing %q: %w", prefix, err)
 		}
 
-		objs = append(objs, ObjectInfo{Key: p, Size: info.Size(), LastModified: info.ModTime()})
+		for _, e := range ents {
+			key := d + "/" + e.Name()
+			if !e.Type().IsRegular() || !strings.HasPrefix(e.Name(), name) || key <= after {
+				continue
+			}
 
-		return nil
-	})
-	if err != nil {
-		return nil, false, fmt.Errorf("listing %q: %w", prefix, err)
-	}
+			info, err := e.Info()
+			if err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					continue // raced with a concurrent Delete
+				}
 
-	sort.Slice(objs, func(i, j int) bool { return objs[i].Key < objs[j].Key })
+				return nil, false, fmt.Errorf("listing %q: %w", prefix, err)
+			}
 
-	if len(objs) > max {
-		return objs[:max], true, nil
+			objs = append(objs, ObjectInfo{Key: key, Size: info.Size(), LastModified: info.ModTime()})
+			if len(objs) > max {
+				return objs[:max], true, nil
+			}
+		}
 	}
 
 	return objs, false, nil
+}
+
+// listDirs resolves a prefix to the device directories a list must read and the
+// blob-name prefix within them. A prefix with a '/' names one device, so a list
+// touches exactly one directory; without one it selects device directories by
+// name, which is the internal "every device" case.
+func (l *local) listDirs(prefix string) (dirs []string, name string, err error) {
+	if device, blob, found := strings.Cut(prefix, "/"); found {
+		if device == "" || device == "." || device == ".." || device == tmpDir || strings.Contains(device, `\`) {
+			return nil, "", fmt.Errorf("%w: prefix %q", ErrBadKey, prefix)
+		}
+
+		return []string{device}, blob, nil
+	}
+
+	ents, err := fs.ReadDir(l.root.FS(), ".")
+	if err != nil {
+		return nil, "", fmt.Errorf("listing %q: %w", prefix, err)
+	}
+
+	for _, e := range ents {
+		if e.IsDir() && e.Name() != tmpDir && strings.HasPrefix(e.Name(), prefix) {
+			dirs = append(dirs, e.Name())
+		}
+	}
+
+	return dirs, "", nil
 }
 
 func (l *local) Delete(ctx context.Context, key string) error {
@@ -318,9 +451,8 @@ func (l *local) Delete(ctx context.Context, key string) error {
 
 	// Lstat, not Stat: only a regular file is an object, and a symlink is never
 	// one - so Delete can never remove a directory or follow a link out.
-	st, err := l.root.Lstat(key)
-	if err != nil || !st.Mode().IsRegular() {
-		return ErrNotFound
+	if _, err := l.lstatObject(key); err != nil {
+		return err
 	}
 
 	if err := l.root.Remove(key); err != nil {
@@ -338,10 +470,15 @@ func (l *local) Delete(ctx context.Context, key string) error {
 // append-only plus the mirror job is what protects history (§4.3).
 func (l *local) Versioned(context.Context) bool { return false }
 
-// open validates key and opens it as an object, so a directory, a device node
-// or a dangling name is ErrNotFound rather than a partial success.
+// open validates key and opens it as an object. It Lstats first, so a symlink
+// is ErrNotFound rather than something read through, and re-checks the open
+// file, so a directory or a device node cannot be read either.
 func (l *local) open(key string) (*os.File, os.FileInfo, error) {
 	if err := checkKey(key); err != nil {
+		return nil, nil, err
+	}
+
+	if _, err := l.lstatObject(key); err != nil {
 		return nil, nil, err
 	}
 

@@ -13,6 +13,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -22,24 +23,20 @@ import (
 )
 
 const (
-	// maxCloudPut caps a single write-through PUT. Kopia's default pack blob is
-	// 20 MB and the largest PUT observed in the D3 spike was 21.4 MB, so this is
-	// 3x headroom - but it is a ceiling, and a device that raises its pack size
-	// past it gets a 400 rather than the fleet an OOM.
-	//
-	// ponytail: hard cap. Raising it means a multipart upload, not a bigger buffer.
-	maxCloudPut = 64 << 20
-
 	// spoolAbove is where a PUT stops being buffered in RAM and starts being
 	// spooled to a 0600 temp file. A conditional PUT may have to be replayed and
 	// its length is needed up front, so the body is always materialised - the
 	// only question is where.
 	spoolAbove = 8 << 20
 
-	// probeDir holds ProbeConditionalPut's throwaway objects. It sits at the
-	// connection's own prefix and can never collide with a device key, which is
-	// always confined to "<device-id>/".
-	probeDir = ".warphold-probe/"
+	// probeName is the device id ProbeConditionalPut writes under, inside the
+	// fleet root. It is refused as a real device id, so a probe can never
+	// collide with a device's own keys.
+	probeName = ".warphold-probe"
+
+	// maxRootPrefix bounds the fleet's root prefix, leaving most of S3's 1024
+	// byte key budget to the key itself.
+	maxRootPrefix = 200
 )
 
 // ErrNoConditionalPut is returned by ProbeConditionalPut when the provider
@@ -56,6 +53,7 @@ var ErrNoConditionalPut = errors.New("provider does not enforce conditional writ
 // is part of the key, so one bucket can hold every device.
 type cloud struct {
 	cli *minio.Client
+	tr  *http.Transport
 
 	bucket string
 
@@ -82,46 +80,89 @@ type cloud struct {
 // endpoint (s3.<region>.backblazeb2.com), because B2's native API has no
 // conditional write at all.
 func NewCloud(ctx context.Context, ci blob.ConnectionInfo, prefix string) (ObjectStore, error) {
-	cli, opt, err := s3Client(ci)
+	cli, tr, opt, err := s3Client(ci)
 	if err != nil {
 		return nil, err
 	}
 
-	root := opt.Prefix + prefix
-	if root != "" {
-		// Same rule as NormalizeKey: an unterminated prefix would let one
-		// fleet's keys land inside another whose prefix merely starts the same.
-		if !strings.HasSuffix(root, "/") {
-			return nil, fmt.Errorf("%w: prefix %q does not end in a slash", ErrBadKey, root)
-		}
+	root, err := fleetRoot(opt.Prefix, prefix)
+	if err != nil {
+		return nil, err
+	}
 
-		if err := checkKey(strings.TrimSuffix(root, "/")); err != nil {
-			return nil, fmt.Errorf("prefix: %w", err)
+	return &cloud{cli: cli, tr: tr, bucket: opt.BucketName, prefix: root}, nil
+}
+
+// fleetRoot joins the connection's own prefix to the fleet's and validates the
+// result. A root prefix is not an object key - it may be several segments deep
+// and it must end in a slash - so it gets its own rule rather than
+// NormalizeKey's, which only ever describes a flat "<device-id>/<blob-name>".
+func fleetRoot(ciPrefix, fleetPrefix string) (string, error) {
+	root := ciPrefix + fleetPrefix
+	if root == "" {
+		// The bucket root is the fleet root, which is spec §5's own layout.
+		return "", nil
+	}
+
+	switch {
+	case len(root) > maxRootPrefix:
+		return "", fmt.Errorf("%w: root prefix is %d bytes, limit %d", ErrBadKey, len(root), maxRootPrefix)
+	case !strings.HasSuffix(root, "/"):
+		// An unterminated prefix would let one fleet's keys land inside another
+		// whose prefix merely starts the same ("wh" reaching "wh2/...").
+		return "", fmt.Errorf("%w: root prefix %q does not end in a slash", ErrBadKey, root)
+	case !utf8.ValidString(root):
+		return "", fmt.Errorf("%w: root prefix is not valid UTF-8", ErrBadKey)
+	case strings.HasPrefix(root, "/"):
+		return "", fmt.Errorf("%w: root prefix %q is absolute", ErrBadKey, root)
+	}
+
+	for _, r := range root {
+		// Same character rule as a key: controls forge log lines and XML, and a
+		// backslash is a path separator on Windows.
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) || r == '\\' {
+			return "", fmt.Errorf("%w: root prefix %q contains a forbidden character", ErrBadKey, root)
 		}
 	}
 
-	return &cloud{cli: cli, bucket: opt.BucketName, prefix: root}, nil
+	for seg := range strings.SplitSeq(strings.TrimSuffix(root, "/"), "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return "", fmt.Errorf("%w: root prefix %q has an empty or relative segment", ErrBadKey, root)
+		}
+	}
+
+	return root, nil
 }
 
 // s3Client builds a minio client from an unsealed connection info. It refuses
 // anything it cannot serve, rather than degrading quietly.
-func s3Client(ci blob.ConnectionInfo) (*minio.Client, *s3.Options, error) {
+func s3Client(ci blob.ConnectionInfo) (*minio.Client, *http.Transport, *s3.Options, error) {
 	if ci.Type == "b2" {
-		return nil, nil, errors.New("cloud-direct needs B2's S3-compatible endpoint (s3.<region>.backblazeb2.com) as an s3 target: the native B2 API has no conditional write, so it cannot enforce the append-only rule")
+		return nil, nil, nil, errors.New("cloud-direct needs B2's S3-compatible endpoint (s3.<region>.backblazeb2.com) as an s3 target: the native B2 API has no conditional write, so it cannot enforce the append-only rule")
 	}
 
 	opt, ok := ci.Config.(*s3.Options)
 	if ci.Type != "s3" || !ok {
-		return nil, nil, fmt.Errorf("cloud-direct needs an s3 target, got %q", ci.Type)
+		return nil, nil, nil, fmt.Errorf("cloud-direct needs an s3 target, got %q", ci.Type)
 	}
 
 	switch {
 	case opt.BucketName == "":
-		return nil, nil, errors.New("cloud-direct needs a bucket name")
+		return nil, nil, nil, errors.New("cloud-direct needs a bucket name")
 	case opt.AccessKeyID == "" || opt.SecretAccessKey == "":
-		return nil, nil, errors.New("cloud-direct needs the fleet's admin key id and secret")
+		return nil, nil, nil, errors.New("cloud-direct needs the fleet's admin key id and secret")
 	case opt.RoleARN != "" || opt.WebIdentityToken != "" || opt.WebIdentityTokenFile != "":
-		return nil, nil, errors.New("cloud-direct uses a static admin key; assumed-role and web-identity credentials are not supported")
+		return nil, nil, nil, errors.New("cloud-direct uses a static admin key; assumed-role and web-identity credentials are not supported")
+	case opt.Region == "":
+		// Without a region minio guesses, and a guess costs a redirect on every
+		// request - or reaches the wrong endpoint entirely.
+		return nil, nil, nil, errors.New("cloud-direct needs the bucket's region")
+	case opt.DoNotUseTLS:
+		// Plaintext would put the fleet's admin key on the wire, and minio-go
+		// switches to chunked payload signing over HTTP (spec §14 note 2).
+		return nil, nil, nil, errors.New("cloud-direct will not talk to a bucket over plaintext HTTP")
+	case opt.PointInTime != nil:
+		return nil, nil, nil, errors.New("cloud-direct cannot write to a point-in-time view of a bucket")
 	}
 
 	mo := &minio.Options{
@@ -130,47 +171,63 @@ func s3Client(ci blob.ConnectionInfo) (*minio.Client, *s3.Options, error) {
 		Region: opt.Region,
 	}
 
-	if len(opt.RootCA) > 0 || opt.DoNotVerifyTLS {
-		tr, err := minio.DefaultTransport(!opt.DoNotUseTLS)
-		if err != nil {
-			return nil, nil, fmt.Errorf("building the HTTP transport: %w", err)
-		}
+	// The transport is always ours, so Close can release its idle connections
+	// when a target is deconfigured.
+	tr, err := minio.DefaultTransport(true)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("building the HTTP transport: %w", err)
+	}
 
+	if len(opt.RootCA) > 0 || opt.DoNotVerifyTLS {
 		//nolint:gosec // mirrors the s3 provider's own DoNotVerifyTLS option, which is the admin's explicit choice.
 		tc := &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: opt.DoNotVerifyTLS}
 
 		if len(opt.RootCA) > 0 {
 			pool := x509.NewCertPool()
 			if !pool.AppendCertsFromPEM(opt.RootCA) {
-				return nil, nil, errors.New("the configured root CA is not a PEM certificate")
+				return nil, nil, nil, errors.New("the configured root CA is not a PEM certificate")
 			}
 
 			tc.RootCAs = pool
 		}
 
 		tr.TLSClientConfig = tc
-		mo.Transport = tr
 	}
+
+	mo.Transport = tr
 
 	cli, err := minio.New(opt.Endpoint, mo)
 	if err != nil {
-		return nil, nil, fmt.Errorf("connecting to %s: %w", opt.Endpoint, err)
+		tr.CloseIdleConnections()
+
+		return nil, nil, nil, fmt.Errorf("connecting to %s: %w", opt.Endpoint, err)
 	}
 
-	return cli, opt, nil
+	return cli, tr, opt, nil
 }
 
 // ProbeConditionalPut proves that a bucket enforces If-None-Match: * before a
 // hosted target is created on it (Task 12 calls it alongside the Object Lock
 // check). It writes a throwaway key twice, expects the second write to be
 // refused with 412, and deletes the probe either way.
-func ProbeConditionalPut(ctx context.Context, ci blob.ConnectionInfo) error {
-	cli, opt, err := s3Client(ci)
+//
+// The probe lives under the fleet's own root ("<root>/.warphold-probe/<random>")
+// so a prefix-scoped IAM key can write it, and ".warphold-probe" is refused as a
+// device id, so it can never collide with a device's keys.
+func ProbeConditionalPut(ctx context.Context, ci blob.ConnectionInfo, prefix string) error {
+	cli, tr, opt, err := s3Client(ci)
 	if err != nil {
 		return err
 	}
 
-	name := opt.Prefix + probeDir + rand.Text()
+	defer tr.CloseIdleConnections()
+
+	root, err := fleetRoot(opt.Prefix, prefix)
+	if err != nil {
+		return err
+	}
+
+	name := root + probeName + "/" + rand.Text()
 
 	defer cli.RemoveObject(context.WithoutCancel(ctx), opt.BucketName, name, minio.RemoveObjectOptions{}) //nolint:errcheck // best-effort cleanup
 
@@ -208,6 +265,10 @@ func (c *cloud) objectName(key string) (string, error) {
 		return "", err
 	}
 
+	if device, _, _ := strings.Cut(key, "/"); device == probeName {
+		return "", fmt.Errorf("%w: %q is reserved", ErrBadKey, probeName)
+	}
+
 	full := c.prefix + key
 	if len(full) > MaxKeyLen {
 		return "", fmt.Errorf("%w: %d bytes with the fleet prefix, limit %d", ErrBadKey, len(full), MaxKeyLen)
@@ -226,8 +287,8 @@ func (c *cloud) Put(ctx context.Context, key string, r io.Reader, size int64, ov
 		return ObjectInfo{}, err
 	}
 
-	if size > maxCloudPut {
-		return ObjectInfo{}, fmt.Errorf("%w: %d bytes, limit %d", ErrBadKey, size, maxCloudPut)
+	if size > DefaultMaxObjectSize {
+		return ObjectInfo{}, fmt.Errorf("%w: declared %d bytes, limit %d", ErrTooLarge, size, DefaultMaxObjectSize)
 	}
 
 	body, n, cleanup, err := spool(r, size)
@@ -244,7 +305,9 @@ func (c *cloud) Put(ctx context.Context, key string, r io.Reader, size int64, ov
 
 	ui, err := c.cli.PutObject(ctx, c.bucket, name, body, n, opts)
 	if err != nil {
-		if minio.ToErrorResponse(err).StatusCode == http.StatusPreconditionFailed {
+		// Only a PUT that carried If-None-Match can mean "it is already there";
+		// a 412 on the overwrite path is the provider saying something else.
+		if !overwrite && minio.ToErrorResponse(err).StatusCode == http.StatusPreconditionFailed {
 			return ObjectInfo{}, ErrExists
 		}
 
@@ -269,7 +332,7 @@ func (c *cloud) Put(ctx context.Context, key string, r io.Reader, size int64, ov
 func spool(r io.Reader, size int64) (body io.Reader, n int64, cleanup func(), err error) {
 	cleanup = func() {}
 
-	limit := int64(maxCloudPut)
+	limit := DefaultMaxObjectSize
 	if size >= 0 {
 		limit = size
 	}
@@ -285,21 +348,32 @@ func spool(r io.Reader, size int64) (body io.Reader, n int64, cleanup func(), er
 		}
 
 		if int64(len(b)) != size {
-			return nil, 0, cleanup, fmt.Errorf("%w: declared %d bytes, got %d", ErrBadKey, size, len(b))
+			return nil, 0, cleanup, fmt.Errorf("%w: declared %d bytes, got %d", ErrIncompleteBody, size, len(b))
 		}
 
 		return bytes.NewReader(b), size, cleanup, nil
 	}
 
 	// os.CreateTemp opens with 0600, which is what a spooled device blob needs.
+	// It follows TMPDIR, so a fleet whose TMPDIR is a tmpfs spools to RAM after
+	// all - point it at real disk if the box is memory-tight.
 	f, err := os.CreateTemp("", "warphold-put-*")
 	if err != nil {
 		return nil, 0, cleanup, fmt.Errorf("creating a spool file: %w", err)
 	}
 
+	// Unlink now and keep the fd: on POSIX the file is gone from the filesystem
+	// the moment it exists, so no crash, panic or missed cleanup can leave a
+	// device's blob on the fleet's disk. Windows refuses, so keep the fallback.
+	name := f.Name()
+	unlinked := os.Remove(name) == nil
+
 	cleanup = func() {
-		f.Close()           //nolint:errcheck // best-effort cleanup
-		os.Remove(f.Name()) //nolint:errcheck // best-effort cleanup
+		f.Close() //nolint:errcheck // best-effort cleanup
+
+		if !unlinked {
+			os.Remove(name) //nolint:errcheck // best-effort cleanup
+		}
 	}
 
 	n, err = io.Copy(f, src)
@@ -309,9 +383,9 @@ func spool(r io.Reader, size int64) (body io.Reader, n int64, cleanup func(), er
 
 	switch {
 	case size >= 0 && n != size:
-		return nil, 0, cleanup, fmt.Errorf("%w: declared %d bytes, got %d", ErrBadKey, size, n)
-	case size < 0 && n > maxCloudPut:
-		return nil, 0, cleanup, fmt.Errorf("%w: over the %d byte limit for an upload of unknown length", ErrBadKey, maxCloudPut)
+		return nil, 0, cleanup, fmt.Errorf("%w: declared %d bytes, got %d", ErrIncompleteBody, size, n)
+	case size < 0 && n > DefaultMaxObjectSize:
+		return nil, 0, cleanup, fmt.Errorf("%w: over %d bytes on an upload of unknown length", ErrTooLarge, DefaultMaxObjectSize)
 	}
 
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
@@ -402,12 +476,13 @@ func (c *cloud) List(ctx context.Context, prefix, after string, max int) ([]Obje
 		return nil, false, err
 	}
 
-	if max <= 0 || max > defaultMaxKeys {
-		max = defaultMaxKeys
+	if max <= 0 || max > maxKeys {
+		max = maxKeys
 	}
 
-	// Cancelled on return so the provider's listing goroutine cannot outlive
-	// this call when the page fills early.
+	// minio's ListObjects returns a channel fed by a goroutine, and its own doc
+	// says an undrained channel leaks it - so the context is cancelled on return
+	// for the case where the page fills before the listing ends.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -476,6 +551,14 @@ func (c *cloud) Versioned(ctx context.Context) bool {
 	v, err := c.cli.GetBucketVersioning(ctx, c.bucket)
 
 	return err == nil && v.Enabled()
+}
+
+// Close releases the client's idle connections. ObjectStore does not require
+// it, so a caller that tears a target down type-asserts for it.
+func (c *cloud) Close(context.Context) error {
+	c.tr.CloseIdleConnections()
+
+	return nil
 }
 
 // mapErr translates the provider's HTTP status into the store's own sentinels.
