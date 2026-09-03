@@ -70,7 +70,7 @@ func TestLocalSessionHandoff(t *testing.T) {
 	stateDir := t.TempDir()
 	t.Setenv("WARPHOLD_STATE_DIR", stateDir)
 
-	cfg, pw := provisionedRepo(t)
+	cfg, pw, _ := provisionedRepo(t)
 
 	h, err := engine.StartHeadless(ctx, cfg, pw, "user")
 	require.NoError(t, err)
@@ -188,7 +188,7 @@ func TestLocalInfo(t *testing.T) {
 
 	require.NoError(t, state.Save("user", &state.Config{Name: "laptop-1", Scope: "user"}))
 
-	cfg, pw := provisionedRepo(t)
+	cfg, pw, _ := provisionedRepo(t)
 
 	h, err := engine.StartHeadless(ctx, cfg, pw, "user")
 	require.NoError(t, err)
@@ -257,7 +257,7 @@ func TestLocalInfoWithoutEnrollment(t *testing.T) {
 	ctx := context.Background()
 	t.Setenv("WARPHOLD_STATE_DIR", t.TempDir())
 
-	cfg, pw := provisionedRepo(t)
+	cfg, pw, _ := provisionedRepo(t)
 
 	h, err := engine.StartHeadless(ctx, cfg, pw, "user")
 	require.NoError(t, err)

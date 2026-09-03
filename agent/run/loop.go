@@ -22,6 +22,7 @@ type LocalEngine interface {
 	Snapshot(ctx context.Context, path string) error
 	Pause(ctx context.Context, path string) error
 	Resume(ctx context.Context, path string) error
+	Verify(ctx context.Context) (poll.Report, error)
 	Tasks(ctx context.Context) ([]uitask.Info, error)
 	TaskLog(ctx context.Context, id string) (string, error)
 	LatestSnapshotID(ctx context.Context, path string, notBefore, notAfter time.Time) (string, error)
@@ -93,7 +94,12 @@ func (l *Loop) PollOnce(ctx context.Context) error {
 	for _, c := range doc.Commands {
 		started := l.d.Now()
 
-		var cerr error
+		var (
+			cerr error
+			// Commands that only ask the engine to do something report as
+			// kind "command"; verify produces a report of its own.
+			rep = poll.Report{Kind: "command", StartedAt: started, Status: "ok"}
+		)
 
 		switch c.Kind {
 		case "snapshot-now":
@@ -103,12 +109,27 @@ func (l *Loop) PollOnce(ctx context.Context) error {
 		case "resume":
 			cerr = l.d.Local.Resume(ctx, c.Source)
 		case "verify":
-			cerr = errors.New("verify runs from the Fleet server in this version") // Plan 3 (M7)
+			var vr poll.Report
+
+			// A verify that ran comes back with its own status, stats and
+			// errors; only a verify that could not start at all is a cerr. Its
+			// kind is "verify" either way, so the device detail can show the
+			// last verify attempt rather than losing it among the commands.
+			if vr, cerr = l.d.Local.Verify(ctx); cerr == nil {
+				rep = vr
+			} else {
+				rep.Kind = "verify"
+			}
 		default:
 			cerr = errors.New("unknown command " + c.Kind)
 		}
 
-		rep := poll.Report{TaskID: "cmd-" + strconv.FormatInt(c.ID, 10), Kind: "command", CommandID: c.ID, Source: c.Source, StartedAt: started, FinishedAt: l.d.Now(), Status: "ok"}
+		// Stamped after the switch so every command - including a verify that
+		// built its own report - is acked by exactly one report, keyed to the
+		// command it ran.
+		rep.TaskID, rep.CommandID, rep.Source = "cmd-"+strconv.FormatInt(c.ID, 10), c.ID, c.Source
+		rep.FinishedAt = l.d.Now()
+
 		if cerr != nil {
 			rep.Status, rep.Stderr = "error", cerr.Error()
 		}

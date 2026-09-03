@@ -3,6 +3,7 @@ package api_test
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -98,28 +99,77 @@ func TestPollReportHealth(t *testing.T) {
 // TestReportRejectsOtherAgentsCommand pins the fix for a cross-agent ack: an
 // agent must not be able to acknowledge (and so silently discard) a command
 // that was queued for a different agent, even though command ids are small
-// sequential integers an attacker could guess.
+// sequential integers an attacker could guess. The guard is per-command, so it
+// must hold for every command kind, not only the snapshot-now it was written
+// for.
 func TestReportRejectsOtherAgentsCommand(t *testing.T) {
+	for _, tc := range []struct{ cmdKind, repKind string }{
+		{"snapshot-now", "command"},
+		{"verify", "verify"},
+	} {
+		t.Run(tc.cmdKind, func(t *testing.T) {
+			h := newHarness(t)
+			h.activateAndLogin()
+			_, bearerA := enrollAgent(t, h)
+			idB, bearerB := enrollAgent(t, h)
+			ctx := t.Context()
+
+			resp, cmd := h.do("POST", "/api/v1/fleet/agents/"+idB+"/commands", map[string]any{"kind": tc.cmdKind, "source": "~"})
+			require.Equal(t, 201, resp.StatusCode)
+			cmdID := int64(cmd["id"].(float64))
+
+			cA := &poll.Client{Server: h.srv.URL, Bearer: bearerA}
+			now := time.Now()
+			err := cA.Report(ctx, poll.Report{TaskID: "steal", Kind: tc.repKind, CommandID: cmdID, Source: "~", StartedAt: now, FinishedAt: now, Status: "ok"})
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "400")
+
+			cB := &poll.Client{Server: h.srv.URL, Bearer: bearerB}
+			docB, err := cB.Poll(ctx, poll.Heartbeat{}, "")
+			require.NoError(t, err)
+			require.Len(t, docB.Commands, 1, "B's command must still be pending; A's report must not have acked it")
+		})
+	}
+}
+
+// TestVerifyReportAcksAndLeavesHealthAlone pins the Verify button's server
+// side: the agent's kind="verify" report acks the command it carries (so the
+// button does not re-fire forever), shows up on the device detail, and does
+// not count as a backup - health is about snapshots, and a passing verify on a
+// device that has not backed up in a month must not turn it green.
+func TestVerifyReportAcksAndLeavesHealthAlone(t *testing.T) {
 	h := newHarness(t)
 	h.activateAndLogin()
-	_, bearerA := enrollAgent(t, h)
-	idB, bearerB := enrollAgent(t, h)
+	id, bearer := enrollAgent(t, h)
 	ctx := t.Context()
 
-	resp, cmd := h.do("POST", "/api/v1/fleet/agents/"+idB+"/commands", map[string]any{"kind": "snapshot-now", "source": "~"})
+	resp, cmd := h.do("POST", "/api/v1/fleet/agents/"+id+"/commands", map[string]any{"kind": "verify"})
 	require.Equal(t, 201, resp.StatusCode)
 	cmdID := int64(cmd["id"].(float64))
 
-	cA := &poll.Client{Server: h.srv.URL, Bearer: bearerA}
-	now := time.Now()
-	err := cA.Report(ctx, poll.Report{TaskID: "steal", Kind: "command", CommandID: cmdID, Source: "~", StartedAt: now, FinishedAt: now, Status: "ok"})
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "400")
-
-	cB := &poll.Client{Server: h.srv.URL, Bearer: bearerB}
-	docB, err := cB.Poll(ctx, poll.Heartbeat{}, "")
+	c := &poll.Client{Server: h.srv.URL, Bearer: bearer}
+	doc, err := c.Poll(ctx, poll.Heartbeat{}, "")
 	require.NoError(t, err)
-	require.Len(t, docB.Commands, 1, "B's command must still be pending; A's report must not have acked it")
+	require.Len(t, doc.Commands, 1)
+	require.Equal(t, "verify", doc.Commands[0].Kind)
+
+	now := time.Now()
+	rep := poll.Report{TaskID: "cmd-" + strconv.FormatInt(cmdID, 10), Kind: "verify", CommandID: cmdID, StartedAt: now.Add(-time.Minute), FinishedAt: now, Status: "ok", Files: 9, Bytes: 1234}
+	require.NoError(t, c.Report(ctx, rep))
+	// Idempotent on retry: the command is already acked, which must not turn a
+	// duplicate report into a failure the agent keeps retrying.
+	require.NoError(t, c.Report(ctx, rep))
+
+	after, err := c.Poll(ctx, poll.Heartbeat{}, doc.ETag)
+	require.NoError(t, err)
+	require.Nil(t, after, "the verify report must have acked the command")
+
+	_, detail := h.do("GET", "/api/v1/fleet/agents/"+id, nil)
+	require.Equal(t, "unknown", detail["health"], "a passing verify is not evidence of a backup")
+
+	reports := detail["reports"].([]any)
+	require.Len(t, reports, 1, "the retry must dedupe on (agent, task_id)")
+	require.Equal(t, "verify", reports[0].(map[string]any)["kind"], "the device detail shows the last verify")
 }
 
 // TestAgentPollRejectsBeforeActivation pins that a request carrying a bearer
