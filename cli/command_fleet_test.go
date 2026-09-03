@@ -627,7 +627,7 @@ func TestFleetActivateCreatesDefaultsAndPrintsTheOneLiner(t *testing.T) {
 	joined := strings.Join(stdout, "\n")
 	hostedRoot := filepath.Join(e.ConfigDir, "data", "hosted")
 	require.Contains(t, joined, hostedRoot)
-	require.Contains(t, joined, "WARPHOLD_ENROLL_TOKEN=wh_")
+	require.Contains(t, joined, "Enrollment token (paste when prompted): wh_")
 	require.Contains(t, joined, "https://fleet.example.com/enroll.sh")
 	require.DirExists(t, hostedRoot)
 

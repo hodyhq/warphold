@@ -177,5 +177,7 @@ func (s *Server) enrollmentCommand(ctx context.Context, groupID int64) (string, 
 		return "", err
 	}
 
-	return `WARPHOLD_ENROLL_TOKEN=` + plain + ` sh -c "$(curl -fsSL ` + u.String() + `/enroll.sh)"`, nil
+	// Same shape the dashboard shows: the command never carries the token
+	// (shell history); the script prompts for it, or reads WARPHOLD_ENROLL_TOKEN.
+	return "curl -fsSL " + u.String() + "/enroll.sh | sh\nEnrollment token (paste when prompted): " + plain, nil
 }

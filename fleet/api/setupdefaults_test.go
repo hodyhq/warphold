@@ -22,7 +22,7 @@ func TestSetupDefaultsLeavesAFleetThatCanEnroll(t *testing.T) {
 
 	oneLiner, err := h.s.SetupDefaults(t.Context(), h.srv.URL, "disk", hostedRoot)
 	require.NoError(t, err)
-	require.Contains(t, oneLiner, "WARPHOLD_ENROLL_TOKEN=wh_", "the command carries a real token")
+	require.Contains(t, oneLiner, "Enrollment token (paste when prompted): wh_", "the command carries a real token")
 	require.Contains(t, oneLiner, h.srv.URL+"/enroll.sh")
 
 	fi, err := os.Stat(hostedRoot)
@@ -91,7 +91,7 @@ func TestSetupDefaultsRepairsAPartialRun(t *testing.T) {
 
 	oneLiner, err := h.s.SetupDefaults(t.Context(), "", "disk", filepath.Join(t.TempDir(), "hosted"))
 	require.NoError(t, err)
-	require.Contains(t, oneLiner, "WARPHOLD_ENROLL_TOKEN=wh_", "the missing group was created and can enroll")
+	require.Contains(t, oneLiner, "Enrollment token (paste when prompted): wh_", "the missing group was created and can enroll")
 
 	_, targets := h.doList("GET", "/api/v1/fleet/targets")
 	require.Len(t, targets, 1, "the existing target was reused, not duplicated")

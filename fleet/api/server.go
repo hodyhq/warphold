@@ -324,7 +324,15 @@ func (s *Server) reloadIfActivated() {
 	for _, f := range s.reload() {
 		// Off the request goroutine and out from under activateMu: a callback
 		// opens a repository, which has no business blocking a status probe.
-		go f()
+		// A panicking callback must not take the server down with it.
+		go func(f func()) {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("warphold fleet: activation callback panicked: %v", r)
+				}
+			}()
+			f()
+		}(f)
 	}
 }
 
