@@ -37,9 +37,15 @@ type overviewCounts struct {
 // overviewOffsite is the dashboard's offsite tile: how many targets keep a
 // mirror at all, and how many devices are behind in one. Both are zero on a
 // fleet with no mirror, which is how the UI knows to hide the tile.
+//
+// Unknown says the count could not be read. This endpoint is polled every 30 s
+// by every open dashboard, so a store failure must not 500 the whole page - but
+// it must not report "0 behind" in the good tone either, which is a lie in the
+// one direction a backup dashboard cannot afford. The tile renders neutral.
 type overviewOffsite struct {
-	TargetsWithMirror int `json:"targets_with_mirror"`
-	StaleDevices      int `json:"stale_devices"`
+	TargetsWithMirror int  `json:"targets_with_mirror"`
+	StaleDevices      int  `json:"stale_devices"`
+	Unknown           bool `json:"unknown"`
 }
 
 type overviewBucket struct {
@@ -293,9 +299,11 @@ func (s *Server) fillOffsite(ctx context.Context, out *overviewOut, targets []st
 
 	stats, err := s.store().RepoStats(ctx)
 	if err != nil {
-		// The tile reads "0 behind" rather than taking the whole dashboard
-		// down over the one counter that is not load-bearing.
+		// Neutral, not green: the tile says "we do not know" rather than
+		// taking the whole polled dashboard down or claiming nothing is behind.
 		log.Printf("warphold fleet: reading repository stats: %v", errCategory(err))
+
+		out.Offsite.Unknown = true
 
 		return
 	}
@@ -307,6 +315,8 @@ func (s *Server) fillOffsite(ctx context.Context, out *overviewOut, targets []st
 		groupTarget[g.ID] = g.TargetID
 	}
 
+	// live already excludes revoked devices, so a revoked one can neither be
+	// counted as behind nor keep a target's row green.
 	for _, a := range live {
 		if !mirrored[groupTarget[a.GroupID]] {
 			continue

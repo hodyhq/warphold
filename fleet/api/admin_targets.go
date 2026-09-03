@@ -196,7 +196,14 @@ func (s *Server) handleTargetList(w http.ResponseWriter, r *http.Request) {
 		adminFailed(w, "list targets", err)
 		return
 	}
-	newest, stale := s.targetMirrorState(r.Context(), ts)
+	newest, stale, err := s.targetMirrorState(r.Context(), ts)
+	if err != nil {
+		// A store failure here would otherwise render every mirrored target
+		// green ("no offsite problem") when the truth is that we do not know.
+		// The page already 500s when store.Targets fails; be consistent.
+		adminFailed(w, "read offsite state", err)
+		return
+	}
 
 	out := make([]targetOut, 0, len(ts))
 
@@ -212,7 +219,11 @@ func (s *Server) handleTargetList(w http.ResponseWriter, r *http.Request) {
 // targetMirrorState folds every device's offsite progress onto its target: the
 // newest mirror under it, and whether any device in it is behind. Three batch
 // queries on a page load, never a query per target.
-func (s *Server) targetMirrorState(ctx context.Context, targets []store.Target) (newest map[int64]*time.Time, stale map[int64]bool) {
+//
+// Every failure is returned rather than swallowed: an empty result here is
+// indistinguishable from "every mirror is fine", and a green offsite row on a
+// broken store is the one lie a backup dashboard must not tell.
+func (s *Server) targetMirrorState(ctx context.Context, targets []store.Target) (newest map[int64]*time.Time, stale map[int64]bool, err error) {
 	newest, stale = map[int64]*time.Time{}, map[int64]bool{}
 
 	mirrored := make(map[int64]bool, len(targets))
@@ -223,24 +234,24 @@ func (s *Server) targetMirrorState(ctx context.Context, targets []store.Target) 
 	}
 
 	if len(mirrored) == 0 {
-		return newest, stale
+		return newest, stale, nil
 	}
 
 	st := s.store()
 
 	groups, err := st.Groups(ctx)
 	if err != nil {
-		return newest, stale
+		return nil, nil, err
 	}
 
 	agents, err := st.Agents(ctx)
 	if err != nil {
-		return newest, stale
+		return nil, nil, err
 	}
 
 	stats, err := st.RepoStats(ctx)
 	if err != nil {
-		return newest, stale
+		return nil, nil, err
 	}
 
 	groupTarget := make(map[int64]int64, len(groups))
@@ -252,6 +263,8 @@ func (s *Server) targetMirrorState(ctx context.Context, targets []store.Target) 
 
 	for _, a := range agents {
 		tid := groupTarget[a.GroupID]
+		// A revoked device is not part of "protected right now" (the overview
+		// drops it too), so it can neither hold a target back nor freshen it.
 		if a.RevokedAt != nil || !mirrored[tid] {
 			continue
 		}
@@ -270,5 +283,5 @@ func (s *Server) targetMirrorState(ctx context.Context, targets []store.Target) 
 		}
 	}
 
-	return newest, stale
+	return newest, stale, nil
 }

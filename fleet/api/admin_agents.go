@@ -33,17 +33,25 @@ func mirrorStale(at *time.Time, now time.Time, every time.Duration) bool {
 
 // mirrorFor resolves a device's offsite state through its group's target, or
 // nil when that target keeps no mirror.
-func (s *Server) mirrorFor(ctx context.Context, a store.Agent) *mirrorOut {
+//
+// A store failure is returned, not swallowed: omitting the line would read as
+// "this fleet keeps no offsite copy", which is the wrong answer in the
+// dangerous direction.
+func (s *Server) mirrorFor(ctx context.Context, a store.Agent) (*mirrorOut, error) {
 	st := s.store()
 
 	g, err := st.Group(ctx, a.GroupID)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 
 	t, err := st.Target(ctx, g.TargetID)
-	if err != nil || t.MirrorKind == "" {
-		return nil
+	if err != nil {
+		return nil, err
+	}
+
+	if t.MirrorKind == "" {
+		return nil, nil
 	}
 
 	var m mirrorOut
@@ -55,7 +63,7 @@ func (s *Server) mirrorFor(ctx context.Context, a store.Agent) *mirrorOut {
 
 	m.Stale = mirrorStale(m.MirroredAt, s.now(), jobs.MirrorInterval(ctx, st))
 
-	return &m
+	return &m, nil
 }
 
 var allowedCommands = map[string]bool{"snapshot-now": true, "pause": true, "resume": true, "verify": true}
@@ -141,12 +149,18 @@ func (s *Server) handleAgentGet(w http.ResponseWriter, r *http.Request) {
 		t := ok.FinishedAt
 		lastOK = &t
 	}
+	mirror, err := s.mirrorFor(ctx, *a)
+	if err != nil {
+		adminFailed(w, "read offsite state", err)
+		return
+	}
+
 	// Flatten agentOut's fields alongside reports (spec: "same object + reports:[last 20]").
 	writeJSON(w, http.StatusOK, struct {
 		agentOut
 		Reports []store.Report `json:"reports"`
 		Mirror  *mirrorOut     `json:"mirror"`
-	}{s.agentOut(*a, lr, lastOK), reports, s.mirrorFor(ctx, *a)})
+	}{s.agentOut(*a, lr, lastOK), reports, mirror})
 }
 
 func (s *Server) handleAgentRevoke(w http.ResponseWriter, r *http.Request) {

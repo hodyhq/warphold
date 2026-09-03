@@ -2,14 +2,32 @@ package api_test
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
+	_ "modernc.org/sqlite" // the store's driver, registered as "sqlite"
+
 	"github.com/kopia/kopia/fleet"
 	"github.com/kopia/kopia/fleet/store"
 )
+
+// dropTable breaks exactly one query on a live server, from its own connection.
+// Closing the whole store would fail the session lookup first and never reach
+// the handler under test; this fails the offsite fold and nothing else.
+func dropTable(t *testing.T, h *harness, name string) {
+	t.Helper()
+
+	db, err := sql.Open("sqlite", fleet.PathsFor(h.stateDir).DB)
+	require.NoError(t, err)
+
+	defer db.Close() //nolint:errcheck // test cleanup
+
+	_, err = db.Exec("DROP TABLE " + name)
+	require.NoError(t, err)
+}
 
 // mirrorGroup creates a group whose target keeps an offsite mirror, and
 // returns the group id.
@@ -223,4 +241,88 @@ func TestOverviewOffsiteEmptyWithoutMirrors(t *testing.T) {
 	off := body["offsite"].(map[string]any)
 	require.Equal(t, float64(0), off["targets_with_mirror"])
 	require.Equal(t, float64(0), off["stale_devices"])
+}
+
+// TestTargetListFailsLoudlyWhenOffsiteStateCannotBeRead: an unreadable store
+// must not render every mirrored target as "no offsite problem".
+func TestTargetListFailsLoudlyWhenOffsiteStateCannotBeRead(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+	mirrorGroup(t, h)
+
+	resp, _ := h.doList("GET", "/api/v1/fleet/targets")
+	require.Equal(t, 200, resp.StatusCode)
+
+	dropTable(t, h, "repo_stats")
+
+	resp, _ = h.doList("GET", "/api/v1/fleet/targets")
+	require.Equal(t, 500, resp.StatusCode, "a green row would be a lie, so the page fails instead")
+}
+
+// TestDeviceDetailFailsLoudlyWhenTheTargetCannotBeRead: omitting the offsite
+// line would read as "this fleet keeps no offsite copy".
+func TestDeviceDetailFailsLoudlyWhenTheTargetCannotBeRead(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+	id, _ := enrollInto(t, h, mirrorGroup(t, h), "laptop-1")
+
+	resp, _ := h.do("GET", "/api/v1/fleet/agents/"+id, nil)
+	require.Equal(t, 200, resp.StatusCode)
+
+	dropTable(t, h, "targets")
+
+	resp, _ = h.do("GET", "/api/v1/fleet/agents/"+id, nil)
+	require.Equal(t, 500, resp.StatusCode)
+}
+
+// TestOverviewOffsiteUnknownRatherThanGreen: the dashboard is polled every 30 s,
+// so it stays up - but it says "unknown", not "0 behind".
+func TestOverviewOffsiteUnknownRatherThanGreen(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+	enrollInto(t, h, mirrorGroup(t, h), "laptop-1")
+
+	_, body := h.do("GET", "/api/v1/fleet/overview", nil)
+	require.Equal(t, false, body["offsite"].(map[string]any)["unknown"])
+
+	dropTable(t, h, "repo_stats")
+
+	resp, body := h.do("GET", "/api/v1/fleet/overview", nil)
+	require.Equal(t, 200, resp.StatusCode, "a polled dashboard stays up")
+
+	off := body["offsite"].(map[string]any)
+	require.Equal(t, true, off["unknown"])
+	require.Equal(t, float64(1), off["targets_with_mirror"], "the target count needs no stats")
+	require.Equal(t, float64(0), off["stale_devices"], "meaningless while unknown, and the UI hides it")
+}
+
+// TestOffsiteIgnoresRevokedDevices: a revoked device is not part of "protected
+// right now", so it can neither hold a target back nor be counted as behind.
+func TestOffsiteIgnoresRevokedDevices(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+	gid := mirrorGroup(t, h)
+	liveID, _ := enrollInto(t, h, gid, "laptop-1")
+	goneID, _ := enrollInto(t, h, gid, "retired")
+
+	st := openStore(t, h)
+	ctx := context.Background()
+	require.NoError(t, st.SetSetting(ctx, "mirror_interval", "300"))
+
+	now := time.Now().UTC().Truncate(time.Second)
+	h.s.SetNowForTesting(func() time.Time { return now })
+	// Only the live device is mirrored; the other has no stats row at all.
+	require.NoError(t, st.SetMirrored(ctx, liveID, now.Add(-time.Minute), 1))
+
+	_, body := h.do("GET", "/api/v1/fleet/overview", nil)
+	require.Equal(t, float64(1), body["offsite"].(map[string]any)["stale_devices"], "both count while both are live")
+
+	resp, _ := h.do("POST", "/api/v1/fleet/agents/"+goneID+"/revoke", nil)
+	require.Equal(t, 204, resp.StatusCode)
+
+	_, body = h.do("GET", "/api/v1/fleet/overview", nil)
+	require.Equal(t, float64(0), body["offsite"].(map[string]any)["stale_devices"])
+
+	_, list := h.doList("GET", "/api/v1/fleet/targets")
+	require.NotContains(t, list[0], "mirror_stale", "the revoked device no longer holds the target back")
 }
