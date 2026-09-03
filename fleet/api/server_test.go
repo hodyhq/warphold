@@ -231,7 +231,7 @@ func TestStatusActivateLogin(t *testing.T) {
 	resp, _ = h.do("POST", "/api/v1/fleet/activate", map[string]string{"passphrase": "again", "email": "a@b", "password": "pw12345678"})
 	require.Equal(t, 403, resp.StatusCode)
 	require.Empty(t, h.s.SetupTokenPathForTesting(), "setup token cleared on activation")
-	require.ErrorIs(t, h.s.Activate(t.Context(), "again", "a@b", "pw12345678"), api.ErrAlreadyActivated)
+	require.ErrorIs(t, h.s.Activate(t.Context(), "again", "a@b", "pw12345678", ""), api.ErrAlreadyActivated)
 
 	resp, _ = h.do("DELETE", "/api/v1/fleet/session", nil)
 	require.Equal(t, 204, resp.StatusCode)
@@ -363,7 +363,7 @@ func TestActivateIsExclusive(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			errs[i] = s.Activate(context.Background(), "seal-me!", fmt.Sprintf("admin%d@hody.dev", i), "pw12345678")
+			errs[i] = s.Activate(context.Background(), "seal-me!", fmt.Sprintf("admin%d@hody.dev", i), "pw12345678", "")
 		}(i)
 	}
 	wg.Wait()
@@ -399,7 +399,7 @@ func TestActivateRefusesToOverwriteUnloadableState(t *testing.T) {
 
 	dir := t.TempDir()
 	s := api.New(dir)
-	require.NoError(t, s.Activate(t.Context(), "seal-me!", "hody@hody.dev", "pw12345678"))
+	require.NoError(t, s.Activate(t.Context(), "seal-me!", "hody@hody.dev", "pw12345678", ""))
 	require.NoError(t, s.Close())
 
 	keyFile := filepath.Join(dir, "seal.key")
@@ -414,7 +414,7 @@ func TestActivateRefusesToOverwriteUnloadableState(t *testing.T) {
 	t.Cleanup(func() { s2.Close() })
 	require.False(t, s2.Activated(), "unreadable DB means state could not be loaded")
 
-	err = s2.Activate(t.Context(), "different-passphrase", "attacker@example.com", "pw12345678")
+	err = s2.Activate(t.Context(), "different-passphrase", "attacker@example.com", "pw12345678", "")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "refusing to overwrite seal.key")
 
@@ -438,12 +438,12 @@ func TestFailedActivationLeavesNoStateBehind(t *testing.T) {
 	// A read-only state directory fails store.Open, which stands in for any
 	// step after the key derivation.
 	require.NoError(t, os.Chmod(dir, 0o500))
-	require.Error(t, s.Activate(t.Context(), "seal-me!", "hody@hody.dev", "pw12345678"))
+	require.Error(t, s.Activate(t.Context(), "seal-me!", "hody@hody.dev", "pw12345678", ""))
 	require.NoError(t, os.Chmod(dir, 0o700))
 
 	_, err := os.Stat(filepath.Join(dir, "seal.key"))
 	require.ErrorIs(t, err, os.ErrNotExist, "a failed activation must not leave seal.key behind")
 
-	require.NoError(t, s.Activate(t.Context(), "seal-me!", "hody@hody.dev", "pw12345678"), "retry after a failed activation")
+	require.NoError(t, s.Activate(t.Context(), "seal-me!", "hody@hody.dev", "pw12345678", ""), "retry after a failed activation")
 	require.True(t, s.Activated())
 }

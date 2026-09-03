@@ -26,7 +26,7 @@ func fleetForTest(t *testing.T) (string, string) {
 	ts := httptest.NewServer(m)
 	t.Cleanup(ts.Close)
 	ctx := context.Background()
-	require.NoError(t, s.Activate(ctx, "seal-me-please", "hody@hody.dev", "pw12345678"))
+	require.NoError(t, s.Activate(ctx, "seal-me-please", "hody@hody.dev", "pw12345678", ""))
 	tid, tpl, gid := s.SeedGroupForTesting(ctx, t.TempDir(), []string{"~"}, `{"retention":{"keepLatest":3}}`)
 	_ = tid
 	_ = tpl

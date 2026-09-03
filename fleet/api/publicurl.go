@@ -28,6 +28,9 @@ const (
 	// validate.
 	instanceIDSetting = "instance_id"
 
+	// instanceIDBytes is the length of the opaque instance id.
+	instanceIDBytes = 16
+
 	// publicURLProbeTimeout bounds the end-to-end probe. A reverse proxy that
 	// needs longer than this to serve a static JSON status is misconfigured.
 	publicURLProbeTimeout = 5 * time.Second
@@ -153,15 +156,23 @@ func (s *Server) instanceID(ctx context.Context) (string, error) {
 	if id != "" {
 		return id, nil
 	}
-	b := make([]byte, 16)
-	if _, err := io.ReadFull(rand.Reader, b); err != nil {
+	id, err = randomHex(instanceIDBytes)
+	if err != nil {
 		return "", err
 	}
-	id = hex.EncodeToString(b)
 	if err := st.SetSetting(ctx, instanceIDSetting, id); err != nil {
 		return "", err
 	}
 	return id, nil
+}
+
+// randomHex returns n random bytes, hex-encoded.
+func randomHex(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := io.ReadFull(rand.Reader, b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
 // verifyPublicURL checks u end to end: this process fetches
@@ -239,4 +250,29 @@ func (s *Server) requireHost(next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r)
 	}
+}
+
+// ValidatePublicURL applies the same syntax check the settings API applies,
+// for callers outside this package. `fleet activate --public-url` runs it
+// before anything is written, so a rejected URL costs nothing.
+func ValidatePublicURL(raw string) error {
+	_, err := parsePublicURL(raw)
+	return err
+}
+
+// VerifyPublicURL is the exported end-to-end probe: same check as the settings
+// PUT with "verify", including the proxy checklist on the error, so
+// `fleet activate --verify-public-url` and the wizard cannot disagree about
+// what a working public URL is.
+func (s *Server) VerifyPublicURL(ctx context.Context, raw string) error {
+	u, err := parsePublicURL(raw)
+	if err != nil {
+		return err
+	}
+	err = s.verifyPublicURL(ctx, u)
+	var pe *proxyError
+	if errors.As(err, &pe) {
+		return errors.New(pe.Error() + "\nthe reverse proxy in front of it must:\n  - " + strings.Join(proxyRequirements, "\n  - "))
+	}
+	return err
 }

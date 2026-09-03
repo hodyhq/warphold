@@ -270,7 +270,7 @@ func (c *commandServerStart) run(ctx context.Context) (reterr error) {
 
 	m := mux.NewRouter()
 
-	c.setupHandlers(srv, m)
+	c.setupHandlers(ctx, srv, m)
 
 	// init prometheus after adding interceptors that require credentials, so that this
 	// handler can be called without auth
@@ -317,9 +317,9 @@ func shutdownHTTPServer(ctx context.Context, httpServer *http.Server) {
 	}
 }
 
-func (c *commandServerStart) setupHandlers(srv *server.Server, m *mux.Router) {
+func (c *commandServerStart) setupHandlers(ctx context.Context, srv *server.Server, m *mux.Router) {
 	for _, h := range serverExtraHandlers { // warphold: fleet routes, registered before the UI catch-all
-		h(srv, m, c.svc.repositoryConfigFileName())
+		h(ctx, srv, m, c.svc.repositoryConfigFileName())
 	}
 
 	if c.serverStartControlAPI {

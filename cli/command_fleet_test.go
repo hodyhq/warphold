@@ -1,19 +1,26 @@
 package cli_test
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/kopia/kopia/fleet"
+	"github.com/kopia/kopia/fleet/seal"
+	"github.com/kopia/kopia/fleet/store"
 	"github.com/kopia/kopia/internal/apiclient"
 	"github.com/kopia/kopia/internal/testutil"
+	"github.com/kopia/kopia/repo"
 	"github.com/kopia/kopia/tests/testenv"
 )
 
@@ -257,4 +264,251 @@ func TestServerServesSPAWithoutUIAuth(t *testing.T) {
 		res, _ := get(t, p, false)
 		require.Equal(t, http.StatusUnauthorized, res.StatusCode, p)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Task 20: non-interactive setup - `fleet activate --public-url` and the Fleet
+// host's own repository.
+
+func fleetConfigFile(e *testenv.CLITest) string {
+	return filepath.Join(e.ConfigDir, ".kopia.config")
+}
+
+func fleetSetting(t *testing.T, e *testenv.CLITest, key string) string {
+	t.Helper()
+
+	st, err := store.Open(filepath.Join(fleet.StateDirFor(fleetConfigFile(e)), "fleet.db"))
+	require.NoError(t, err)
+
+	defer st.Close() //nolint:errcheck
+
+	v, err := st.Setting(t.Context(), key)
+	require.NoError(t, err)
+
+	return v
+}
+
+// fleetRepoPassword unseals the Fleet host's own repository password exactly
+// the way the server does: read the sealed setting, open it with the key file
+// activation wrote.
+func fleetRepoPassword(t *testing.T, e *testenv.CLITest) string {
+	t.Helper()
+
+	key, err := seal.ReadKeyFile(filepath.Join(fleet.StateDirFor(fleetConfigFile(e)), "seal.key"))
+	require.NoError(t, err)
+
+	sealed, err := hex.DecodeString(fleetSetting(t, e, "fleet_repo_password"))
+	require.NoError(t, err)
+
+	pw, err := key.Open(sealed)
+	require.NoError(t, err)
+
+	return string(pw)
+}
+
+// TestFleetActivateReadsTheInstallerEnvironment pins the contract with
+// scripts/install/fleet.sh: it exports WARPHOLD_SETUP_EMAIL, _PASSWORD,
+// _PASSPHRASE and _PUBLIC_URL, and none of those secrets may have to appear in
+// argv, where "ps" shows them to every user on the host.
+func TestFleetActivateReadsTheInstallerEnvironment(t *testing.T) {
+	runner := testenv.NewInProcRunner(t)
+	e := testenv.NewCLITest(t, nil, runner)
+
+	e.Environment["WARPHOLD_SETUP_EMAIL"] = "env@hody.dev"
+	e.Environment["WARPHOLD_SETUP_PASSWORD"] = "pw12345678"
+	e.Environment["WARPHOLD_SETUP_PASSPHRASE"] = "seal-me-please"
+	e.Environment["WARPHOLD_SETUP_PUBLIC_URL"] = "https://env.example.com"
+
+	e.RunAndExpectSuccess(t, "fleet", "activate")
+
+	require.Equal(t, "https://env.example.com", fleetSetting(t, e, "public_url"))
+	require.NotEmpty(t, fleetSetting(t, e, "instance_id"), "activation mints the instance id, so --verify-public-url has one to compare")
+}
+
+// TestFleetActivateBackwardCompatibleSecretEnvironment pins that the names the
+// installer used before the WARPHOLD_SETUP_* set existed still work.
+func TestFleetActivateBackwardCompatibleSecretEnvironment(t *testing.T) {
+	runner := testenv.NewInProcRunner(t)
+	e := testenv.NewCLITest(t, nil, runner)
+
+	e.Environment["WARPHOLD_ADMIN_PASSWORD"] = "pw12345678"
+	e.Environment["WARPHOLD_SEAL_PASSPHRASE"] = "seal-me-please"
+
+	e.RunAndExpectSuccess(t, "fleet", "activate", "--email", "old@hody.dev")
+
+	require.FileExists(t, filepath.Join(fleet.StateDirFor(fleetConfigFile(e)), "seal.key"))
+}
+
+// TestFleetActivateFlagsBeatTheEnvironment: an operator who overrides the
+// installer's environment on the command line must get the override.
+func TestFleetActivateFlagsBeatTheEnvironment(t *testing.T) {
+	runner := testenv.NewInProcRunner(t)
+	e := testenv.NewCLITest(t, nil, runner)
+
+	e.Environment["WARPHOLD_SETUP_EMAIL"] = "env@hody.dev"
+	e.Environment["WARPHOLD_SETUP_PASSWORD"] = "pw12345678"
+	e.Environment["WARPHOLD_SETUP_PASSPHRASE"] = "seal-me-please"
+	e.Environment["WARPHOLD_SETUP_PUBLIC_URL"] = "https://env.example.com"
+
+	e.RunAndExpectSuccess(t, "fleet", "activate",
+		"--email", "flag@hody.dev",
+		"--public-url", "https://flag.example.com")
+
+	require.Equal(t, "https://flag.example.com", fleetSetting(t, e, "public_url"))
+
+	st, err := store.Open(filepath.Join(fleet.StateDirFor(fleetConfigFile(e)), "fleet.db"))
+	require.NoError(t, err)
+
+	defer st.Close() //nolint:errcheck
+
+	_, err = st.AdminByEmail(t.Context(), "flag@hody.dev")
+	require.NoError(t, err, "the admin is the one named on the command line")
+}
+
+// TestFleetActivateRejectsBadPublicURLBeforeWriting: activation happens once,
+// so a URL the server would refuse must fail before any state exists - not
+// after, when the operator can no longer redo the step.
+func TestFleetActivateRejectsBadPublicURLBeforeWriting(t *testing.T) {
+	for _, bad := range []string{
+		"fleet.example.com",              // not absolute
+		"http://fleet.example.com",       // plaintext, and not loopback
+		"https://fleet.example.com/path", // a path would vanish from every URL built by concatenation
+		"https://user:pw@fleet.example.com",
+	} {
+		t.Run(bad, func(t *testing.T) {
+			runner := testenv.NewInProcRunner(t)
+			e := testenv.NewCLITest(t, nil, runner)
+
+			_, stderr := e.RunAndExpectFailure(t, "fleet", "activate",
+				"--email", "hody@hody.dev",
+				"--admin-password", "pw12345678",
+				"--passphrase", "seal-me-please",
+				"--public-url", bad)
+
+			require.Contains(t, strings.Join(stderr, "\n"), "public_url")
+
+			stateDir := fleet.StateDirFor(fleetConfigFile(e))
+			require.NoFileExists(t, filepath.Join(stateDir, "seal.key"))
+			require.NoFileExists(t, filepath.Join(stateDir, "fleet.db"))
+		})
+	}
+}
+
+// TestFleetActivateVerifiesPublicURLEndToEnd drives the whole installer shape:
+// the service is already running when `fleet activate` is invoked, the CLI
+// activates and then fetches its own public URL through the network to prove
+// the URL reaches this Fleet. It also pins that the running server picks up an
+// activation performed by another process - without that it would answer "not
+// activated" until someone restarted it, and the probe could never pass.
+func TestFleetActivateVerifiesPublicURLEndToEnd(t *testing.T) {
+	runner := testenv.NewInProcRunner(t)
+	e := testenv.NewCLITest(t, nil, runner)
+
+	var sp testutil.ServerParameters
+
+	wait, kill := e.RunAndProcessStderr(t, sp.ProcessOutput,
+		"server", "start",
+		"--insecure",
+		"--without-password",
+		"--no-ui",
+		"--no-grpc",
+		"--address=127.0.0.1:0",
+		"--server-control-password=admin-pwd",
+	)
+
+	defer func() {
+		kill()
+		wait() //nolint:errcheck
+	}()
+
+	require.NotEmpty(t, sp.BaseURL, "server did not report its address")
+
+	stdout := e.RunAndExpectSuccess(t, "fleet", "activate",
+		"--email", "hody@hody.dev",
+		"--admin-password", "pw12345678",
+		"--passphrase", "seal-me-please",
+		"--public-url", sp.BaseURL,
+		"--verify-public-url")
+
+	require.Contains(t, strings.Join(stdout, "\n"), "answers as this Fleet")
+	require.Equal(t, sp.BaseURL, fleetSetting(t, e, "public_url"))
+
+	res, err := http.Get(sp.BaseURL + "/api/v1/fleet/status") //nolint:noctx
+	require.NoError(t, err)
+
+	defer res.Body.Close()
+
+	var body map[string]any
+	require.NoError(t, json.NewDecoder(res.Body).Decode(&body))
+	require.Equal(t, true, body["activated"], "the running server must see the CLI's activation without a restart")
+	require.Equal(t, fleetSetting(t, e, "instance_id"), body["instance_id"])
+}
+
+// TestFleetActivateFailsWhenPublicURLDoesNotAnswer: a URL that answers as
+// something other than this Fleet fails the command and prints the proxy
+// checklist. The Fleet itself is activated by then - the probe needs an
+// activated Fleet to answer - so the message says so rather than pretending
+// nothing happened.
+func TestFleetActivateFailsWhenPublicURLDoesNotAnswer(t *testing.T) {
+	notFleet := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"activated":false}`)) //nolint:errcheck
+	}))
+	defer notFleet.Close()
+
+	runner := testenv.NewInProcRunner(t)
+	e := testenv.NewCLITest(t, nil, runner)
+
+	_, stderr := e.RunAndExpectFailure(t, "fleet", "activate",
+		"--email", "hody@hody.dev",
+		"--admin-password", "pw12345678",
+		"--passphrase", "seal-me-please",
+		"--public-url", notFleet.URL,
+		"--verify-public-url")
+
+	joined := strings.Join(stderr, "\n")
+	require.Contains(t, joined, "did not answer as an activated WarpHold Fleet")
+	require.Contains(t, joined, "forward the Host header unchanged", "the proxy checklist comes with the failure")
+	require.FileExists(t, filepath.Join(fleet.StateDirFor(fleetConfigFile(e)), "seal.key"), "the fleet is activated; only the probe failed")
+}
+
+// TestFleetActivateCreatesTheHostRepository pins the other half of setup: the
+// Fleet host is a machine that needs backing up too, so activation leaves it
+// with a repository of its own, connected, openable with the sealed password
+// and created exactly once.
+func TestFleetActivateCreatesTheHostRepository(t *testing.T) {
+	runner := testenv.NewInProcRunner(t)
+	e := testenv.NewCLITest(t, nil, runner)
+
+	e.RunAndExpectSuccess(t, "fleet", "activate",
+		"--email", "hody@hody.dev",
+		"--admin-password", "pw12345678",
+		"--passphrase", "seal-me-please")
+
+	repoDir := filepath.Join(e.ConfigDir, "data", "fleet-repo")
+	require.Equal(t, repoDir, fleetSetting(t, e, "fleet_repo_path"))
+
+	formatBlob, err := os.ReadFile(filepath.Join(repoDir, "kopia.repository.f"))
+	require.NoError(t, err)
+	require.NotEmpty(t, formatBlob)
+
+	// The password in the Fleet DB is the repository's real password, and the
+	// Fleet host's repository has a config file of its own - the operator's
+	// --config-file is never repointed at it.
+	require.NoFileExists(t, fleetConfigFile(e), "activation does not connect this installation's own config file")
+
+	rep, err := repo.Open(t.Context(), filepath.Join(fleet.StateDirFor(fleetConfigFile(e)), "fleet-repo.config"), fleetRepoPassword(t, e), nil)
+	require.NoError(t, err, "the sealed password opens the Fleet host's repository")
+	require.NoError(t, rep.Close(t.Context()))
+
+	// Re-running activate is refused, and does not build a second repository.
+	_, stderr := e.RunAndExpectFailure(t, "fleet", "activate",
+		"--email", "someone@hody.dev",
+		"--admin-password", "pw12345678",
+		"--passphrase", "seal-me-please")
+	require.Contains(t, strings.Join(stderr, "\n"), "already activated")
+
+	again, err := os.ReadFile(filepath.Join(repoDir, "kopia.repository.f"))
+	require.NoError(t, err)
+	require.Equal(t, formatBlob, again, "the repository was not re-created")
 }
