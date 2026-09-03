@@ -22,6 +22,8 @@ func (s *Server) mountAdmin(m *mux.Router) {
 	m.HandleFunc("/api/v1/fleet/templates", adm(s.handleTemplateList)).Methods(http.MethodGet)
 	m.HandleFunc("/api/v1/fleet/groups", adm(s.handleGroupCreate)).Methods(http.MethodPost)
 	m.HandleFunc("/api/v1/fleet/groups", adm(s.handleGroupList)).Methods(http.MethodGet)
+	m.HandleFunc("/api/v1/fleet/groups/{id}", adm(s.handleGroupUpdate)).Methods(http.MethodPut)
+	m.HandleFunc("/api/v1/fleet/groups/{id}", adm(s.handleGroupDelete)).Methods(http.MethodDelete)
 	m.HandleFunc("/api/v1/fleet/admins", adm(s.handleAdminList)).Methods(http.MethodGet)
 	m.HandleFunc("/api/v1/fleet/admins", adm(s.handleAdminCreate)).Methods(http.MethodPost)
 	m.HandleFunc("/api/v1/fleet/admins/me/password", adm(s.handleAdminPassword)).Methods(http.MethodPost)
