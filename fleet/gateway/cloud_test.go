@@ -51,6 +51,10 @@ type fakeS3 struct {
 	putPaths []string
 
 	versioning string
+
+	// objectLock is what GetObjectLockConfiguration reports: "Enabled", or ""
+	// for a bucket created without Object Lock, which answers 404.
+	objectLock string
 }
 
 // stored returns a copy of the fake's objects, so a test never races the
@@ -218,9 +222,34 @@ func (f *fakeS3) get(w http.ResponseWriter, r *http.Request, key string) {
 	}
 }
 
-// bucketOp serves GetBucketVersioning and ListObjectsV2.
+// bucketOp serves GetBucketVersioning, GetObjectLockConfiguration and
+// ListObjectsV2.
 func (f *fakeS3) bucketOp(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
+
+	if q.Has("object-lock") {
+		if f.objectLock == "" {
+			// What AWS answers for a bucket created without Object Lock; the
+			// shape is pinned in docs/RECONCILE-object-lock.md.
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusNotFound)
+			writeXML(w, struct {
+				XMLName xml.Name `xml:"Error"`
+				Code    string
+				Message string
+			}{Code: "ObjectLockConfigurationNotFoundError", Message: "Object Lock configuration does not exist for this bucket"})
+
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/xml")
+		writeXML(w, struct {
+			XMLName           xml.Name `xml:"ObjectLockConfiguration"`
+			ObjectLockEnabled string
+		}{ObjectLockEnabled: f.objectLock})
+
+		return
+	}
 
 	if q.Has("versioning") {
 		w.Header().Set("Content-Type", "application/xml")
@@ -705,4 +734,31 @@ func TestProbeConditionalPut(t *testing.T) {
 	ignoring := &fakeS3{ignorePrecondition: true}
 	require.ErrorIs(t, ProbeConditionalPut(t.Context(), testCI(t, ignoring), testPrefix), ErrNoConditionalPut)
 	require.Empty(t, ignoring.stored(), "the probe object is deleted even when the check fails")
+}
+
+func TestProbeObjectLock(t *testing.T) {
+	t.Parallel()
+
+	t.Run("enabled", func(t *testing.T) {
+		t.Parallel()
+		require.NoError(t, ProbeObjectLock(t.Context(), testCI(t, &fakeS3{objectLock: "Enabled"})))
+	})
+
+	t.Run("not configured", func(t *testing.T) {
+		t.Parallel()
+		// The 404 ObjectLockConfigurationNotFoundError path, not an empty config.
+		require.ErrorIs(t, ProbeObjectLock(t.Context(), testCI(t, &fakeS3{})), ErrNoObjectLock)
+	})
+
+	t.Run("reported disabled", func(t *testing.T) {
+		t.Parallel()
+		require.ErrorIs(t, ProbeObjectLock(t.Context(), testCI(t, &fakeS3{objectLock: "Disabled"})), ErrNoObjectLock)
+	})
+
+	t.Run("unusable connection info", func(t *testing.T) {
+		t.Parallel()
+		err := ProbeObjectLock(t.Context(), blob.ConnectionInfo{Type: "b2"})
+		require.Error(t, err)
+		require.NotErrorIs(t, err, ErrNoObjectLock)
+	})
 }

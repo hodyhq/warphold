@@ -21,6 +21,9 @@ import (
 
 	"github.com/kopia/kopia/fleet/api"
 	"github.com/kopia/kopia/fleet/b2api"
+	"github.com/kopia/kopia/fleet/gateway"
+	"github.com/kopia/kopia/repo/blob"
+	"github.com/kopia/kopia/repo/blob/s3"
 )
 
 // jsonNum formats a float64 (as decoded from JSON) back into an integer path segment.
@@ -67,6 +70,53 @@ func (f fakeB2API) CreateKey(_ context.Context, _, _ string, r b2api.KeyRequest)
 }
 
 func (f fakeB2API) DeleteKey(_ context.Context, _, _, _ string) error { return nil }
+
+// fakeCloud stands in for an S3-compatible provider. The wire shapes it would
+// otherwise exercise are covered against a real fake S3 server in
+// fleet/gateway's TestProbeObjectLock and TestProbeConditionalPut; what is
+// tested through here is which bucket and prefix the API asks about, and what
+// it does with each answer.
+type fakeCloud struct {
+	lock bool // the bucket has Object Lock enabled
+	cond bool // the provider enforces If-None-Match: *
+
+	mu       sync.Mutex
+	asked    []string // "<endpoint>/<bucket>" per Object Lock probe
+	prefixes []string // the prefix of each conditional-put probe
+}
+
+func (f *fakeCloud) ObjectLock(_ context.Context, ci blob.ConnectionInfo) error {
+	o := ci.Config.(*s3.Options)
+
+	f.mu.Lock()
+	f.asked = append(f.asked, o.Endpoint+"/"+o.BucketName)
+	f.mu.Unlock()
+
+	if !f.lock {
+		return gateway.ErrNoObjectLock
+	}
+
+	return nil
+}
+
+func (f *fakeCloud) ConditionalPut(_ context.Context, _ blob.ConnectionInfo, prefix string) error {
+	f.mu.Lock()
+	f.prefixes = append(f.prefixes, prefix)
+	f.mu.Unlock()
+
+	if !f.cond {
+		return gateway.ErrNoConditionalPut
+	}
+
+	return nil
+}
+
+func (f *fakeCloud) probed() ([]string, []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return append([]string(nil), f.asked...), append([]string(nil), f.prefixes...)
+}
 
 // csrfCookieName and csrfHeaderName mirror the server's double-submit pair;
 // the harness echoes the cookie back in the header the way the UI must.

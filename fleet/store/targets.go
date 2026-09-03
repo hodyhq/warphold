@@ -15,19 +15,24 @@ type Target struct {
 	CreatedAt            time.Time
 
 	// Hosted targets (kind == "hosted") and the optional B2 mirror.
-	StorageMode                            string // "disk" or "cloud"
+	StorageMode string // "disk" or "cloud"
+
+	// Endpoint is the S3-compatible host a cloud-direct target writes to. It
+	// is derived from the region for B2 and stored, so a later reconnect uses
+	// the endpoint the bucket was verified against rather than re-deriving it.
+	Endpoint                               string
 	MirrorKind, MirrorBucket, MirrorRegion string
 	SealedMirrorKey                        []byte
 	MirrorLockVerifiedAt                   *time.Time
 }
 
-const targetCols = `id,name,kind,bucket,region,path,sealed_admin_key,object_lock_verified_at,created_at,storage_mode,mirror_kind,mirror_bucket,mirror_region,sealed_mirror_key,mirror_lock_verified_at`
+const targetCols = `id,name,kind,bucket,region,path,sealed_admin_key,object_lock_verified_at,created_at,storage_mode,endpoint,mirror_kind,mirror_bucket,mirror_region,sealed_mirror_key,mirror_lock_verified_at`
 
 func (s *Store) CreateTarget(ctx context.Context, t *Target) (int64, error) {
-	return s.exec(ctx, `INSERT INTO targets(name,kind,bucket,region,path,sealed_admin_key,object_lock_verified_at,created_at,storage_mode,mirror_kind,mirror_bucket,mirror_region,sealed_mirror_key,mirror_lock_verified_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	return s.exec(ctx, `INSERT INTO targets(name,kind,bucket,region,path,sealed_admin_key,object_lock_verified_at,created_at,storage_mode,endpoint,mirror_kind,mirror_bucket,mirror_region,sealed_mirror_key,mirror_lock_verified_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		t.Name, t.Kind, t.Bucket, t.Region, t.Path, t.SealedAdminKey, tsp(t.ObjectLockVerifiedAt), ts(t.CreatedAt),
-		t.StorageMode, t.MirrorKind, t.MirrorBucket, t.MirrorRegion, t.SealedMirrorKey, tsp(t.MirrorLockVerifiedAt))
+		t.StorageMode, t.Endpoint, t.MirrorKind, t.MirrorBucket, t.MirrorRegion, t.SealedMirrorKey, tsp(t.MirrorLockVerifiedAt))
 }
 
 func scanTarget(row interface{ Scan(...any) error }) (*Target, error) {
@@ -35,7 +40,7 @@ func scanTarget(row interface{ Scan(...any) error }) (*Target, error) {
 	var olv, mlv sql.NullString
 	var c string
 	if err := row.Scan(&t.ID, &t.Name, &t.Kind, &t.Bucket, &t.Region, &t.Path, &t.SealedAdminKey, &olv, &c,
-		&t.StorageMode, &t.MirrorKind, &t.MirrorBucket, &t.MirrorRegion, &t.SealedMirrorKey, &mlv); err != nil {
+		&t.StorageMode, &t.Endpoint, &t.MirrorKind, &t.MirrorBucket, &t.MirrorRegion, &t.SealedMirrorKey, &mlv); err != nil {
 		return nil, notFound(err)
 	}
 	t.ObjectLockVerifiedAt = parseTSP(olv)

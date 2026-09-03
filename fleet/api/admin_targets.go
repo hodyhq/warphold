@@ -1,13 +1,20 @@
 package api
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 
+	"github.com/kopia/kopia/fleet/gateway"
 	"github.com/kopia/kopia/fleet/store"
+	"github.com/kopia/kopia/repo/blob"
+	"github.com/kopia/kopia/repo/blob/s3"
 )
 
 // defaultHostedRoot is where a hosted target keeps device repositories when
@@ -16,6 +23,36 @@ import (
 // backing the fleet up into a fresh empty directory.
 const defaultHostedRoot = "/srv/warphold/hosted"
 
+// fleetPrefix is the root prefix Fleet writes under inside a bucket it owns,
+// for both a cloud-direct target and a mirror. It is empty: spec §5 lays the
+// keys out as <bucket>/<device-id>/<blob-name>, and §7.3's mirror walks the
+// same device prefixes. Verification probes must use exactly this prefix, or
+// they prove a key space the target never writes to.
+const fleetPrefix = ""
+
+// region names are interpolated into a hostname, so they are held to what a
+// provider region actually looks like rather than trusted as free text.
+var regionRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
+
+// cloudAPI is the verification Fleet runs against an S3-compatible bucket
+// before it may back a target. It is an interface so a test can stand in for a
+// provider instead of reaching the network.
+type cloudAPI interface {
+	ObjectLock(ctx context.Context, ci blob.ConnectionInfo) error
+	ConditionalPut(ctx context.Context, ci blob.ConnectionInfo, prefix string) error
+}
+
+// gatewayCloud is the real verifier, over the cloud-direct backend's own client.
+type gatewayCloud struct{}
+
+func (gatewayCloud) ObjectLock(ctx context.Context, ci blob.ConnectionInfo) error {
+	return gateway.ProbeObjectLock(ctx, ci)
+}
+
+func (gatewayCloud) ConditionalPut(ctx context.Context, ci blob.ConnectionInfo, prefix string) error {
+	return gateway.ProbeConditionalPut(ctx, ci, prefix)
+}
+
 type targetOut struct {
 	ID                   int64      `json:"id"`
 	Name                 string     `json:"name"`
@@ -23,6 +60,7 @@ type targetOut struct {
 	Bucket               string     `json:"bucket,omitempty"`
 	Region               string     `json:"region,omitempty"`
 	Path                 string     `json:"path,omitempty"`
+	Endpoint             string     `json:"endpoint,omitempty"`
 	ObjectLockVerifiedAt *time.Time `json:"object_lock_verified_at,omitempty"`
 
 	// Hosted targets. Sealed credentials are deliberately absent: nothing in
@@ -39,6 +77,7 @@ func toTargetOut(t store.Target) targetOut {
 		ID: t.ID, Name: t.Name, Kind: t.Kind, Bucket: t.Bucket, Region: t.Region, Path: t.Path,
 		ObjectLockVerifiedAt: t.ObjectLockVerifiedAt,
 		StorageMode:          t.StorageMode,
+		Endpoint:             t.Endpoint,
 		MirrorKind:           t.MirrorKind, MirrorBucket: t.MirrorBucket, MirrorRegion: t.MirrorRegion,
 		MirrorLockVerifiedAt: t.MirrorLockVerifiedAt,
 	}
@@ -46,6 +85,7 @@ func toTargetOut(t store.Target) targetOut {
 
 type targetInput struct {
 	Name, Kind, Bucket, Region, Path string
+	Endpoint                         string `json:"endpoint"`
 	KeyID                            string `json:"key_id"`
 	Key                              string `json:"key"`
 	StorageMode                      string `json:"storage_mode"`
@@ -63,7 +103,6 @@ func (s *Server) handleTargetCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	t := &store.Target{Name: in.Name, Kind: in.Kind, Bucket: in.Bucket, Region: in.Region, Path: in.Path, CreatedAt: s.now()}
-	verified := false
 	switch in.Kind {
 	case "filesystem":
 		if in.Path == "" {
@@ -94,11 +133,10 @@ func (s *Server) handleTargetCreate(w http.ResponseWriter, r *http.Request) {
 			if info.ObjectLockEnabled {
 				now := s.now()
 				t.ObjectLockVerifiedAt = &now
-				verified = true
 			}
 		}
 	case "hosted":
-		if !s.applyHosted(w, &in, t) {
+		if !s.applyHosted(r.Context(), w, &in, t) {
 			return
 		}
 	default:
@@ -110,23 +148,25 @@ func (s *Server) handleTargetCreate(w http.ResponseWriter, r *http.Request) {
 		adminFailed(w, "create target", err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"id": id, "object_lock_verified": verified})
+	writeJSON(w, http.StatusCreated, map[string]any{"id": id, "object_lock_verified": t.ObjectLockVerifiedAt != nil})
 }
 
 // applyHosted validates a hosted target and fills in its storage fields. It
 // writes the error response and reports false when the input is rejected.
-func (s *Server) applyHosted(w http.ResponseWriter, in *targetInput, t *store.Target) bool {
+func (s *Server) applyHosted(ctx context.Context, w http.ResponseWriter, in *targetInput, t *store.Target) bool {
 	switch in.StorageMode {
-	case "cloud":
-		// Task 11 builds the cloud-direct gateway backend. Stubbed so M1
-		// cannot half-ship M2: no target is created.
-		writeErr(w, http.StatusNotImplemented, "cloud-direct storage lands in a later release")
-		return false
 	case "disk":
+		return s.applyHostedDisk(ctx, w, in, t)
+	case "cloud":
+		return s.applyHostedCloud(ctx, w, in, t)
 	default:
 		writeErr(w, http.StatusBadRequest, "storage_mode must be disk or cloud for hosted targets")
 		return false
 	}
+}
+
+// applyHostedDisk validates the on-disk root and the optional offsite mirror.
+func (s *Server) applyHostedDisk(ctx context.Context, w http.ResponseWriter, in *targetInput, t *store.Target) bool {
 	if t.Path == "" {
 		t.Path = defaultHostedRoot
 	}
@@ -139,12 +179,24 @@ func (s *Server) applyHosted(w http.ResponseWriter, in *targetInput, t *store.Ta
 	if in.MirrorKind == "" {
 		return true
 	}
-	if in.MirrorKind != "b2" {
-		writeErr(w, http.StatusBadRequest, "mirror_kind must be b2")
+	if in.MirrorKind != "b2" && in.MirrorKind != "s3" {
+		writeErr(w, http.StatusBadRequest, "mirror_kind must be b2 or s3")
 		return false
 	}
-	if in.MirrorBucket == "" || in.MirrorKeyID == "" || in.MirrorKey == "" {
-		writeErr(w, http.StatusBadRequest, "mirror_bucket, mirror_key_id and mirror_key are required for a b2 mirror")
+	if in.MirrorBucket == "" || in.MirrorRegion == "" || in.MirrorKeyID == "" || in.MirrorKey == "" {
+		writeErr(w, http.StatusBadRequest, "mirror_bucket, mirror_region, mirror_key_id and mirror_key are required for a mirror")
+		return false
+	}
+	// The mirror is written through the S3 path whatever its kind, because
+	// B2's native API has no conditional write (spec §14 note 00); the native
+	// API is used only to read the bucket's Object Lock flag.
+	endpoint, err := s3Endpoint(in.MirrorKind, in.MirrorRegion)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return false
+	}
+	if err := s.verifyBucket(ctx, in.MirrorKind, in.MirrorBucket, in.MirrorRegion, endpoint, in.MirrorKeyID, in.MirrorKey); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
 		return false
 	}
 	sealed, err := s.sealCreds(targetCreds{KeyID: in.MirrorKeyID, Key: in.MirrorKey})
@@ -152,10 +204,166 @@ func (s *Server) applyHosted(w http.ResponseWriter, in *targetInput, t *store.Ta
 		adminFailed(w, "seal mirror credentials", err)
 		return false
 	}
-	// Task 12 verifies the mirror bucket's Object Lock and stamps
-	// mirror_lock_verified_at; Task 13 uploads to it.
+	now := s.now()
 	t.MirrorKind, t.MirrorBucket, t.MirrorRegion, t.SealedMirrorKey = in.MirrorKind, in.MirrorBucket, in.MirrorRegion, sealed
+	t.MirrorLockVerifiedAt = &now
 	return true
+}
+
+// applyHostedCloud validates a cloud-direct target: Fleet writes every device's
+// blobs straight through to the customer's own bucket with the fleet's admin
+// key, so the bucket must be proven append-only before a device can be told to
+// trust it.
+//
+// The provider is B2 unless the admin names an endpoint. B2 is the one whose
+// S3 host is derivable from the region, and the one whose Object Lock flag
+// lives on a different API (§14.5); anything else is plain S3-compatible and
+// has to be spelled out.
+func (s *Server) applyHostedCloud(ctx context.Context, w http.ResponseWriter, in *targetInput, t *store.Target) bool {
+	if in.Bucket == "" || in.Region == "" || in.KeyID == "" || in.Key == "" {
+		writeErr(w, http.StatusBadRequest, "bucket, region, key_id and key are required for cloud-direct hosted targets")
+		return false
+	}
+	if in.MirrorKind != "" {
+		writeErr(w, http.StatusBadRequest, "a cloud-direct target is already offsite; a mirror is only for storage_mode disk")
+		return false
+	}
+
+	kind, endpoint := "s3", in.Endpoint
+	if endpoint == "" {
+		e, err := s3Endpoint("b2", in.Region)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return false
+		}
+		kind, endpoint = "b2", e
+	} else if err := checkEndpoint(endpoint); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return false
+	}
+
+	if err := s.verifyBucket(ctx, kind, in.Bucket, in.Region, endpoint, in.KeyID, in.Key); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return false
+	}
+
+	sealed, err := s.sealCreds(targetCreds{KeyID: in.KeyID, Key: in.Key})
+	if err != nil {
+		adminFailed(w, "seal target credentials", err)
+		return false
+	}
+
+	now := s.now()
+	t.SealedAdminKey = sealed
+	t.StorageMode, t.Endpoint, t.Path = "cloud", endpoint, ""
+	t.ObjectLockVerifiedAt = &now
+	return true
+}
+
+// verifyBucket proves a bucket can hold append-only backups before a target is
+// created on it: Object Lock is enabled, and the provider actually enforces the
+// conditional write the gateway relies on. A rejection names the bucket and the
+// property it is missing, because the fix is in the provider's console and the
+// admin has to know which of the two to go and turn on.
+//
+// The probes run under fleetPrefix - the prefix the target will really write
+// under - so a prefix-scoped key that cannot write there fails here rather than
+// on the first device's first snapshot.
+func (s *Server) verifyBucket(ctx context.Context, kind, bucket, region, endpoint, keyID, key string) error {
+	ci := s3ConnInfo(bucket, region, endpoint, keyID, key)
+
+	if kind == "b2" {
+		if s.b2 == nil {
+			return fmt.Errorf("bucket %q: the B2 API is not configured, so Object Lock cannot be verified", bucket)
+		}
+		// §14.5: B2 reports the lock flag on b2_list_buckets'
+		// fileLockConfiguration, which is a different API from S3's
+		// GetObjectLockConfiguration.
+		info, err := s.b2.BucketInfo(ctx, keyID, key, bucket)
+		if err != nil {
+			return fmt.Errorf("b2: %w", err)
+		}
+		if !info.ObjectLockEnabled {
+			return fmt.Errorf("bucket %q does not have Object Lock enabled", bucket)
+		}
+	} else if err := s.cloud.ObjectLock(ctx, ci); err != nil {
+		if errors.Is(err, gateway.ErrNoObjectLock) {
+			return fmt.Errorf("bucket %q does not have Object Lock enabled", bucket)
+		}
+		return fmt.Errorf("bucket %q: %w", bucket, err)
+	}
+
+	if err := s.cloud.ConditionalPut(ctx, ci, fleetPrefix); err != nil {
+		if errors.Is(err, gateway.ErrNoConditionalPut) {
+			return fmt.Errorf("bucket %q does not enforce conditional writes, so it cannot be append-only; use Fleet disk storage with a mirror instead", bucket)
+		}
+		return fmt.Errorf("bucket %q: %w", bucket, err)
+	}
+
+	return nil
+}
+
+// s3Endpoint derives the S3-compatible host for a provider whose endpoint the
+// admin did not spell out.
+func s3Endpoint(kind, region string) (string, error) {
+	if !regionRE.MatchString(region) {
+		return "", fmt.Errorf("region %q is not a valid region name", region)
+	}
+	switch kind {
+	case "b2":
+		return "s3." + region + ".backblazeb2.com", nil
+	case "s3":
+		return "s3." + region + ".amazonaws.com", nil
+	default:
+		return "", fmt.Errorf("no endpoint is known for %q; give one explicitly", kind)
+	}
+}
+
+// checkEndpoint holds an admin-supplied endpoint to a bare host[:port]. minio
+// refuses a scheme or a path anyway, but it does so from inside the first
+// probe, where the message reads like a connection failure rather than a typo -
+// and "https://s3.example.com" is the typo everyone makes.
+//
+// A private or loopback address is deliberately *allowed*: a self-hosted MinIO
+// on the LAN is a supported cloud-direct target, so an SSRF-style blocklist
+// here would refuse a legitimate bucket. The endpoint is admin-only input, and
+// it is stored only after the bucket has proven itself.
+func checkEndpoint(e string) error {
+	if strings.Contains(e, "://") {
+		return fmt.Errorf("endpoint %q must be a bare host, without a scheme", e)
+	}
+	if strings.ContainsAny(e, "/ \\\t") || e != strings.TrimSpace(e) {
+		return fmt.Errorf("endpoint %q must be a bare host[:port], without a path", e)
+	}
+
+	return nil
+}
+
+// s3ConnInfo is the connection info Fleet uses for a bucket it writes to
+// itself, with its own admin key. Nothing here ever reaches a device.
+func s3ConnInfo(bucket, region, endpoint, keyID, key string) blob.ConnectionInfo {
+	return blob.ConnectionInfo{Type: "s3", Config: &s3.Options{
+		BucketName:      bucket,
+		Region:          region,
+		Endpoint:        endpoint,
+		AccessKeyID:     keyID,
+		SecretAccessKey: key,
+	}}
+}
+
+// cloudStoreFor opens the write-through backend for a cloud-direct target. It
+// is what the gateway's per-target store cache calls for storage_mode "cloud",
+// the way NewLocal is called for "disk".
+func (s *Server) cloudStoreFor(ctx context.Context, t *store.Target) (gateway.ObjectStore, error) {
+	keyID, key, err := s.targetCreds(ctx, t)
+	if err != nil {
+		return nil, fmt.Errorf("unsealing the credentials of target %q: %w", t.Name, err)
+	}
+	if keyID == "" || key == "" {
+		return nil, fmt.Errorf("cloud-direct target %q has no stored credentials", t.Name)
+	}
+
+	return gateway.NewCloud(ctx, s3ConnInfo(t.Bucket, t.Region, t.Endpoint, keyID, key), fleetPrefix)
 }
 
 // checkHostedRoot proves the hosted root exists and is writable *now*, by the

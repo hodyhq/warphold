@@ -18,6 +18,7 @@ var addedColumns = []struct{ table, column, decl string }{
 	{"targets", "mirror_region", "TEXT NOT NULL DEFAULT ''"},
 	{"targets", "sealed_mirror_key", "BLOB"},
 	{"targets", "mirror_lock_verified_at", "TEXT"},
+	{"targets", "endpoint", "TEXT NOT NULL DEFAULT ''"},
 	{"agents", "retired_at", "TEXT"},
 }
 

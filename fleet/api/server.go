@@ -64,6 +64,7 @@ type Server struct {
 	// SetNowForTesting can move it between requests without racing handlers.
 	nowFn func() time.Time
 	b2    b2api.API
+	cloud cloudAPI
 	// closed is set by Close instead of nilling st: handlers read st through
 	// store() and would otherwise have to re-check for nil between every
 	// call. A closed *sql.DB returns "database is closed" from each query,
@@ -85,7 +86,7 @@ type Server struct {
 
 // New creates a Server for stateDir; if Fleet was activated before, its state is loaded.
 func New(stateDir string) *Server {
-	s := &Server{paths: fleet.PathsFor(stateDir), login: newLimiter(loginMaxAttempts, loginWindow), nowFn: time.Now, b2: b2api.New(nil)}
+	s := &Server{paths: fleet.PathsFor(stateDir), login: newLimiter(loginMaxAttempts, loginWindow), nowFn: time.Now, b2: b2api.New(nil), cloud: gatewayCloud{}}
 	// A missing key file just means "never activated"; anything else (bad
 	// permissions, a corrupt DB) must be loud, because the server would
 	// otherwise report "not activated" and print the setup-token path while
@@ -499,6 +500,10 @@ func (s *Server) SetupTokenPathForTesting() string {
 
 // SetB2ForTesting swaps the B2 client.
 func (s *Server) SetB2ForTesting(b b2api.API) { s.b2 = b }
+
+// SetCloudForTesting swaps the S3-compatible bucket verifier, so a test never
+// reaches a real provider.
+func (s *Server) SetCloudForTesting(c cloudAPI) { s.cloud = c }
 
 // AdminsForTesting exposes the admin list for tests.
 func (s *Server) AdminsForTesting(ctx context.Context) ([]store.Admin, error) {
