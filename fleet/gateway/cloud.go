@@ -60,6 +60,33 @@ type cloud struct {
 	// prefix is the fleet's root prefix inside the bucket, including whatever
 	// prefix the connection info itself carried: "" or slash-terminated.
 	prefix string
+
+	// opt is the s3 options this store was built from, kept so the Fleet can
+	// name one device's repository as a plain Kopia S3 connection.
+	opt s3.Options
+}
+
+// RepositoryConnection returns the connection info for one device's repository
+// inside a cloud-direct target: Kopia's own S3 provider, with the fleet's admin
+// credentials, addressing exactly the flat keys this store serves. It exists so
+// provisioning can create -- and reopen -- a repository through a normal Kopia
+// storage rather than an adapter the config file cannot name.
+//
+// It carries the admin credentials, so it belongs in a scratch config the
+// provisioner deletes, never anywhere a device can see. That is the same
+// handling the b2 target's admin connection already gets.
+//
+// The second result is false for any other backend.
+func RepositoryConnection(objs ObjectStore, devicePrefix string) (blob.ConnectionInfo, bool) {
+	c, ok := objs.(*cloud)
+	if !ok {
+		return blob.ConnectionInfo{}, false
+	}
+
+	o := c.opt
+	o.Prefix = c.prefix + devicePrefix
+
+	return blob.ConnectionInfo{Type: "s3", Config: &o}, true
 }
 
 // NewCloud returns an ObjectStore writing through to an S3-compatible bucket
@@ -90,7 +117,7 @@ func NewCloud(ctx context.Context, ci blob.ConnectionInfo, prefix string) (Objec
 		return nil, err
 	}
 
-	return &cloud{cli: cli, tr: tr, bucket: opt.BucketName, prefix: root}, nil
+	return &cloud{cli: cli, tr: tr, bucket: opt.BucketName, prefix: root, opt: *opt}, nil
 }
 
 // fleetRoot joins the connection's own prefix to the fleet's and validates the

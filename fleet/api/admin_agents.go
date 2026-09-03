@@ -182,7 +182,7 @@ func (s *Server) handleAgentRevoke(w http.ResponseWriter, r *http.Request) {
 		log.Printf("warphold fleet: revoke %s: b2 key cleanup skipped (%s)", a.ID, errCategory(err))
 	} else if b, err := s.bundleFor(ctx, a); err != nil {
 		log.Printf("warphold fleet: revoke %s: b2 key cleanup skipped (%s)", a.ID, errCategory(err))
-	} else if err := s.provisioner(ctx).Revoke(ctx, spec, b); err != nil {
+	} else if err := s.provisioner(ctx, t).Revoke(ctx, spec, b); err != nil {
 		log.Printf("warphold fleet: revoke %s: b2 key cleanup skipped (%s)", a.ID, errCategory(err))
 	}
 	// The gateway key is disabled unconditionally, outside the best-effort
