@@ -33,6 +33,25 @@ signed checksums. `tools/sign.sh` is upstream Kopia's script (hardcodes the
 "Kopia Builder" gpg key name) and is left untouched; `tools/warphold-sign.sh`
 is the WarpHold-specific replacement wired into `.goreleaser.yml`.
 
+### Verifying a signed release
+
+Signed `checksums.txt` / RPM signatures are produced by the **WarpHold
+Release Signing** key, ed25519, fingerprint
+`A6F90B08A0E92752852813E7323C001969AA4FB3`, expires 2028-09-02. The public
+key is checked in at
+[`docs/warphold-release-signing.asc`](warphold-release-signing.asc); import
+it and verify with:
+
+```bash
+gpg --import docs/warphold-release-signing.asc
+gpg --verify checksums.txt.sig checksums.txt
+```
+
+The private key + passphrase live in 1Password (vault `hody`, item
+"WarpHold Release Signing Key") and as the `WARPHOLD_SIGNING_KEY` /
+`WARPHOLD_SIGNING_PASSPHRASE` repo secrets on `hodyhq/warphold` — never
+committed.
+
 ## Install paths
 
 Tarball installers (`scripts/install/fleet.sh`, `scripts/install/app.sh`)
