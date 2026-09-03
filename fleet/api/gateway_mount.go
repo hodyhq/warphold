@@ -65,10 +65,20 @@ func (s *Server) gateway() *gateway.Gateway {
 
 	s.gwDeps.st = st
 	s.gwDeps.stores = map[int64]gateway.ObjectStore{}
+	// The limits and the trusted-proxy list are a snapshot: the Gateway is
+	// rebuilt when the store behind it changes, so a settings change applies
+	// at restart. That is the same lifetime a reverse proxy's own config has.
+	ctx := context.Background()
+
 	s.gwDeps.gw = gateway.NewGateway(gateway.Config{
-		Keys:     gateway.NewKeys(st, s.sealKey()),
-		StoreFor: s.storeForAgent,
-		Now:      s.now,
+		Keys:            gateway.NewKeys(st, s.sealKey()),
+		StoreFor:        s.storeForAgent,
+		Now:             s.now,
+		TrustedProxies:  s.trustedProxies(ctx),
+		IPRatePerSecond: s.rateSetting(ctx, gatewayIPRateSetting),
+		IPRateBurst:     s.rateSetting(ctx, gatewayIPBurstSetting),
+		RatePerSecond:   s.rateSetting(ctx, gatewayDeviceRateSetting),
+		RateBurst:       s.rateSetting(ctx, gatewayDeviceBurstSetting),
 	})
 
 	return s.gwDeps.gw

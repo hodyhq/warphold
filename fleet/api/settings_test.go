@@ -1,6 +1,8 @@
 package api_test
 
 import (
+	"maps"
+	"slices"
 	"strings"
 	"testing"
 
@@ -76,6 +78,9 @@ func TestSettingsRejectsUnknownKeysAndBadValues(t *testing.T) {
 
 	resp, body := h.do("GET", "/api/v1/fleet/settings", nil)
 	require.Equal(t, 200, resp.StatusCode)
-	require.Len(t, body, 3, "only the whitelisted keys are exposed")
+	require.ElementsMatch(t,
+		[]string{"fleet_name", "poll_interval", "public_url", "trusted_proxies",
+			"gateway_ip_rate", "gateway_ip_burst", "gateway_device_rate", "gateway_device_burst"},
+		slices.Collect(maps.Keys(body)), "only the whitelisted keys are exposed")
 	require.NotContains(t, body, "seal_salt")
 }

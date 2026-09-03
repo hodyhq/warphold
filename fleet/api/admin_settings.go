@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/kopia/kopia/fleet/gateway"
 )
 
 // pollIntervalSetting is how often an agent checks in, in seconds; it is read
@@ -29,6 +31,13 @@ type settingsOut struct {
 	FleetName    string `json:"fleet_name"`
 	PollInterval int    `json:"poll_interval"`
 	PublicURL    string `json:"public_url"`
+
+	TrustedProxies string `json:"trusted_proxies"`
+
+	GatewayIPRate      int `json:"gateway_ip_rate"`
+	GatewayIPBurst     int `json:"gateway_ip_burst"`
+	GatewayDeviceRate  int `json:"gateway_device_rate"`
+	GatewayDeviceBurst int `json:"gateway_device_burst"`
 }
 
 func (s *Server) currentSettings(ctx context.Context) (settingsOut, error) {
@@ -40,7 +49,21 @@ func (s *Server) currentSettings(ctx context.Context) (settingsOut, error) {
 	if err != nil {
 		return settingsOut{}, err
 	}
-	return settingsOut{FleetName: name, PollInterval: s.pollInterval(ctx), PublicURL: pub}, nil
+	proxies, err := s.store().Setting(ctx, trustedProxiesSetting)
+	if err != nil {
+		return settingsOut{}, err
+	}
+
+	return settingsOut{
+		FleetName:          name,
+		PollInterval:       s.pollInterval(ctx),
+		PublicURL:          pub,
+		TrustedProxies:     proxies,
+		GatewayIPRate:      int(s.rateSetting(ctx, gatewayIPRateSetting)),
+		GatewayIPBurst:     int(s.rateSetting(ctx, gatewayIPBurstSetting)),
+		GatewayDeviceRate:  int(s.rateSetting(ctx, gatewayDeviceRateSetting)),
+		GatewayDeviceBurst: int(s.rateSetting(ctx, gatewayDeviceBurstSetting)),
+	}, nil
 }
 
 func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
@@ -120,14 +143,55 @@ func (s *Server) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			writes[key] = strconv.Itoa(secs)
+		case trustedProxiesSetting:
+			var list string
+			if err := json.Unmarshal(raw, &list); err != nil {
+				writeErr(w, http.StatusBadRequest, "trusted_proxies must be a string")
+				return
+			}
+
+			list = strings.TrimSpace(list)
+			if list != "" {
+				if _, err := gateway.ParseTrustedProxies(list); err != nil {
+					// The offending value is not echoed; the example says what
+					// the shape must be, which is what an admin needs.
+					writeErr(w, http.StatusBadRequest,
+						"trusted_proxies must be a comma-separated list of CIDRs or addresses, like \"10.0.0.0/8, 192.168.1.7\"")
+					return
+				}
+			}
+
+			writes[key] = list
 		default:
-			writeErr(w, http.StatusBadRequest, "unknown setting: "+key)
-			return
+			spec, isRate := rateSettings[key]
+			if !isRate {
+				writeErr(w, http.StatusBadRequest, "unknown setting: "+key)
+				return
+			}
+
+			var n int
+			if err := json.Unmarshal(raw, &n); err != nil {
+				writeErr(w, http.StatusBadRequest, key+" must be a whole number")
+				return
+			}
+
+			if n < spec.min || n > spec.max {
+				writeErr(w, http.StatusBadRequest, key+" must be between "+strconv.Itoa(spec.min)+" and "+strconv.Itoa(spec.max))
+				return
+			}
+
+			writes[key] = strconv.Itoa(n)
 		}
 	}
 	if err := s.store().SetSettings(r.Context(), writes); err != nil {
 		adminFailed(w, "write settings", err)
 		return
+	}
+
+	// The parsed trusted-proxy list is memoized; a write must take effect on
+	// the next request rather than at restart.
+	if _, ok := writes[trustedProxiesSetting]; ok {
+		s.invalidateTrustedProxies()
 	}
 	out, err := s.currentSettings(r.Context())
 	if err != nil {

@@ -10,9 +10,11 @@ import (
 	"hash"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -86,7 +88,11 @@ var knownQueryKeys = map[string]bool{
 	// Bucket sub-resources the gateway answers.
 	"location": true, "versioning": true,
 	// Out of scope, answered 501 by name so the message can say why.
-	"uploads": true, "uploadId": true, "delete": true, "retention": true,
+	"uploads": true, "uploadId": true, "partNumber": true, "delete": true, "retention": true,
+	// Versioned and point-in-time reads: no backend the gateway serves keeps
+	// versions (GetBucketVersioning is 501 too), so these are refused by name
+	// rather than ignored, which would silently answer with the live object.
+	"versionId": true, "versions": true, "metadata": true,
 }
 
 // ErrAccessDenied is what StoreFor returns when a credential resolves to
@@ -134,6 +140,12 @@ type Config struct {
 	// that runs ahead of signature verification; zero means 200/s, burst 800.
 	IPRatePerSecond, IPRateBurst float64
 
+	// TrustedProxies are the CIDRs whose X-Forwarded-For header the pre-auth
+	// limiter believes. Empty (the default) means the peer address is always
+	// used and the header is ignored entirely. It is a snapshot taken when the
+	// Gateway is built, so a change to the setting applies at restart.
+	TrustedProxies []net.IPNet
+
 	Now func() time.Time
 	Log func(LogEntry)
 }
@@ -149,6 +161,7 @@ type Gateway struct {
 	maxBytes int64
 	limit    *limiter
 	ipLimit  *limiter
+	trusted  []net.IPNet
 	now      func() time.Time
 	logf     func(LogEntry)
 }
@@ -163,6 +176,7 @@ func NewGateway(c Config) *Gateway {
 		maxBytes: c.MaxObjectBytes,
 		limit:    newLimiter(c.RatePerSecond, c.RateBurst),
 		ipLimit:  newIPLimiter(c.IPRatePerSecond, c.IPRateBurst),
+		trusted:  cloneNets(c.TrustedProxies),
 		now:      c.Now,
 		logf:     c.Log,
 	}
@@ -188,6 +202,22 @@ func NewGateway(c Config) *Gateway {
 	}
 
 	return g
+}
+
+// cloneNets deep-copies the trusted-proxy list, IP and Mask bytes included:
+// it is a trust boundary, and the Gateway must not share mutable state with
+// whoever built its Config.
+func cloneNets(nets []net.IPNet) []net.IPNet {
+	if len(nets) == 0 {
+		return nil
+	}
+
+	out := make([]net.IPNet, len(nets))
+	for i, n := range nets {
+		out[i] = net.IPNet{IP: slices.Clone(n.IP), Mask: slices.Clone(n.Mask)}
+	}
+
+	return out
 }
 
 func defaultLog(e LogEntry) {
@@ -264,7 +294,11 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request, e *LogEntry) {
 		// segments, the flat shape and the reserved temp directory -- rather
 		// than re-implementing any of it here.
 		if p != a+"/" || checkKey(p+"x") != nil {
-			log.Printf("warphold gateway: device key with malformed prefix, refusing: agent=%q key=%q", a, accessKeyID)
+			// The prefix itself is never logged, only its shape: it is
+			// attacker-influenced only through provisioning, but a log line is
+			// not the place to find out.
+			log.Printf("warphold gateway: device key with malformed prefix, refusing: agent=%q key=%q prefix_len=%d ends_in_slash=%t",
+				a, accessKeyID, len(p), strings.HasSuffix(p, "/"))
 			return "", false
 		}
 
@@ -275,7 +309,7 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request, e *LogEntry) {
 
 	// The pre-auth limiter runs before Verify, so an unauthenticated flood
 	// cannot buy four HMAC chains per request.
-	if !g.ipLimit.allow(clientIP(r), g.now()) {
+	if !g.ipLimit.allow(ClientIP(r, g.trusted), g.now()) {
 		writeSlowDown(w, r)
 		return
 	}
@@ -327,9 +361,20 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request, e *LogEntry) {
 		return
 	}
 
-	if query.Get("uploadId") != "" {
-		writeNotImplemented(w, r, "multipart upload is not supported")
-		return
+	for _, k := range []string{"uploadId", "partNumber"} {
+		// Key presence, not a non-empty value: "?uploadId=" would otherwise
+		// slip past and be served as a plain object request.
+		if _, ok := query[k]; ok {
+			writeNotImplemented(w, r, "multipart upload is not supported")
+			return
+		}
+	}
+
+	for _, k := range []string{"versionId", "versions", "metadata"} {
+		if _, ok := query[k]; ok {
+			writeNotImplemented(w, r, "object versions are not supported by hosted targets")
+			return
+		}
 	}
 
 	if r.Header.Get("X-Amz-Copy-Source") != "" {
@@ -764,14 +809,22 @@ func blobName2Class(key string) string {
 	return keyClass(name)
 }
 
-// keyClass names the Kopia blob class of a key for the request log, so a log
-// line says "s" or "xn" rather than a content hash.
+// keyClass names the Kopia blob class of a key for the request log. It never
+// returns any part of a blob name: the classes are a closed set, so a log line
+// says "s" or "xn" or "kopia-meta" and a content hash can never reach an
+// operator's log through it.
 func keyClass(blobName string) string {
 	switch {
 	case blobName == "":
 		return ""
-	case strings.HasPrefix(blobName, "kopia."), strings.HasPrefix(blobName, "."):
-		return blobName
+	case strings.HasPrefix(blobName, "kopia."):
+		// kopia.repository, kopia.blobcfg, kopia.maintenance and the format
+		// backups: all repository metadata, none of it worth distinguishing in
+		// a log line.
+		return "kopia-meta"
+	case blobName[0] == '.':
+		// .storageconfig and anything else dot-prefixed.
+		return "dot"
 	case strings.HasPrefix(blobName, "_log_"):
 		return "_log_"
 	case blobName[0] == 'x' && len(blobName) > 1:

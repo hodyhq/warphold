@@ -53,3 +53,42 @@ func TestGatewayIsHostValidatedAndMounted(t *testing.T) {
 
 	require.Equal(t, http.StatusMisdirectedRequest, res.StatusCode)
 }
+
+// The gateway's limits and its trusted-proxy list are operator settings, not
+// constants: they round-trip through the settings API and are range-checked.
+func TestGatewayLimitSettings(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+
+	_, body := h.do("GET", "/api/v1/fleet/settings", nil)
+	require.EqualValues(t, gateway.DefaultIPRatePerSecond, body["gateway_ip_rate"])
+	require.EqualValues(t, gateway.DefaultIPRateBurst, body["gateway_ip_burst"])
+	require.EqualValues(t, gateway.DefaultRatePerSecond, body["gateway_device_rate"])
+	require.EqualValues(t, gateway.DefaultRateBurst, body["gateway_device_burst"])
+	require.Equal(t, "", body["trusted_proxies"])
+
+	_, body = h.do("PUT", "/api/v1/fleet/settings", map[string]any{
+		"trusted_proxies":     "10.0.0.0/8, 192.168.1.7",
+		"gateway_ip_rate":     500,
+		"gateway_device_rate": 25,
+	})
+	require.Equal(t, "10.0.0.0/8, 192.168.1.7", body["trusted_proxies"])
+	require.EqualValues(t, 500, body["gateway_ip_rate"])
+	require.EqualValues(t, 25, body["gateway_device_rate"])
+
+	for _, bad := range []map[string]any{
+		{"trusted_proxies": "10.0.0.0/8, nonsense"},
+		{"trusted_proxies": 7},
+		{"gateway_ip_rate": 0},
+		{"gateway_device_burst": 99_999_999},
+		{"gateway_device_rate": "fast"},
+	} {
+		resp, _ := h.do("PUT", "/api/v1/fleet/settings", bad)
+		require.Equal(t, http.StatusBadRequest, resp.StatusCode, "%v", bad)
+	}
+
+	// The rejected values did not land.
+	_, body = h.do("GET", "/api/v1/fleet/settings", nil)
+	require.Equal(t, "10.0.0.0/8, 192.168.1.7", body["trusted_proxies"])
+	require.EqualValues(t, 500, body["gateway_ip_rate"])
+}

@@ -9,6 +9,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1024,4 +1025,155 @@ func TestGatewayZeroLengthRangeIsAPlain200(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	require.Empty(t, resp.Header.Get("Content-Range"))
 	require.Equal(t, "0", resp.Header.Get("Content-Length"))
+}
+
+// --- fix round 2: X-Forwarded-For is believed only from a trusted CIDR ------
+
+func TestClientIPTrustsForwardedOnlyFromATrustedProxy(t *testing.T) {
+	trusted, err := gateway.ParseTrustedProxies("127.0.0.0/8, 10.0.0.0/8")
+	require.NoError(t, err)
+
+	for _, tc := range []struct{ name, peer, xff, want string }{
+		{"no trusted list", "127.0.0.1:9", "203.0.113.9", ""},
+		{"untrusted peer cannot forge", "198.51.100.4:9", "203.0.113.9", "198.51.100.4"},
+		{"trusted peer, one hop", "127.0.0.1:9", "203.0.113.9", "203.0.113.9"},
+		{"last untrusted hop wins", "127.0.0.1:9", "203.0.113.9, 10.1.2.3, 127.0.0.5", "203.0.113.9"},
+		{"a client-prepended hop is ignored", "10.0.0.1:9", "1.2.3.4, 203.0.113.9", "203.0.113.9"},
+		{"malformed chain fails closed", "127.0.0.1:9", "not-an-ip", "127.0.0.1"},
+		{"empty header fails closed", "127.0.0.1:9", "", "127.0.0.1"},
+		{"chain trusted end to end", "127.0.0.1:9", "10.1.1.1, 127.0.0.2", "127.0.0.1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			r.RemoteAddr = tc.peer
+
+			if tc.xff != "" {
+				r.Header.Set("X-Forwarded-For", tc.xff)
+			}
+
+			list := trusted
+			want := tc.want
+
+			if tc.name == "no trusted list" {
+				list, want = nil, "127.0.0.1"
+			}
+
+			require.Equal(t, want, gateway.ClientIP(r, list))
+		})
+	}
+}
+
+func TestParseTrustedProxiesIsAllOrNothing(t *testing.T) {
+	nets, err := gateway.ParseTrustedProxies("10.0.0.0/8, 192.168.1.7, ::1/128")
+	require.NoError(t, err)
+	require.Len(t, nets, 3)
+	require.True(t, nets[1].Contains(net.ParseIP("192.168.1.7")))
+	require.False(t, nets[1].Contains(net.ParseIP("192.168.1.8")), "a bare address is a single host")
+
+	for _, bad := range []string{"10.0.0.0/8, garbage", "not-an-ip", "10.0.0.0/99"} {
+		_, err := gateway.ParseTrustedProxies(bad)
+		require.Error(t, err, "%q", bad)
+	}
+
+	empty, err := gateway.ParseTrustedProxies("  ,, ")
+	require.NoError(t, err)
+	require.Empty(t, empty)
+}
+
+// --- fix round 2: the pre-auth limiter runs before the decoy HMAC ----------
+
+// A flood of well-formed but wrongly-signed requests must be refused by the
+// pre-auth bucket, not by the signature check: reaching the signature check
+// means paying for a key lookup and four HMAC chains per request, which is
+// exactly the work the limiter exists to deny an unauthenticated caller.
+func TestGatewayRateLimitPrecedesTheSignatureWork(t *testing.T) {
+	frozen := clock.Now()
+	f := newFixture(t, fixtureOpts{now: func() time.Time { return frozen }, ipRatePerSecond: 1, ipRateBurst: 5})
+
+	var throttled, reachedSignature int
+
+	for range 40 {
+		// A complete, well-formed Authorization header signed with the wrong
+		// secret: everything short of a valid signature.
+		resp := f.do(t, call{
+			akid: akidA, secret: "not-the-secret", method: http.MethodGet,
+			path: objectPath(devA + "/" + packKey),
+		})
+
+		switch resp.StatusCode {
+		case http.StatusServiceUnavailable:
+			throttled++
+		case http.StatusForbidden:
+			// SignatureDoesNotMatch is only reachable after the key lookup and
+			// the four HMAC chains, so counting it counts the requests that
+			// bought that work.
+			require.Equal(t, "SignatureDoesNotMatch", errorCode(t, resp))
+
+			reachedSignature++
+		default:
+			t.Fatalf("unexpected status %d", resp.StatusCode)
+		}
+	}
+
+	require.Equal(t, 35, throttled)
+	require.Equal(t, 5, reachedSignature, "only the 5 requests inside the burst may reach the key lookup and its HMACs")
+}
+
+func TestGatewayRefusesEmptyValuedSubresources(t *testing.T) {
+	f := newFixture(t, fixtureOpts{})
+	f.mustPut(t, devA+"/"+packKey, []byte("payload"))
+
+	// "?uploadId=" carries no value but is still a multipart request; a
+	// value-based check would serve it as a plain GET.
+	for _, q := range []url.Values{
+		{"uploadId": {""}}, {"partNumber": {""}}, {"versionId": {""}}, {"versions": {""}}, {"metadata": {""}},
+	} {
+		resp := f.do(t, call{
+			akid: akidA, secret: testSecret, method: http.MethodGet,
+			path: objectPath(devA + "/" + packKey), query: q,
+		})
+		require.Equal(t, http.StatusNotImplemented, resp.StatusCode, "query %v", q)
+		require.Equal(t, "NotImplemented", errorCode(t, resp))
+	}
+}
+
+// The trusted-proxy list is a trust boundary, so the Gateway must not alias
+// the caller's slice. The test is differential: it mutates the caller's copy
+// after construction and asserts the gateway still honours X-Forwarded-For,
+// which it only does while it still trusts the loopback peer.
+func TestGatewayCopiesTheTrustedProxyList(t *testing.T) {
+	nets, err := gateway.ParseTrustedProxies("127.0.0.0/8")
+	require.NoError(t, err)
+
+	frozen := clock.Now()
+	g := gateway.NewGateway(gateway.Config{
+		StoreFor:        func(context.Context, string) (gateway.ObjectStore, error) { return nil, nil },
+		Now:             func() time.Time { return frozen },
+		TrustedProxies:  nets,
+		IPRatePerSecond: 1,
+		IPRateBurst:     1,
+		Log:             func(gateway.LogEntry) {},
+	})
+
+	// Narrow the caller's copy so it no longer contains the loopback peer. An
+	// aliasing gateway would stop trusting the header from here on.
+	nets[0] = net.IPNet{IP: net.IPv4(10, 0, 0, 0), Mask: net.CIDRMask(8, 32)}
+
+	srv := httptest.NewServer(g.Handler())
+	defer srv.Close()
+
+	// Burst is 1, so two requests share a bucket only if they resolve to the
+	// same client. Distinct forwarded clients must each get their own.
+	for _, xff := range []string{"203.0.113.9", "203.0.113.10"} {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+objectPath(devA+"/x"), nil)
+		require.NoError(t, err)
+		req.Header.Set("X-Forwarded-For", xff)
+
+		resp, err := srv.Client().Do(req)
+		require.NoError(t, err)
+		resp.Body.Close() //nolint:errcheck // test cleanup
+
+		require.Equal(t, http.StatusForbidden, resp.StatusCode,
+			"forwarded client %s must have its own bucket; a shared one means the list was aliased", xff)
+	}
 }

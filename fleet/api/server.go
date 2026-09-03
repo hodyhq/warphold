@@ -85,6 +85,12 @@ type Server struct {
 	// gwDeps carries the device-facing S3 gateway, built on first use because
 	// it needs the store and sealing key that activation creates.
 	gwDeps gatewayDeps
+
+	// tp* memoize the parsed trusted_proxies setting; the login limiter reads
+	// it per attempt and must not turn a flood into database reads.
+	tpMu     sync.Mutex
+	tpNets   []net.IPNet
+	tpLoaded bool
 }
 
 // New creates a Server for stateDir; if Fleet was activated before, its state is loaded.
@@ -147,6 +153,7 @@ func (s *Server) load() error {
 	if err != nil {
 		return err
 	}
+	s.invalidateTrustedProxies()
 	s.mu.Lock()
 	s.key, s.st, s.closed = key, st, false
 	s.mu.Unlock()
@@ -405,17 +412,6 @@ func (s *Server) handleActivate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"admin_id": a.ID})
 }
 
-// clientIP is the peer address as seen by this process; behind a reverse
-// proxy every request shares one bucket in the login limiter. Trusted-proxy
-// handling (X-Forwarded-For with a configured trust list) is Plan 2.
-func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
-}
-
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if !s.Activated() {
 		writeErr(w, http.StatusConflict, "fleet is not activated")
@@ -435,7 +431,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if !s.login.allow(clientIP(r)) {
+	if !s.login.allow(s.clientIP(r)) {
 		writeErr(w, http.StatusTooManyRequests, "too many attempts, wait a minute")
 		return
 	}
