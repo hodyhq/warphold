@@ -89,6 +89,16 @@ type Server struct {
 	// csrfWarnOnce keeps the "public_url is unset, origin check disabled"
 	// warning to one line per server rather than one per request.
 	csrfWarnOnce sync.Once
+	// setupMu serializes the settings that setup writes lazily (the Fleet
+	// host's own repository password and path), so two concurrent callers
+	// cannot each generate one.
+	setupMu sync.Mutex
+
+	// onActivated runs once, after reloadIfActivated picks up state another
+	// process wrote. reloadErrLogged keeps a load that keeps failing to one
+	// log line instead of one per request. Both are written under activateMu.
+	onActivated     []func()
+	reloadErrLogged bool
 
 	// setupTokenPath and setupToken gate POST /activate before the Fleet is
 	// activated (see handleActivate); both are cleared once activation succeeds.
@@ -261,8 +271,11 @@ func (s *Server) sealKey() seal.Key {
 	return s.key
 }
 
-// Activate creates the DB, seals with a key derived from passphrase, and creates the first admin.
-func (s *Server) Activate(ctx context.Context, passphrase, email, password string) error {
+// Activate creates the DB, seals with a key derived from passphrase, creates
+// the first admin and, when publicURL is not empty, stores it. publicURL is
+// written inside the same activation flow as the admin and the salt - not
+// after it - so activation cannot half-succeed with the public URL missing.
+func (s *Server) Activate(ctx context.Context, passphrase, email, password, publicURL string) error {
 	s.activateMu.Lock()
 	defer s.activateMu.Unlock()
 
@@ -281,11 +294,20 @@ func (s *Server) Activate(ctx context.Context, passphrase, email, password strin
 	if len(passphrase) < 8 || len(password) < 8 || !strings.Contains(email, "@") {
 		return ErrInvalidActivation
 	}
+	// Checked before the first write: activation happens once, and a rejected
+	// URL must cost nothing.
+	if publicURL != "" {
+		u, err := parsePublicURL(publicURL)
+		if err != nil {
+			return err
+		}
+		publicURL = u.String()
+	}
 	salt, err := seal.NewSalt()
 	if err != nil {
 		return err
 	}
-	if err := s.writeActivation(ctx, salt, passphrase, email, password); err != nil {
+	if err := s.writeActivation(ctx, salt, passphrase, email, password, publicURL); err != nil {
 		// Activation is not atomic, so a partial run must not leave a seal.key
 		// or a half-built DB behind: the guard above keys on exactly those two
 		// files and would reject every retry with "state exists but could not
@@ -300,7 +322,7 @@ func (s *Server) Activate(ctx context.Context, passphrase, email, password strin
 // writeActivation performs the write half of Activate: the DB, the first
 // admin and the settings first, then - last - the seal.key that Activate's
 // overwrite guard keys on, then loads the result.
-func (s *Server) writeActivation(ctx context.Context, salt []byte, passphrase, email, password string) error {
+func (s *Server) writeActivation(ctx context.Context, salt []byte, passphrase, email, password, publicURL string) error {
 	st, err := store.Open(s.paths.DB)
 	if err != nil {
 		return err
@@ -320,7 +342,19 @@ func (s *Server) writeActivation(ctx context.Context, salt []byte, passphrase, e
 	if _, err := st.CreateAdmin(ctx, email, pwHash, s.now()); err != nil {
 		return err
 	}
-	if err := st.SetSetting(ctx, "seal_salt", hex.EncodeToString(salt)); err != nil {
+	settings := map[string]string{"seal_salt": hex.EncodeToString(salt)}
+	// instance_id is generated here rather than lazily on the first status
+	// probe, so `fleet activate --verify-public-url` has something to compare
+	// against the moment activation returns.
+	id, err := randomHex(instanceIDBytes)
+	if err != nil {
+		return err
+	}
+	settings[instanceIDSetting] = id
+	if publicURL != "" {
+		settings[publicURLSetting] = publicURL
+	}
+	if err := st.SetSettings(ctx, settings); err != nil {
 		return err
 	}
 	if err := st.Close(); err != nil {
@@ -340,6 +374,78 @@ func (s *Server) removePartialState() {
 	for _, p := range []string{s.paths.KeyFile, s.paths.DB, s.paths.DB + "-wal", s.paths.DB + "-shm"} {
 		_ = os.Remove(p)
 	}
+}
+
+// reloadIfActivated loads state that another process wrote. `warphold fleet
+// activate` is a separate process and the installer runs it against a service
+// that is already up; without this the server would answer "not activated"
+// - and hand out the setup token - until someone restarted it. It only ever
+// moves from "no state" to "state", never the other way, and never resurrects
+// a server that Close() shut down.
+func (s *Server) reloadIfActivated() {
+	for _, f := range s.reload() {
+		// Off the request goroutine and out from under activateMu: a callback
+		// opens a repository, which has no business blocking a status probe.
+		// A panicking callback must not take the server down with it.
+		go func(f func()) {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("warphold fleet: activation callback panicked: %v", r)
+				}
+			}()
+			f()
+		}(f)
+	}
+}
+
+// reload is reloadIfActivated's locked half; it returns the callbacks to run.
+func (s *Server) reload() []func() {
+	if s.Activated() {
+		return nil
+	}
+
+	s.activateMu.Lock()
+	defer s.activateMu.Unlock()
+
+	s.mu.RLock()
+	haveStore := s.st != nil
+	s.mu.RUnlock()
+
+	if haveStore {
+		// Closed, not unactivated.
+		return nil
+	}
+
+	if _, err := os.Stat(s.paths.KeyFile); err != nil {
+		return nil
+	}
+
+	if err := s.load(); err != nil {
+		if !s.reloadErrLogged {
+			s.reloadErrLogged = true
+			log.Printf("warphold fleet: state appeared in %s but cannot be loaded (further attempts stay quiet): %v", s.paths.StateDir, err)
+		}
+		return nil
+	}
+
+	s.clearSetupToken()
+	log.Printf("warphold fleet: activated by another process; loaded state from %s", s.paths.StateDir)
+
+	cbs := s.onActivated
+	s.onActivated = nil
+
+	return cbs
+}
+
+// OnActivated registers f to run once, when state written by another process
+// is picked up (see reloadIfActivated) - `warphold fleet activate` runs as a
+// separate process against a service that is already up. It does not fire for
+// state that was already there when the server started; the caller does that
+// work itself at start.
+func (s *Server) OnActivated(f func()) {
+	s.activateMu.Lock()
+	defer s.activateMu.Unlock()
+	s.onActivated = append(s.onActivated, f)
 }
 
 // clearSetupToken deletes the one-time setup token file once activation succeeds.
@@ -431,7 +537,7 @@ func (s *Server) handleActivate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.Activate(r.Context(), in.Passphrase, in.Email, in.Password); err != nil {
+	if err := s.Activate(r.Context(), in.Passphrase, in.Email, in.Password, in.PublicURL); err != nil {
 		switch {
 		case errors.Is(err, ErrAlreadyActivated):
 			writeErr(w, http.StatusConflict, err.Error())
@@ -530,6 +636,10 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		}
 		if !csrfOK(r) {
 			writeErr(w, http.StatusForbidden, "missing or invalid "+csrfHeader+" header")
+			return
+		}
+		if pu, _ := s.PublicURL(r.Context()); !originAllowed(r, pu) {
+			writeErr(w, http.StatusForbidden, "request origin does not match the configured public URL")
 			return
 		}
 		if err := s.store().RevokeSession(r.Context(), sess.ID, s.now()); err != nil {

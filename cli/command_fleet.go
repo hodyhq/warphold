@@ -28,9 +28,17 @@ func (c *commandFleet) setup(svc advancedAppServices, parent commandParent) {
 	c.activate.setup(svc, cmd)
 
 	registerFleetHandlersOnce.Do(func() {
-		RegisterServerHandlers(func(srv *server.Server, m *mux.Router, configFile string) {
+		RegisterServerHandlers(func(ctx context.Context, srv *server.Server, m *mux.Router, configFile string) {
 			fs := api.New(fleet.StateDirFor(configFile))
 			fs.Mount(m)
+
+			// Setup gives the Fleet host a repository of its own; this opens
+			// it (and says so), rather than leaving a fresh Fleet server
+			// reporting "Repository not configured". The same work runs again
+			// if the installer activates this Fleet while the server is
+			// already up, which is the one-command install's normal order.
+			serveFleetRepo(ctx, srv, fs, configFile)
+			fs.OnActivated(func() { serveFleetRepo(ctx, srv, fs, configFile) })
 
 			// This hook is the one place that runs before setupHandlers
 			// registers the UI's "/" catch-all, so the SPA bundle is served
