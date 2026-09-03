@@ -10,6 +10,9 @@
 #   - already enrolled with a Fleet server: "warphold agent install" - the
 #     agent service and the tray, exactly as the enrollment one-liner does.
 #
+# This installs the release tarball on every distribution, deliberately: the
+# deb and the rpm are separate release assets with their own install path.
+#
 # This installs the app for one machine and nothing else: no service account,
 # no machine-wide configuration, no control plane. A WarpHold server for a
 # household or an office is a different installer.
@@ -45,6 +48,19 @@ OPEN=1
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'app.sh: %s\n' "$*" >&2; exit 1; }
+
+# fetch downloads a URL to stdout, refusing a plaintext or downgraded
+# redirect for anything that starts out over TLS: --proto '=https' allows only
+# https for the request and every redirect it follows, and --tlsv1.2 sets the
+# floor. A WARPHOLD_RELEASE_BASE that is not https:// - a mirror on the LAN,
+# this repository's own test server - is fetched without them, because it is
+# the operator's own trust decision and not something this script can improve.
+fetch() {
+  case "$1" in
+    https://*) curl -fsSL --proto '=https' --tlsv1.2 "$1" ;;
+    *) curl -fsSL "$1" ;;
+  esac
+}
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -99,7 +115,7 @@ if [ -z "$VERSION" ]; then
   case "$RELEASE_BASE" in
     https://github.com/*)
       say "Resolving the latest release..."
-      VERSION="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" |
+      VERSION="$(fetch "https://api.github.com/repos/$REPO/releases/latest" |
         sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
       [ -n "$VERSION" ] || die "cannot resolve the latest release; pass --version"
       ;;
@@ -110,7 +126,7 @@ fi
 DL="$RELEASE_BASE/download/$VERSION"
 say "Installing WarpHold $VERSION from $DL"
 
-curl -fsSL "$DL/checksums.txt" -o "$TMP/checksums.txt" || die "cannot download $DL/checksums.txt"
+fetch "$DL/checksums.txt" > "$TMP/checksums.txt" || die "cannot download $DL/checksums.txt"
 
 # The asset name comes out of checksums.txt rather than being built from a
 # template here, so a change to the release naming cannot make this script
@@ -120,7 +136,7 @@ ASSET="$(awk '{ print $NF }' "$TMP/checksums.txt" | sed 's/^\*//' |
 [ -n "$ASSET" ] || die "no linux tarball for this architecture in $DL/checksums.txt"
 [ "$(printf '%s\n' "$ASSET" | wc -l)" -eq 1 ] || die "more than one candidate tarball in checksums.txt: $ASSET"
 
-curl -fsSL "$DL/$ASSET" -o "$TMP/$ASSET" || die "cannot download $DL/$ASSET"
+fetch "$DL/$ASSET" > "$TMP/$ASSET" || die "cannot download $DL/$ASSET"
 
 # Verify against the single expected line, not the whole file: sha256sum -c
 # over checksums.txt would report the other assets as missing and, with
@@ -158,8 +174,13 @@ say "+ installed $BIN_DIR/warphold"
 case ":${PATH:-}:" in
   *":$BIN_DIR:"*) ;;
   *) say ""
-     say "note: $BIN_DIR is not in your PATH. Add this to your shell profile:"
-     say "    export PATH=\"$BIN_DIR:\$PATH\"" ;;
+     say "note: $BIN_DIR is not in your PATH. Add it to your shell profile:"
+     case "${SHELL:-}" in
+       */fish) say "    fish_add_path $BIN_DIR" ;;
+       *) say "    export PATH=\"$BIN_DIR:\$PATH\""
+          say "  or, in fish:"
+          say "    fish_add_path $BIN_DIR" ;;
+     esac ;;
 esac
 
 # Which service this machine gets depends on what it is. "agent run" needs an

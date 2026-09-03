@@ -16,6 +16,10 @@
 # the source. Verifying the detached signature of checksums.txt lands with
 # the release signing key.
 #
+# This installs the release tarball on every distribution, deliberately: the
+# deb and the rpm are separate release assets with their own install path, so
+# there is no packaging-family detection here to get wrong.
+#
 # Re-running upgrades the binary and rewrites the unit. It never touches
 # /etc/warphold/env, the state directory or the data directory: the generated
 # server passwords and the Fleet database survive an upgrade.
@@ -55,6 +59,19 @@ say() { printf '%s\n' "$*"; }
 die() { printf 'fleet.sh: %s\n' "$*" >&2; exit 1; }
 run() { printf '+ %s\n' "$*"; [ "$DRY" = 1 ] || "$@"; }
 
+# fetch downloads a URL to stdout, refusing a plaintext or downgraded
+# redirect for anything that starts out over TLS: --proto '=https' allows only
+# https for the request and every redirect it follows, and --tlsv1.2 sets the
+# floor. A WARPHOLD_RELEASE_BASE that is not https:// - a mirror on the LAN,
+# this repository's own test server - is fetched without them, because it is
+# the operator's own trust decision and not something this script can improve.
+fetch() {
+  case "$1" in
+    https://*) curl -fsSL --proto '=https' --tlsv1.2 "$1" ;;
+    *) curl -fsSL "$1" ;;
+  esac
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --version) [ $# -ge 2 ] || die "--version needs a value"; VERSION="$2"; shift 2 ;;
@@ -63,7 +80,9 @@ while [ $# -gt 0 ]; do
     --bind=*) BIND="${1#--bind=}"; shift ;;
     --dry-run) DRY=1; shift ;;
     --no-systemd) NO_SYSTEMD=1; shift ;;
-    -h|--help) sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    # Print the header comment, however long it grows: every line from the
+    # second to the first that is not a comment.
+    -h|--help) awk 'NR > 1 { if (!/^#/) exit; sub(/^# ?/, ""); print }' "$0"; exit 0 ;;
     *) die "unknown argument $1 (try --help)" ;;
   esac
 done
@@ -118,7 +137,7 @@ if [ -z "$VERSION" ]; then
   case "$RELEASE_BASE" in
     https://github.com/*)
       say "Resolving the latest release..."
-      VERSION="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" |
+      VERSION="$(fetch "https://api.github.com/repos/$REPO/releases/latest" |
         sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
       [ -n "$VERSION" ] || die "cannot resolve the latest release; pass --version"
       ;;
@@ -129,7 +148,7 @@ fi
 DL="$RELEASE_BASE/download/$VERSION"
 say "Installing WarpHold $VERSION from $DL"
 
-curl -fsSL "$DL/checksums.txt" -o "$TMP/checksums.txt" || die "cannot download $DL/checksums.txt"
+fetch "$DL/checksums.txt" > "$TMP/checksums.txt" || die "cannot download $DL/checksums.txt"
 
 # The asset name comes out of checksums.txt rather than being built from a
 # template here, so a change to the release naming cannot make this script
@@ -139,7 +158,7 @@ ASSET="$(awk '{ print $NF }' "$TMP/checksums.txt" | sed 's/^\*//' |
 [ -n "$ASSET" ] || die "no linux tarball for this architecture in $DL/checksums.txt"
 [ "$(printf '%s\n' "$ASSET" | wc -l)" -eq 1 ] || die "more than one candidate tarball in checksums.txt: $ASSET"
 
-curl -fsSL "$DL/$ASSET" -o "$TMP/$ASSET" || die "cannot download $DL/$ASSET"
+fetch "$DL/$ASSET" > "$TMP/$ASSET" || die "cannot download $DL/$ASSET"
 
 # Verify against the single expected line, not the whole file: sha256sum -c
 # over checksums.txt would report the other assets as missing and, with
