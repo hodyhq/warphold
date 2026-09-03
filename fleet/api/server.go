@@ -68,6 +68,11 @@ type Server struct {
 	nowFn func() time.Time
 	b2    b2api.API
 	cloud cloudAPI
+	// enrollIDHook, if set, is called with every agent id an enrollment mints,
+	// including one a failed enrollment goes on to roll back. Tests use it to
+	// learn the id that a failure response never carries, so a rollback
+	// assertion can name the real path rather than a placeholder.
+	enrollIDHook func(id string)
 
 	// sched runs the scheduled jobs (spec §10). It exists only while the Fleet
 	// is activated: load starts it, Close stops it, so no job ever runs against
@@ -555,6 +560,10 @@ func (s *Server) SetB2ForTesting(b b2api.API) { s.b2 = b }
 // SetCloudForTesting swaps the S3-compatible bucket verifier, so a test never
 // reaches a real provider.
 func (s *Server) SetCloudForTesting(c cloudAPI) { s.cloud = c }
+
+// SetEnrollIDHookForTesting installs the callback handleEnroll invokes with
+// every agent id it mints, including one it goes on to roll back on failure.
+func (s *Server) SetEnrollIDHookForTesting(f func(id string)) { s.enrollIDHook = f }
 
 // AdminsForTesting exposes the admin list for tests.
 func (s *Server) AdminsForTesting(ctx context.Context) ([]store.Admin, error) {

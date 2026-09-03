@@ -197,6 +197,9 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		enrollFailed(w, http.StatusInternalServerError, "enrollment failed", "id", err)
 		return
 	}
+	if s.enrollIDHook != nil {
+		s.enrollIDHook(id)
+	}
 	bearer, bearerHash, err := NewBearer()
 	if err != nil {
 		enrollFailed(w, http.StatusInternalServerError, "enrollment failed", "bearer", err)

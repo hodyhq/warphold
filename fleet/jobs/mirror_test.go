@@ -330,19 +330,39 @@ func TestMirrorContinuesAfterADeviceFails(t *testing.T) {
 	require.ErrorIs(t, err, store.ErrNotFound)
 }
 
+// A key the mirror already has is treated as mirrored two different ways:
+// the pre-upload listing catches most of them, but a key uploaded by a
+// racing run between that listing and this one's own Put is caught by Put
+// itself returning ErrExists. Both must count as skipped, and neither must
+// ever reach Delete.
 func TestMirrorTreatsAnExistingKeyAsMirrored(t *testing.T) {
 	f := newMirrorFixture(t, nil)
 	seedAgents(t, f.st, "dev1")
 
-	f.write(t, f.dir, "dev1/p001", "raced")
-	// Written behind the listing's back, the way a racing run would.
-	f.write(t, f.mirror, "dev1/p001", "raced")
-
-	f.counters.putErr = func(string) error { return gateway.ErrExists }
+	f.write(t, f.dir, "dev1/p001", "first")
 
 	detail, err := f.run(t)
 	require.NoError(t, err)
-	require.Equal(t, "0 objects, 0 bytes, 1 skipped", detail)
+	require.Equal(t, "1 objects, 5 bytes, 0 skipped", detail)
+
+	deletes, _ := f.counters.snapshot()
+	require.Zero(t, deletes)
+
+	// A second local object appears. Nothing pre-seeds the mirror with it, so
+	// the listing does not know about it either -- upload is attempted, and
+	// Put itself fails with ErrExists, the way it would if another run's
+	// upload landed the key first.
+	f.write(t, f.dir, "dev1/p002", "second")
+	f.counters.putErr = func(string) error { return gateway.ErrExists }
+
+	detail, err = f.run(t)
+	require.NoError(t, err)
+	// p001 is skipped via the pre-upload listing (the first run's real Put
+	// left it in the mirror); p002 is skipped via Put's ErrExists.
+	require.Equal(t, "0 objects, 0 bytes, 2 skipped", detail)
+
+	deletes, _ = f.counters.snapshot()
+	require.Zero(t, deletes, "the mirror job must never delete")
 }
 
 func TestMirrorIgnoresTargetsWithoutADiskMirror(t *testing.T) {
