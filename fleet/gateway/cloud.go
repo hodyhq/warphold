@@ -44,6 +44,19 @@ const (
 // enforce the append-only rule, so it must not back a hosted target.
 var ErrNoConditionalPut = errors.New("provider does not enforce conditional writes; use Fleet disk + mirror")
 
+// ErrCondPutNotImplemented is returned by ProbeConditionalPut when the provider
+// refuses the If-None-Match header itself with 501 NotImplemented, rather than
+// accepting it and not enforcing it. Backblaze B2's S3 endpoint does exactly
+// this (docs/RECONCILE-object-lock.md §2.3, measured 2026-09-03).
+//
+// It is deliberately a different sentinel from ErrNoConditionalPut: "the
+// provider has no such feature" is a fact a mirror-only target can be built on
+// (the Fleet server is the single writer there), while "the provider claims to
+// take the precondition and then overwrites anyway" is a bucket that lies, and
+// nothing may be built on it. Every other failure - a network error, a 5xx that
+// is not 501 - is neither, and stays an error.
+var ErrCondPutNotImplemented = errors.New("provider does not implement conditional writes (If-None-Match)")
+
 // cloud is the cloud-direct backend (spec §5, D5): the Fleet writes through to
 // the customer's own bucket with the fleet's admin credentials, so a device
 // never holds a cloud key.
@@ -238,6 +251,12 @@ func s3Client(ci blob.ConnectionInfo) (*minio.Client, *http.Transport, *s3.Optio
 // check). It writes a throwaway key twice, expects the second write to be
 // refused with 412, and deletes the probe either way.
 //
+// It has three outcomes, not two: nil (the precondition is enforced),
+// ErrCondPutNotImplemented (the provider refuses the header outright, 501), and
+// ErrNoConditionalPut (the provider took the header and overwrote anyway).
+// Anything else is a transport or credential failure and says nothing about the
+// bucket.
+//
 // The probe lives under the fleet's own root ("<root>/.warphold-probe/<random>")
 // so a prefix-scoped IAM key can write it, and ".warphold-probe" is refused as a
 // device id, so it can never collide with a device's keys.
@@ -259,6 +278,10 @@ func ProbeConditionalPut(ctx context.Context, ci blob.ConnectionInfo, prefix str
 	defer cli.RemoveObject(context.WithoutCancel(ctx), opt.BucketName, name, minio.RemoveObjectOptions{}) //nolint:errcheck // best-effort cleanup
 
 	if _, err := cli.PutObject(ctx, opt.BucketName, name, strings.NewReader("warphold"), 8, condPut()); err != nil {
+		if minio.ToErrorResponse(err).StatusCode == http.StatusNotImplemented {
+			return ErrCondPutNotImplemented
+		}
+
 		return fmt.Errorf("writing the conditional-write probe: %w", err)
 	}
 
