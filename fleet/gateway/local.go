@@ -470,6 +470,10 @@ func (l *local) Delete(ctx context.Context, key string) error {
 // append-only plus the mirror job is what protects history (§4.3).
 func (l *local) Versioned(context.Context) bool { return false }
 
+// Close releases the store's root handle. It is the optional Close documented
+// next to ObjectStore: a caller that opens a store per job must call it.
+func (l *local) Close(context.Context) error { return l.root.Close() }
+
 // open validates key and opens it as an object. It Lstats first, so a symlink
 // is ErrNotFound rather than something read through, and re-checks the open
 // file, so a directory or a device node cannot be read either.

@@ -22,6 +22,7 @@ import (
 
 	"github.com/kopia/kopia/fleet"
 	"github.com/kopia/kopia/fleet/b2api"
+	"github.com/kopia/kopia/fleet/jobs"
 	"github.com/kopia/kopia/fleet/seal"
 	"github.com/kopia/kopia/fleet/store"
 )
@@ -64,6 +65,10 @@ type Server struct {
 	// SetNowForTesting can move it between requests without racing handlers.
 	nowFn func() time.Time
 	b2    b2api.API
+	// sched runs the scheduled jobs (spec §10). It exists only while the Fleet
+	// is activated: load starts it, Close stops it, so no job ever runs against
+	// a Fleet that has no store or sealing key.
+	sched *jobs.Scheduler
 	// closed is set by Close instead of nilling st: handlers read st through
 	// store() and would otherwise have to re-check for nil between every
 	// call. A closed *sql.DB returns "database is closed" from each query,
@@ -146,7 +151,33 @@ func (s *Server) load() error {
 	s.mu.Lock()
 	s.key, s.st, s.closed = key, st, false
 	s.mu.Unlock()
+	s.startJobs()
 	return nil
+}
+
+// startJobs starts the job scheduler for the now-activated Fleet, replacing any
+// previous one. Only load calls it, so an unactivated Fleet runs nothing.
+//
+// The whole thing runs under s.mu, including Start: Close takes the same lock,
+// so it can neither pick the store between this swap and the start - which
+// would leave a scheduler running against a closed database with nothing left
+// to stop it - nor start one on an already closed Server. Start only spawns a
+// goroutine and never calls back into the Server, so holding the lock is cheap
+// and cannot deadlock.
+func (s *Server) startJobs() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.st == nil || s.closed {
+		return
+	}
+	old := s.sched
+	s.sched = jobs.NewScheduler(s.st, map[string]jobs.Runner{"mirror": jobs.Mirror(s.st, s.key)}, jobs.DefaultTick)
+	s.sched.Start(context.Background())
+	if old != nil {
+		// In a goroutine: Stop waits for the running job, which must not
+		// freeze every handler waiting on s.mu.
+		go old.Stop()
+	}
 }
 
 // now returns the server clock.
@@ -172,15 +203,23 @@ func (s *Server) Activated() bool {
 	return s.st != nil && !s.closed
 }
 
-// Close closes the store.
+// Close stops the scheduler and closes the store. The scheduler is stopped
+// first and outside the lock: Stop waits for the running job, which is still
+// using the store, and a job must never see a closed database.
 func (s *Server) Close() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.st == nil || s.closed {
+		s.mu.Unlock()
 		return nil
 	}
 	s.closed = true
-	return s.st.Close()
+	st, sched := s.st, s.sched
+	s.sched = nil
+	s.mu.Unlock()
+	if sched != nil {
+		sched.Stop()
+	}
+	return st.Close()
 }
 
 // store returns the active store, or nil before activation. load and Close
