@@ -291,8 +291,40 @@ if [ "$DRY" = 1 ]; then
   exit 0
 fi
 
+# Activation is the state directory's, not the server's: "fleet activate"
+# opens the Fleet database directly (cli/command_fleet_activate.go), so it runs
+# before the service starts - and then the server comes up already activated
+# and never writes a setup token nobody needs.
+#
+# The two secrets are prefixed onto the as_service_user call, not handed to
+# "env": env execs a binary and cannot invoke a shell function. A POSIX
+# var=value prefix on a function call exports the value for that call and
+# everything it execs, which is exactly the reach runuser/su need - and it
+# still keeps both out of the argument list, so neither shows up in "ps".
+ACTIVATED=0
+
+if [ -n "${WARPHOLD_SETUP_PUBLIC_URL:-}" ] && [ -n "${WARPHOLD_SETUP_EMAIL:-}" ] &&
+   [ -n "${WARPHOLD_SETUP_PASSWORD:-}" ] && [ -n "${WARPHOLD_SETUP_PASSPHRASE:-}" ]; then
+  say "Activating non-interactively as $WARPHOLD_SETUP_EMAIL ..."
+  set -- --config-file "$CONFIG_FILE" fleet activate --email "$WARPHOLD_SETUP_EMAIL"
+  # --public-url lands with the setup work; until then activation succeeds
+  # without it and the public URL is set in the wizard.
+  if "$BIN_DIR/warphold" fleet activate --help 2>&1 | grep -q -- --public-url; then
+    set -- "$@" --public-url "$WARPHOLD_SETUP_PUBLIC_URL"
+  else
+    say "note: this build has no --public-url yet; set it in the dashboard afterwards."
+  fi
+  WARPHOLD_ADMIN_PASSWORD="$WARPHOLD_SETUP_PASSWORD" \
+  WARPHOLD_SEAL_PASSPHRASE="$WARPHOLD_SETUP_PASSPHRASE" \
+    as_service_user "$BIN_DIR/warphold" "$@"
+  ACTIVATED=1
+fi
+
 if [ "$NO_SYSTEMD" = 1 ]; then
   say ""
+  if [ "$ACTIVATED" = 1 ]; then
+    say "Fleet is activated."
+  fi
   say "--no-systemd: the unit was written but not started. Start it with:"
   say "    systemctl daemon-reload && systemctl enable --now warphold"
   exit 0
@@ -323,20 +355,7 @@ address>: the proxy-to-Fleet hop is then unencrypted and carries enrollment
 tokens and the setup token, so keep it on a trusted network and firewall the
 port to the proxy alone."
 
-if [ -n "${WARPHOLD_SETUP_PUBLIC_URL:-}" ] && [ -n "${WARPHOLD_SETUP_EMAIL:-}" ] &&
-   [ -n "${WARPHOLD_SETUP_PASSWORD:-}" ] && [ -n "${WARPHOLD_SETUP_PASSPHRASE:-}" ]; then
-  say "Activating non-interactively as $WARPHOLD_SETUP_EMAIL ..."
-  set -- --config-file "$CONFIG_FILE" fleet activate --email "$WARPHOLD_SETUP_EMAIL"
-  # --public-url lands with the setup work; until then activation succeeds
-  # without it and the public URL is set in the wizard.
-  if "$BIN_DIR/warphold" fleet activate --help 2>&1 | grep -q -- --public-url; then
-    set -- "$@" --public-url "$WARPHOLD_SETUP_PUBLIC_URL"
-  else
-    say "note: this build has no --public-url yet; set it in the dashboard afterwards."
-  fi
-  env WARPHOLD_ADMIN_PASSWORD="$WARPHOLD_SETUP_PASSWORD" \
-      WARPHOLD_SEAL_PASSPHRASE="$WARPHOLD_SETUP_PASSPHRASE" \
-      as_service_user "$BIN_DIR/warphold" "$@"
+if [ "$ACTIVATED" = 1 ]; then
   say ""
   say "Fleet is activated. Sign in at $WARPHOLD_SETUP_PUBLIC_URL"
   say ""

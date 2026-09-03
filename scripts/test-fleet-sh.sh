@@ -53,7 +53,11 @@ tar -czf "$WORK/rel/download/v$VER/$NAME.tar.gz" -C "$WORK/stage" "$NAME"
 
 # The tampered release: same tarball, a checksum that does not match it.
 cp "$WORK/rel/download/v$VER/$NAME.tar.gz" "$WORK/rel/download/v$VER-bad/"
-sed 's/^./0/' "$WORK/rel/download/v$VER/checksums.txt" > "$WORK/rel/download/v$VER-bad/checksums.txt"
+# The whole hash is replaced, not its first character: "s/^./0/" is a no-op
+# one time in sixteen, when the real hash already starts with a 0, and the
+# tamper test then silently asserts nothing.
+sed "s/^[0-9a-f]\{64\}/$(printf 'f%.0s' $(seq 64))/" \
+  "$WORK/rel/download/v$VER/checksums.txt" > "$WORK/rel/download/v$VER-bad/checksums.txt"
 
 PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
 python3 -m http.server "$PORT" --directory "$WORK/rel" >"$WORK/http.log" 2>&1 &
@@ -141,22 +145,69 @@ check "exited non-zero"          "[ $RC -ne 0 ]"
 check "said checksum mismatch"   "grep -qi 'checksum mismatch' '$WORK/bad.out'"
 check "installed nothing"        "[ ! -e '$BADROOT/usr/local/bin/warphold' ]"
 
-# ------------------------------------- 7. activation drops to the service user
+# ------------------------------------------- 7. non-interactive activation
 #
-# The root override runs unprivileged, so there is no service user to drop to
-# and no ownership for the harness to observe at runtime: what it can check is
-# that the script never runs a state-writing command as the caller. Activation
-# creates fleet.db, seal.key and the host repository under directories already
-# chowned to the service user, so a root-owned file there is a service that
-# cannot write its own database.
+# The branch is run, not just read: "fleet activate" opens the Fleet database
+# directly, so it works with --no-systemd, and the server started afterwards
+# from the generated unit must report itself activated.
+#
+# What the root override cannot show is the privilege drop itself: running
+# unprivileged there is no service user to drop to and no file ownership to
+# observe, so as_service_user passes the command through. The wrapper is
+# asserted by reading the script; a container running as real root would show
+# fleet.db and seal.key owned by the service user instead.
 
-echo "== activation runs as the service user, with the secrets in the environment"
+echo "== non-interactive activation actually activates"
+ACTROOT="$WORK/root-act"
+ADMIN_PW='s3cret-admin-DONOTLOG'
+SEAL_PP='s3cret-seal-DONOTLOG'
+set +e
+WARPHOLD_INSTALL_ROOT="$ACTROOT" \
+WARPHOLD_SETUP_PUBLIC_URL="https://fleet.example.com" \
+WARPHOLD_SETUP_EMAIL="admin@example.com" \
+WARPHOLD_SETUP_PASSWORD="$ADMIN_PW" \
+WARPHOLD_SETUP_PASSPHRASE="$SEAL_PP" \
+  sh "$FLEET_SH" --version "v$VER" --no-systemd > "$WORK/activate.out" 2>&1
+ACT_RC=$?
+set -e
+check "activation exited 0"        "[ $ACT_RC -eq 0 ]"
+check "said it activated"          "grep -q 'Fleet is activated' '$WORK/activate.out'"
+check "fleet state was created"    "[ -n \"\$(find '$ACTROOT/var/lib/warphold/fleet' -mindepth 1 -print -quit 2>/dev/null)\" ]"
+# The secrets are arguments to nothing and printed by nothing.
+check "admin password not printed" "! grep -q '$ADMIN_PW' '$WORK/activate.out'"
+check "passphrase not printed"     "! grep -q '$SEAL_PP' '$WORK/activate.out'"
+
+ACT_UNIT="$ACTROOT/etc/systemd/system/warphold.service"
+ACT_ENVF="$ACTROOT/etc/warphold/env"
+EXECSTART="$(sed -n 's/^ExecStart=//p' "$ACT_UNIT")"
+set -a
+# shellcheck disable=SC1090  # a file this test just generated
+. "$ACT_ENVF"
+set +a
+# shellcheck disable=SC2086  # the unit's own words, split on purpose
+$EXECSTART >"$WORK/warphold-act.log" 2>&1 &
+APP_PID=$!
+STATUS=""
+for _ in $(seq 60); do
+  STATUS="$(curl -fsS --max-time 2 http://127.0.0.1:51515/api/v1/fleet/status 2>/dev/null || true)"
+  [ -n "$STATUS" ] && break
+  sleep 0.5
+done
+check "the server reports activated" "[ '$STATUS' = '{\"activated\":true}' ]"
+# Activation ran before the service started, so there was never a token to write.
+check "no setup token was needed"    "[ ! -e '$ACTROOT/var/lib/warphold/fleet/setup-token' ]"
+kill "$APP_PID" 2>/dev/null || true
+wait "$APP_PID" 2>/dev/null || true
+APP_PID=""
+
+echo "== activation runs as the service user"
 check "has a privilege-drop helper" "grep -q 'as_service_user()' '$FLEET_SH'"
 check "uses runuser"                "grep -q 'runuser -u \"\$SVC_USER\"' '$FLEET_SH'"
 check "falls back to su"            "grep -q 'su -s /bin/sh -c' '$FLEET_SH'"
 check "activation is wrapped"       "grep -q 'as_service_user \"\$BIN_DIR/warphold\" \"\$@\"' '$FLEET_SH'"
-check "no unwrapped activation"     "! grep -qE '^ *\"\\\$BIN_DIR/warphold\" \"\\\$@\"' '$FLEET_SH'"
-check "secrets go through env"      "grep -q 'env WARPHOLD_ADMIN_PASSWORD' '$FLEET_SH'"
+# env(1) execs a binary and cannot invoke a shell function: that spelling
+# would exit 127 and take the whole activation path down with it.
+check "no env before the function"  "! grep -q 'env WARPHOLD_ADMIN_PASSWORD' '$FLEET_SH'"
 check "secrets never hit a file"    "! grep -q 'WARPHOLD_SEAL_PASSPHRASE.*>' '$FLEET_SH'"
 check "the printed command drops too" "grep -q 'runuser -u \$SVC_USER -- warphold' '$FLEET_SH'"
 
