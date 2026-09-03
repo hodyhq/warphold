@@ -70,6 +70,14 @@ type Provisioner struct {
 	// Now is the clock, for the device_keys timestamp. Defaults to time.Now.
 	Now func() time.Time
 
+	// HostedCloudStore returns the backend of a hosted target whose storage
+	// mode is "cloud". Unlike a disk target -- which the server reaches through
+	// the registered "warphold-hosted" blob provider, from the root path alone
+	// -- a cloud-direct target is addressed by bucket and opened with sealed
+	// credentials, so the caller that holds them supplies the store. It is the
+	// same handle the gateway serves the device from.
+	HostedCloudStore func(ctx context.Context) (gateway.ObjectStore, error)
+
 	// InitializeForTesting replaces repository creation in unit tests that have no storage.
 	InitializeForTesting func(ctx context.Context, ci blob.ConnectionInfo, password string) error
 }
@@ -202,11 +210,12 @@ type connInfos struct{ admin, agent blob.ConnectionInfo }
 // returns the two connection infos of spec 7.1 steps 3 and 4.
 func (p *Provisioner) provisionHosted(ctx context.Context, t TargetSpec, agentID string, b *Bundle) (connInfos, error) {
 	switch {
-	case t.StorageMode != "disk":
-		// "cloud" is the cloud-direct backing store of M2.
+	case t.StorageMode != "disk" && t.StorageMode != "cloud":
 		return connInfos{}, errors.New("hosted storage mode " + t.StorageMode + " is not supported yet")
-	case t.HostedRoot == "":
+	case t.StorageMode == "disk" && t.HostedRoot == "":
 		return connInfos{}, errors.New("hosted target has no root directory")
+	case t.StorageMode == "cloud" && p.HostedCloudStore == nil:
+		return connInfos{}, errors.New("cloud-direct provisioning needs a backing store")
 	case t.PublicHost == "":
 		return connInfos{}, errors.New("the public URL must be set before enrolling a device on a hosted target")
 	case p.Store == nil:
@@ -246,10 +255,30 @@ func (p *Provisioner) provisionHosted(ctx context.Context, t TargetSpec, agentID
 	b.Prefix, b.GatewayKeyID, b.GatewayKey = prefix, akid, secret
 	b.Endpoint, b.Bucket, b.Region = scheme+t.PublicHost, gateway.BucketName, region
 
+	// Either way the server writes the repository into the same flat key space
+	// the gateway serves - no sharding - and never over its own HTTP endpoint.
+	// A disk target is named by root path and reached through the hosted blob
+	// adapter; a cloud-direct one is Kopia's stock S3 storage pointed at the
+	// customer's bucket with the fleet's admin credentials, which is the same
+	// shape the b2 branch above already uses.
+	adminCI := blob.ConnectionInfo{Type: gateway.HostedStorageType, Config: &gateway.HostedOptions{Root: t.HostedRoot, Prefix: prefix}}
+
+	if t.StorageMode == "cloud" {
+		objs, err := p.HostedCloudStore(ctx)
+		if err != nil {
+			return connInfos{}, err
+		}
+
+		ci, ok := gateway.RepositoryConnection(objs, prefix)
+		if !ok {
+			return connInfos{}, errors.New("the cloud-direct backend cannot name a repository connection")
+		}
+
+		adminCI = ci
+	}
+
 	return connInfos{
-		// The server writes the repository through the same store the gateway
-		// serves - flat keys, no sharding - not over its own HTTP endpoint.
-		admin: blob.ConnectionInfo{Type: gateway.HostedStorageType, Config: &gateway.HostedOptions{Root: t.HostedRoot, Prefix: prefix}},
+		admin: adminCI,
 		agent: blob.ConnectionInfo{Type: "s3", Config: &s3.Options{
 			BucketName:      gateway.BucketName,
 			Prefix:          prefix,
@@ -277,6 +306,12 @@ func (p *Provisioner) rollback(ctx context.Context, t TargetSpec, agentID string
 			_, _ = p.Store.DisableDeviceKeysForAgent(ctx, agentID, p.now())
 		}
 
+		// Disk only: RemoveHostedRepository has no root to unlink for a
+		// cloud-direct target, so a failed enrollment can leave the few blobs
+		// repo.Initialize wrote in the customer's bucket. They are unreachable
+		// -- the device key is disabled above and the agent id is never reused
+		// -- and the bucket is append-only, so nothing here could delete them
+		// anyway; the M5 reap job is what collects them.
 		_ = RemoveHostedRepository(t, agentID)
 	}
 }

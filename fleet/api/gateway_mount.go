@@ -149,6 +149,14 @@ func (s *Server) targetStore(ctx context.Context, t store.Target) (gateway.Objec
 		return nil, fmt.Errorf("hosted target %q has no path", t.Name)
 	}
 
+	// Build the gateway first. Enrollment borrows a cloud-direct target's
+	// backend to provision the repository, and that can be the very first call
+	// into this cache -- before any device request has created the map this
+	// writes into, and before gwDeps.st names the store the handles belong to.
+	// Skipping it panicked on a nil map, and then let the first device request
+	// close the handle provisioning had just cached.
+	s.gateway()
+
 	s.gwDeps.mu.Lock()
 	defer s.gwDeps.mu.Unlock()
 

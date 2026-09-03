@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/md5" //nolint:gosec // S3 ETags are MD5; this is a fake bucket, not a security boundary.
 	"encoding/hex"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,9 +40,19 @@ type fakeBucket struct {
 	mu   sync.Mutex
 	objs map[string][]byte
 
-	// conditional counts the PUTs that carried If-None-Match: *, which is the
+	// conditional and unconditional count the PUTs that did and did not carry
+	// If-None-Match: *. The second must stay zero: that precondition is the
 	// append-only guarantee the hosted gateway relies on.
-	conditional int
+	conditional, unconditional int
+}
+
+// putCounts reports how many PUTs carried the append-only precondition, and
+// how many did not.
+func (f *fakeBucket) putCounts() (conditional, unconditional int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.conditional, f.unconditional
 }
 
 func (f *fakeBucket) stored(key string) (string, bool) {
@@ -57,8 +69,13 @@ func (f *fakeBucket) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer f.mu.Unlock()
 
 	bucket, key, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
-	if bucket != fakeBucketName || key == "" {
+	if bucket != fakeBucketName {
 		http.Error(w, "", http.StatusNotFound)
+		return
+	}
+
+	if key == "" {
+		f.bucketOp(w, r)
 		return
 	}
 
@@ -73,6 +90,8 @@ func (f *fakeBucket) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "", http.StatusPreconditionFailed)
 				return
 			}
+		} else {
+			f.unconditional++
 		}
 
 		b := make([]byte, r.ContentLength)
@@ -116,9 +135,87 @@ func (f *fakeBucket) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.Write(out) //nolint:errcheck // test server
 		}
 
+	case http.MethodDelete:
+		delete(f.objs, key)
+		w.WriteHeader(http.StatusNoContent)
+
 	default:
 		http.Error(w, "", http.StatusMethodNotAllowed)
 	}
+}
+
+// bucketOp serves GetBucketVersioning and ListObjectsV2, the two bucket-level
+// calls the cloud-direct backend makes. Called with f.mu held.
+func (f *fakeBucket) bucketOp(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+
+	if q.Has("versioning") {
+		w.Header().Set("Content-Type", "application/xml")
+		xml.NewEncoder(w).Encode(struct { //nolint:errcheck,errchkjson // test server
+			XMLName xml.Name `xml:"VersioningConfiguration"`
+			Status  string
+		}{})
+
+		return
+	}
+
+	keys := make([]string, 0, len(f.objs))
+	for k := range f.objs {
+		keys = append(keys, k)
+	}
+
+	sort.Strings(keys)
+
+	page, _ := strconv.Atoi(q.Get("max-keys"))
+	if page <= 0 || page > 1000 {
+		page = 1000
+	}
+
+	// A continuation token is just the last key of the previous page.
+	after := q.Get("start-after")
+	if tok := q.Get("continuation-token"); tok != "" {
+		after = tok
+	}
+
+	type contents struct {
+		XMLName      xml.Name `xml:"Contents"`
+		Key          string
+		LastModified string
+		ETag         string
+		Size         int64
+	}
+
+	res := struct {
+		XMLName               xml.Name `xml:"ListBucketResult"`
+		Name                  string
+		Prefix                string
+		MaxKeys               int
+		IsTruncated           bool
+		NextContinuationToken string `xml:",omitempty"`
+		Contents              []contents
+	}{Name: fakeBucketName, Prefix: q.Get("prefix"), MaxKeys: page}
+
+	for _, k := range keys {
+		if !strings.HasPrefix(k, q.Get("prefix")) || k <= after {
+			continue
+		}
+
+		if len(res.Contents) == page {
+			res.IsTruncated, res.NextContinuationToken = true, res.Contents[len(res.Contents)-1].Key
+
+			break
+		}
+
+		res.Contents = append(res.Contents, contents{
+			Key:          k,
+			LastModified: time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
+			ETag:         `"` + etag(f.objs[k]) + `"`,
+			Size:         int64(len(f.objs[k])),
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/xml")
+	xml.NewEncoder(w).Encode(res) //nolint:errcheck,errchkjson // test server
 }
 
 func etag(b []byte) string {

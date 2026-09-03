@@ -104,7 +104,7 @@ func NewBearer() (string, []byte, error) {
 // name. Enrollment turns it into a 409, the same answer token issuing gives.
 var errPublicURLUnset = errors.New("public_url is not set")
 
-func (s *Server) provisioner(ctx context.Context) *enroll.Provisioner {
+func (s *Server) provisioner(ctx context.Context, t *store.Target) *enroll.Provisioner {
 	// The maintenance owner devices must never be: it is the public host when
 	// there is one, so a repository names the Fleet that owns it rather than
 	// whatever the server's hostname happens to be (spec 7.1 step 5).
@@ -112,7 +112,15 @@ func (s *Server) provisioner(ctx context.Context) *enroll.Provisioner {
 	if u, ok := s.PublicURL(ctx); ok {
 		host = hostOnly(u.Host)
 	}
-	return &enroll.Provisioner{B2: s.b2, Owner: "fleet@" + host, Store: s.store(), SealKey: s.sealKey(), Now: s.now}
+	p := &enroll.Provisioner{B2: s.b2, Owner: "fleet@" + host, Store: s.store(), SealKey: s.sealKey(), Now: s.now}
+	// A cloud-direct target has no root path to provision into: the fleet
+	// writes through to the customer's bucket. Provisioning borrows the very
+	// backend the gateway serves this target's devices from, so both agree on
+	// the bucket, the root prefix and the credentials by construction.
+	if t != nil && t.Kind == "hosted" && t.StorageMode == "cloud" {
+		p.HostedCloudStore = func(ctx context.Context) (gateway.ObjectStore, error) { return s.targetStore(ctx, *t) }
+	}
+	return p
 }
 
 func (s *Server) specFor(ctx context.Context, t *store.Target) (enroll.TargetSpec, error) {
@@ -207,7 +215,7 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	// agent's B2 keys, its gateway key, the half-finished row - or they
 	// outlive an enrollment that never completed while the one-shot token is
 	// already spent.
-	prov := s.provisioner(ctx)
+	prov := s.provisioner(ctx, target)
 	enrolled := false
 	var bundle *enroll.Bundle
 	defer func() {
