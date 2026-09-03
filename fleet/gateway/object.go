@@ -70,6 +70,11 @@ type ObjectStore interface {
 	// unknown; a reader that delivers a different count is ErrIncompleteBody
 	// and stores nothing. Without overwrite, an existing key is ErrExists and
 	// its bytes are left untouched.
+	//
+	// Implementations MUST read r to EOF on the success path: the gateway
+	// wraps the request body in a Content-MD5 verifier that only fires at EOF,
+	// so a store that returns nil without reaching it would acknowledge bytes
+	// nothing verified. The gateway fails such a request closed with a 500.
 	Put(ctx context.Context, key string, r io.Reader, size int64, overwrite bool) (ObjectInfo, error)
 
 	// Get returns the bytes at [offset, offset+length), where length < 0 means

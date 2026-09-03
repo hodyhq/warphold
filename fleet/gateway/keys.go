@@ -1,4 +1,3 @@
-// Package gateway serves the device-facing S3 endpoint of the Fleet server.
 package gateway
 
 import (

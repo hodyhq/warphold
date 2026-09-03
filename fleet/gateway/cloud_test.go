@@ -152,7 +152,7 @@ func (f *fakeS3) put(w http.ResponseWriter, r *http.Request, key string) {
 			// The real S3 error body, so the client's XML branch is what maps
 			// this to 412 rather than its bare-status fallback.
 			w.WriteHeader(http.StatusPreconditionFailed)
-			writeXML(w, struct {
+			fakeXML(w, struct {
 				XMLName xml.Name `xml:"Error"`
 				Code    string
 				Message string
@@ -224,7 +224,7 @@ func (f *fakeS3) bucketOp(w http.ResponseWriter, r *http.Request) {
 
 	if q.Has("versioning") {
 		w.Header().Set("Content-Type", "application/xml")
-		writeXML(w, struct {
+		fakeXML(w, struct {
 			XMLName xml.Name `xml:"VersioningConfiguration"`
 			Status  string
 		}{Status: f.versioning})
@@ -288,10 +288,10 @@ func (f *fakeS3) bucketOp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/xml")
-	writeXML(w, res)
+	fakeXML(w, res)
 }
 
-func writeXML(w http.ResponseWriter, v any) {
+func fakeXML(w http.ResponseWriter, v any) {
 	xml.NewEncoder(w).Encode(v) //nolint:errcheck // test server
 }
 
