@@ -386,3 +386,35 @@ func TestSetSettingsIsAtomicAndReadable(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "120", v)
 }
+
+func TestHostedTargetRoundTrip(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	now := clock.Now().UTC().Truncate(time.Second)
+	verified := now.Add(-time.Hour)
+
+	id, err := s.CreateTarget(ctx, &store.Target{
+		Name: "hosted", Kind: "hosted", Path: "/srv/warphold/hosted", StorageMode: "disk",
+		MirrorKind: "b2", MirrorBucket: "hody-offsite", MirrorRegion: "us-west-004",
+		SealedMirrorKey: []byte("sealed"), MirrorLockVerifiedAt: &verified, CreatedAt: now,
+	})
+	require.NoError(t, err)
+
+	got, err := s.Target(ctx, id)
+	require.NoError(t, err)
+	require.Equal(t, "hosted", got.Kind)
+	require.Equal(t, "disk", got.StorageMode)
+	require.Equal(t, "/srv/warphold/hosted", got.Path)
+	require.Equal(t, "b2", got.MirrorKind)
+	require.Equal(t, "hody-offsite", got.MirrorBucket)
+	require.Equal(t, "us-west-004", got.MirrorRegion)
+	require.Equal(t, []byte("sealed"), got.SealedMirrorKey)
+	require.NotNil(t, got.MirrorLockVerifiedAt)
+	require.True(t, verified.Equal(*got.MirrorLockVerifiedAt))
+	require.Nil(t, got.ObjectLockVerifiedAt)
+
+	list, err := s.Targets(ctx)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	require.Equal(t, *got, list[0])
+}
