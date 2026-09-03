@@ -57,22 +57,8 @@ func newRepoFixture(t *testing.T, ids ...string) *repoFixture {
 
 	fx := &repoFixture{st: st, key: key, root: root, agents: ids, target: tid, group: gid}
 
-	prov := &enroll.Provisioner{Owner: fleetIdentity(ctx, st).owner()}
-
 	for _, id := range ids {
-		b, err := prov.Provision(ctx, enroll.TargetSpec{Kind: "filesystem", Path: root}, id)
-		require.NoError(t, err)
-
-		raw, err := json.Marshal(b)
-		require.NoError(t, err)
-
-		sealed, err := key.Seal(raw)
-		require.NoError(t, err)
-
-		require.NoError(t, st.CreateAgent(ctx, &store.Agent{
-			ID: id, Name: id, Hostname: id, OS: "linux", Arch: "amd64", Scope: "user", GroupID: gid,
-			BearerHash: []byte("h_" + id), SealedBundle: sealed, EnrolledAt: now,
-		}))
+		fx.provision(t, id)
 	}
 
 	fx.source = t.TempDir()
@@ -86,6 +72,29 @@ func newRepoFixture(t *testing.T, ids ...string) *repoFixture {
 	}
 
 	return fx
+}
+
+// provision creates one agent and its real repository, exactly as enrollment
+// does, and escrows the sealed bundle on the agent row.
+func (f *repoFixture) provision(t *testing.T, id string) {
+	t.Helper()
+
+	ctx := context.Background()
+
+	b, err := (&enroll.Provisioner{Owner: fleetIdentity(ctx, f.st).owner()}).
+		Provision(ctx, enroll.TargetSpec{Kind: "filesystem", Path: f.root}, id)
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(b)
+	require.NoError(t, err)
+
+	sealed, err := f.key.Seal(raw)
+	require.NoError(t, err)
+
+	require.NoError(t, f.st.CreateAgent(ctx, &store.Agent{
+		ID: id, Name: id, Hostname: id, OS: "linux", Arch: "amd64", Scope: "user", GroupID: f.group,
+		BearerHash: []byte("h_" + id), SealedBundle: sealed, EnrolledAt: time.Now().UTC().Truncate(time.Second),
+	}))
 }
 
 func (f *repoFixture) agent(t *testing.T, id string) store.Agent {
@@ -179,4 +188,41 @@ func (f *repoFixture) deleteAPackBlob(t *testing.T, id string) blob.ID {
 	require.NoError(t, st.DeleteBlob(ctx, found))
 
 	return found
+}
+
+// dropDataPacks deletes every data pack, so no file in any snapshot can be
+// read back. Metadata (the manifests and the directory tree) is untouched.
+func (f *repoFixture) dropDataPacks(t *testing.T, id string) int {
+	t.Helper()
+
+	ctx := context.Background()
+	st := f.blobs(t, id)
+
+	var ids []blob.ID
+
+	require.NoError(t, st.ListBlobs(ctx, "p", func(m blob.Metadata) error {
+		ids = append(ids, m.BlobID)
+
+		return nil
+	}))
+	require.NotEmpty(t, ids, "the fixture must have written at least one data pack")
+
+	for _, b := range ids {
+		require.NoError(t, st.DeleteBlob(ctx, b))
+	}
+
+	return len(ids)
+}
+
+// snapshotFrom takes a snapshot of an arbitrary directory into an agent's
+// repository, which is how a test controls what the latest snapshot holds.
+func (f *repoFixture) snapshotFrom(t *testing.T, id, src string) {
+	t.Helper()
+
+	saved := f.source
+	f.source = src
+
+	defer func() { f.source = saved }()
+
+	f.snapshot(t, id)
 }
