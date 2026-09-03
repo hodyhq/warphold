@@ -70,6 +70,13 @@ type Server struct {
 	// which the handlers already surface as an error.
 	closed bool
 
+	// instanceMu serializes the lazy generation of instance_id, so two
+	// concurrent status probes cannot each mint one.
+	instanceMu sync.Mutex
+	// csrfWarnOnce keeps the "public_url is unset, origin check disabled"
+	// warning to one line per server rather than one per request.
+	csrfWarnOnce sync.Once
+
 	// setupTokenPath and setupToken gate POST /activate before the Fleet is
 	// activated (see handleActivate); both are cleared once activation succeeds.
 	setupTokenPath string
@@ -292,10 +299,12 @@ func (s *Server) Mount(m *mux.Router) {
 		s.mu.RUnlock()
 		log.Printf("warphold fleet: not activated; setup token is in %s", path)
 	}
-	m.HandleFunc("/api/v1/fleet/status", s.handleStatus).Methods(http.MethodGet)
-	m.HandleFunc("/api/v1/fleet/activate", s.handleActivate).Methods(http.MethodPost)
-	m.HandleFunc("/api/v1/fleet/session", s.handleLogin).Methods(http.MethodPost)
-	m.HandleFunc("/api/v1/fleet/session", s.handleLogout).Methods(http.MethodDelete)
+	// Every Fleet route goes through requireHost: once public_url is set, a
+	// request arriving under any other name (bar loopback) is misrouted.
+	m.HandleFunc("/api/v1/fleet/status", s.requireHost(s.handleStatus)).Methods(http.MethodGet)
+	m.HandleFunc("/api/v1/fleet/activate", s.requireHost(s.handleActivate)).Methods(http.MethodPost)
+	m.HandleFunc("/api/v1/fleet/session", s.requireHost(s.handleLogin)).Methods(http.MethodPost)
+	m.HandleFunc("/api/v1/fleet/session", s.requireHost(s.handleLogout)).Methods(http.MethodDelete)
 	s.mountAdmin(m)    // Task 7
 	s.mountAgent(m)    // Tasks 11, 14
 	s.mountDownload(m) // Task 2
@@ -305,8 +314,18 @@ func decode(r *http.Request, v any) error {
 	return json.NewDecoder(io.LimitReader(r.Body, maxBody)).Decode(v)
 }
 
-func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"activated": s.Activated()})
+// handleStatus is the unauthenticated probe target: it is what a reverse
+// proxy, a load balancer and the public_url validation all fetch. instance_id
+// is what lets that validation tell this Fleet apart from another one behind
+// the same URL; it is opaque and authorizes nothing.
+func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	out := map[string]any{"activated": s.Activated()}
+	if s.Activated() {
+		if id, err := s.instanceID(r.Context()); err == nil {
+			out["instance_id"] = id
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // setupAllowed reports whether r may call POST /activate: it must carry the
@@ -329,10 +348,25 @@ func (s *Server) handleActivate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, "activation requires the "+setupTokenHeader+" header")
 		return
 	}
-	var in struct{ Passphrase, Email, Password string }
+	var in struct {
+		Passphrase, Email, Password string
+		// PublicURL is optional here so the setup wizard can set it in the
+		// same call that activates; it is validated for syntax only, because
+		// the end-to-end probe needs a running, activated Fleet to answer.
+		PublicURL string `json:"public_url"`
+	}
 	if err := decode(r, &in); err != nil {
 		writeErr(w, http.StatusBadRequest, "malformed body")
 		return
+	}
+	// The URL is checked before anything is written: activation happens once,
+	// and finishing it with a rejected public_url would leave the wizard with
+	// an activated Fleet and no way to redo the step it thought it just did.
+	if in.PublicURL != "" {
+		if _, err := parsePublicURL(in.PublicURL); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 	if err := s.Activate(r.Context(), in.Passphrase, in.Email, in.Password); err != nil {
 		switch {
@@ -345,6 +379,17 @@ func (s *Server) handleActivate(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, "activation failed")
 		}
 		return
+	}
+	if in.PublicURL != "" {
+		if err := s.SetPublicURL(r.Context(), in.PublicURL); err != nil {
+			// The syntax was checked above, so this is a store failure, and
+			// the Fleet is now activated without a public URL. Say so rather
+			// than reporting a success the operator would have to discover
+			// was partial.
+			log.Printf("warphold fleet: activated but public_url could not be stored: %v", err)
+			writeErr(w, http.StatusInternalServerError, "fleet activated, but the public URL could not be stored; set it in Settings")
+			return
+		}
 	}
 	a, err := s.store().AdminByEmail(r.Context(), normalizeEmail(in.Email))
 	if err != nil {
@@ -415,12 +460,16 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusForbidden, "missing or invalid "+csrfHeader+" header")
 			return
 		}
+		if pu, _ := s.PublicURL(r.Context()); !originAllowed(r, pu) {
+			writeErr(w, http.StatusForbidden, "request origin does not match the configured public URL")
+			return
+		}
 		if err := s.store().RevokeSession(r.Context(), sess.ID, s.now()); err != nil {
 			adminFailed(w, "revoke session", err)
 			return
 		}
 	}
-	clearAuthCookies(w, r)
+	s.clearAuthCookies(w, r)
 	w.WriteHeader(http.StatusNoContent)
 }
 

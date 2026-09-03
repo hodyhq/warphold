@@ -12,7 +12,9 @@ import (
 )
 
 func (s *Server) mountAdmin(m *mux.Router) {
-	adm := func(h http.HandlerFunc) http.HandlerFunc { return s.requireActivated(s.requireAdmin(h)) }
+	adm := func(h http.HandlerFunc) http.HandlerFunc {
+		return s.requireHost(s.requireActivated(s.requireAdmin(h)))
+	}
 	m.HandleFunc("/api/v1/fleet/targets", adm(s.handleTargetCreate)).Methods(http.MethodPost)
 	m.HandleFunc("/api/v1/fleet/targets", adm(s.handleTargetList)).Methods(http.MethodGet)
 	m.HandleFunc("/api/v1/fleet/templates", adm(s.handleTemplateCreate)).Methods(http.MethodPost)
