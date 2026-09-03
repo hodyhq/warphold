@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"sync"
@@ -64,23 +65,19 @@ func (s *Server) gateway() *gateway.Gateway {
 		return s.gwDeps.gw
 	}
 
-	// The old backends are handles on directories nothing will ask for again;
-	// closing them here is what keeps an activation cycle (or a reopen after
-	// Close) from leaking one directory fd per hosted target.
+	// The old backends are handles nothing will ask for again -- a directory fd
+	// for a disk target, an HTTP client for a cloud-direct one -- so closing
+	// them here is what keeps an activation cycle (or a reopen after Close)
+	// from leaking one per hosted target.
 	//
-	// Invariant: this loop is the ONLY place a cached store is closed, and it
+	// Invariant: closeStores is the ONLY place a cached store is closed, and it
 	// runs only when the *store.Store behind the gateway is swapped (New /
-	// Activate / a reopen after Close) -- never under a live request. A request
-	// resolves its backend through targetStore, which hands out a handle from
-	// this same map under the same lock; if a swap could happen mid-request the
-	// handle would be closed out from under it.
-	for id, objs := range s.gwDeps.stores {
-		if c, ok := objs.(interface{ Close(context.Context) error }); ok {
-			if err := c.Close(context.Background()); err != nil {
-				log.Printf("warphold fleet: closing the hosted store of target %d: %v", id, err)
-			}
-		}
-	}
+	// Activate / a reopen after Close) or when the Server itself is closed --
+	// never under a live request. A request resolves its backend through
+	// targetStore, which hands out a handle from this same map under the same
+	// lock; if a swap could happen mid-request the handle would be closed out
+	// from under it.
+	closeStores(s.gwDeps.stores)
 
 	s.gwDeps.st = st
 	s.gwDeps.stores = map[int64]gateway.ObjectStore{}
@@ -133,19 +130,22 @@ func (s *Server) storeForAgent(ctx context.Context, agentID string) (gateway.Obj
 		return nil, fmt.Errorf("target %d: %w", g.TargetID, err)
 	}
 
-	return s.targetStore(*t)
+	return s.targetStore(ctx, *t)
 }
 
 // targetStore returns the cached ObjectStore for t, creating it on first use.
 //
-// Only hosted targets in "disk" storage mode are served today; "cloud" is the
-// mirror/cloud-direct work of M2 and answers 501 until then.
-func (s *Server) targetStore(t store.Target) (gateway.ObjectStore, error) {
-	if t.Kind != "hosted" || t.StorageMode != "disk" {
+// Both hosted storage modes are served: "disk" from the local root, "cloud" by
+// writing through to the customer's own bucket with the fleet's admin key
+// (cloudStoreFor, which unseals the credentials). Every other kind is
+// unsupported and answers 501.
+func (s *Server) targetStore(ctx context.Context, t store.Target) (gateway.ObjectStore, error) {
+	if t.Kind != "hosted" || (t.StorageMode != "disk" && t.StorageMode != "cloud") {
 		return nil, fmt.Errorf("%w: target %q is %s/%s", gateway.ErrUnsupportedStorageMode, t.Name, t.Kind, t.StorageMode)
 	}
 
-	if t.Path == "" {
+	// Only a disk target has a root; a cloud-direct one is addressed by bucket.
+	if t.StorageMode == "disk" && t.Path == "" {
 		return nil, fmt.Errorf("hosted target %q has no path", t.Name)
 	}
 
@@ -156,12 +156,65 @@ func (s *Server) targetStore(t store.Target) (gateway.ObjectStore, error) {
 		return cached, nil
 	}
 
-	objs, err := gateway.NewLocal(t.Path, gateway.LocalOptions{})
+	var (
+		objs gateway.ObjectStore
+		err  error
+	)
+
+	if t.StorageMode == "cloud" {
+		objs, err = s.cloudStoreFor(ctx, &t)
+	} else {
+		objs, err = gateway.NewLocal(t.Path, gateway.LocalOptions{})
+	}
+
 	if err != nil {
-		return nil, fmt.Errorf("opening hosted root for target %q: %w", t.Name, err)
+		return nil, fmt.Errorf("opening storage for target %q: %w", t.Name, err)
 	}
 
 	s.gwDeps.stores[t.ID] = objs
 
 	return objs, nil
+}
+
+// closeStores releases every cached backend that holds a handle or a
+// connection. The two backends spell Close differently: the local one closes a
+// directory fd (io.Closer), the cloud one takes a context and drops its idle
+// connections, so both shapes are accepted rather than only one.
+//
+// It is called with gwDeps.mu held, which is safe: Close only releases a
+// handle, it makes no call back into the Server.
+func closeStores(m map[int64]gateway.ObjectStore) {
+	for id, objs := range m {
+		var err error
+
+		switch c := objs.(type) {
+		case interface{ Close(context.Context) error }:
+			err = c.Close(context.Background())
+		case io.Closer:
+			err = c.Close()
+		default:
+			continue
+		}
+
+		if err != nil {
+			log.Printf("warphold fleet: closing the store of target %d: %v", id, err)
+		}
+	}
+}
+
+// closeGatewayStores releases every cached backend and empties the cache, so a
+// closed Server leaves no provider connection and no spool file behind.
+// Server.Close calls it before it takes s.mu: gateway() holds gwDeps.mu while
+// it reads s.mu (sealKey, the rate settings), so gwDeps.mu must never be taken
+// underneath s.mu.
+func (s *Server) closeGatewayStores() {
+	s.gwDeps.mu.Lock()
+	defer s.gwDeps.mu.Unlock()
+
+	closeStores(s.gwDeps.stores)
+
+	// An empty map rather than nil: gateway() rebuilds on the next request and
+	// a racing targetStore must never write into a nil map.
+	s.gwDeps.stores = map[int64]gateway.ObjectStore{}
+	s.gwDeps.gw, s.gwDeps.st = nil, nil
 }

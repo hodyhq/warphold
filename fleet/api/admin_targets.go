@@ -369,7 +369,12 @@ func (s *Server) cloudStoreFor(ctx context.Context, t *store.Target) (gateway.Ob
 		return nil, fmt.Errorf("cloud-direct target %q has no stored credentials", t.Name)
 	}
 
-	return gateway.NewCloud(ctx, s3ConnInfo(t.Bucket, t.Region, t.Endpoint, keyID, key), fleetPrefix)
+	newCloud := s.cloudStore
+	if newCloud == nil {
+		newCloud = gateway.NewCloud
+	}
+
+	return newCloud(ctx, s3ConnInfo(t.Bucket, t.Region, t.Endpoint, keyID, key), fleetPrefix)
 }
 
 // checkHostedRoot proves the hosted root exists and is writable *now*, by the
