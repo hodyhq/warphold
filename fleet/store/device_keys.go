@@ -76,3 +76,11 @@ func (s *Store) DisableDeviceKeysForAgent(ctx context.Context, agentID string, a
 	}
 	return res.RowsAffected()
 }
+
+// DisableDeviceKey disables one key by access key id, leaving the agent's
+// other keys alone. Regenerating a recovery kit's read-only key uses it; a
+// revoke, which must kill every credential, uses DisableDeviceKeysForAgent.
+func (s *Store) DisableDeviceKey(ctx context.Context, accessKeyID string, at time.Time) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE device_keys SET disabled_at=? WHERE access_key_id=? AND disabled_at IS NULL`, ts(at), accessKeyID)
+	return err
+}

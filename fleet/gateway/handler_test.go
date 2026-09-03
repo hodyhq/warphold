@@ -438,6 +438,15 @@ func TestGatewayDeleteAllowlist(t *testing.T) {
 		require.Equal(t, http.StatusNoContent, resp.StatusCode)
 	})
 
+	// A read-only key is denied even the one delete a device is allowed: the
+	// recovery kit prints such a key, and paper must never be able to destroy
+	// what it restores.
+	t.Run("read-only key cannot delete a session marker", func(t *testing.T) {
+		resp := f.do(t, call{akid: akidRO, secret: secretRO, method: http.MethodDelete, path: objectPath(devA + "/" + sessionKey)})
+		require.Equal(t, http.StatusForbidden, resp.StatusCode)
+		require.Equal(t, "AppendOnlyDeleteDenied", errorCode(t, resp))
+	})
+
 	// "xs" is the single-epoch compaction prefix: an unanchored "s" match would
 	// let it through (RECONCILE section 7.3).
 	for _, k := range []string{packKey, "kopia.repository", "xs1234567890abcdef1234", "_log_20260902"} {
