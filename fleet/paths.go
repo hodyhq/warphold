@@ -7,9 +7,14 @@ import "path/filepath"
 func StateDirFor(configFile string) string { return filepath.Join(filepath.Dir(configFile), "fleet") }
 
 // Paths are the files inside a state directory.
-type Paths struct{ StateDir, DB, KeyFile string }
+type Paths struct{ StateDir, DB, KeyFile, LockFile string }
 
 // PathsFor derives Paths from a state directory.
 func PathsFor(stateDir string) Paths {
-	return Paths{StateDir: stateDir, DB: filepath.Join(stateDir, "fleet.db"), KeyFile: filepath.Join(stateDir, "seal.key")}
+	return Paths{
+		StateDir: stateDir,
+		DB:       filepath.Join(stateDir, "fleet.db"),
+		KeyFile:  filepath.Join(stateDir, "seal.key"),
+		LockFile: filepath.Join(stateDir, ".lock"),
+	}
 }

@@ -56,3 +56,39 @@ func TestFleetRotatePassphraseCLI(t *testing.T) {
 	e.RunAndExpectSuccess(t, "fleet", "rotate-passphrase",
 		"--passphrase", "a-much-longer-passphrase", "--new-passphrase", "yet-another-long-passphrase")
 }
+
+// The offline rotation must refuse while a Fleet server is running: the server
+// holds the state directory's lock, and rotating underneath it would leave the
+// store sealed under two keys.
+func TestFleetRotatePassphraseRefusesWhileTheStateDirIsLocked(t *testing.T) {
+	runner := testenv.NewInProcRunner(t)
+	e := testenv.NewCLITest(t, nil, runner)
+
+	stateDir := fleet.StateDirFor(filepath.Join(e.ConfigDir, ".kopia.config"))
+	keyFile := filepath.Join(stateDir, "seal.key")
+
+	e.RunAndExpectSuccess(t, "fleet", "activate",
+		"--email", "hody@hody.dev", "--admin-password", "pw12345678", "--passphrase", "seal-me-please")
+
+	before, err := os.ReadFile(keyFile)
+	require.NoError(t, err)
+
+	// Stands in for the running server, which holds the same lock.
+	lock, err := fleet.TryLock(stateDir)
+	require.NoError(t, err)
+
+	_, stderr := e.RunAndExpectFailure(t, "fleet", "rotate-passphrase",
+		"--passphrase", "seal-me-please", "--new-passphrase", "a-much-longer-passphrase")
+	require.Contains(t, strings.Join(stderr, "\n"), "the Fleet server is running",
+		"the refusal must say what to do about it")
+
+	after, err := os.ReadFile(keyFile)
+	require.NoError(t, err)
+	require.Equal(t, before, after, "a refused rotation must not touch seal.key")
+
+	// Released: the same command then works, which is what proves the refusal
+	// was the lock and not the passphrase.
+	require.NoError(t, lock.Unlock())
+	e.RunAndExpectSuccess(t, "fleet", "rotate-passphrase",
+		"--passphrase", "seal-me-please", "--new-passphrase", "a-much-longer-passphrase")
+}

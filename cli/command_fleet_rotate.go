@@ -59,7 +59,25 @@ func (c *commandFleetRotatePassphrase) run(ctx context.Context) error {
 		c.next = p
 	}
 
-	s := api.New(fleet.StateDirFor(c.svc.repositoryConfigFileName()))
+	stateDir := fleet.StateDirFor(c.svc.repositoryConfigFileName())
+
+	// A running Fleet server holds this lock. Without the check the rotation
+	// would succeed - WAL and the busy timeout let both processes write - and
+	// the running one would keep sealing new secrets with the key this command
+	// just replaced, leaving a store sealed under two keys.
+	lock, err := fleet.TryLock(stateDir)
+	if err != nil {
+		if errors.Is(err, fleet.ErrLocked) {
+			return errors.New("the Fleet server is running (" + fleet.PathsFor(stateDir).LockFile +
+				" is held). Stop it first, or rotate through the UI, which does it live.")
+		}
+
+		return errors.Wrap(err, "locking the fleet state directory")
+	}
+
+	defer lock.Unlock() //nolint:errcheck
+
+	s := api.New(stateDir)
 	defer s.Close() //nolint:errcheck
 
 	counts, err := s.RotatePassphrase(ctx, c.current, c.next, c.dryRun)
