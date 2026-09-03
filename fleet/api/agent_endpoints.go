@@ -75,8 +75,8 @@ func adminFailed(w http.ResponseWriter, stage string, err error) {
 }
 
 func (s *Server) mountAgent(m *mux.Router) {
-	m.HandleFunc("/api/v1/fleet/enroll", s.requireActivated(s.handleEnroll)).Methods(http.MethodPost)
-	m.HandleFunc("/enroll.sh", s.requireActivated(s.handleEnrollSh)).Methods(http.MethodGet)
+	m.HandleFunc("/api/v1/fleet/enroll", s.requireHost(s.requireActivated(s.handleEnroll))).Methods(http.MethodPost)
+	m.HandleFunc("/enroll.sh", s.requireHost(s.requireActivated(s.handleEnrollSh))).Methods(http.MethodGet)
 	s.mountAgentPoll(m) // Task 14
 }
 
@@ -220,8 +220,8 @@ func (s *Server) pollInterval(ctx context.Context) int {
 }
 
 func (s *Server) mountAgentPoll(m *mux.Router) {
-	m.HandleFunc("/api/v1/fleet/agent/poll", s.requireActivated(s.requireAgent(s.handlePoll))).Methods(http.MethodPost)
-	m.HandleFunc("/api/v1/fleet/agent/report", s.requireActivated(s.requireAgent(s.handleReport))).Methods(http.MethodPost)
+	m.HandleFunc("/api/v1/fleet/agent/poll", s.requireHost(s.requireActivated(s.requireAgent(s.handlePoll)))).Methods(http.MethodPost)
+	m.HandleFunc("/api/v1/fleet/agent/report", s.requireHost(s.requireActivated(s.requireAgent(s.handleReport)))).Methods(http.MethodPost)
 }
 
 type agentKey struct{}

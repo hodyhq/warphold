@@ -63,7 +63,7 @@ func (s *Server) startSession(ctx context.Context, w http.ResponseWriter, r *htt
 	if _, err := st.CreateSession(ctx, hash, adminID, now, now.Add(sessionTTL)); err != nil {
 		return err
 	}
-	secure, maxAge := requestIsHTTPS(r), int(sessionTTL.Seconds())
+	secure, maxAge := s.cookieSecure(r), int(sessionTTL.Seconds())
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: tok, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: secure, MaxAge: maxAge})
 	// Not HttpOnly on purpose: the admin UI has to read this one to echo it
 	// back in the X-WarpHold-CSRF header. It authorizes nothing on its own.
@@ -104,9 +104,23 @@ func adminFrom(r *http.Request) int64 {
 	return 0
 }
 
-// clearAuthCookies expires both cookies on the client.
-func clearAuthCookies(w http.ResponseWriter, r *http.Request) {
-	secure := requestIsHTTPS(r)
+// cookieSecure decides the Secure attribute. Once public_url is set it is the
+// only input: that is the scheme the browser actually reached us on, whereas
+// r.TLS and X-Forwarded-Proto describe the last hop into this process, which
+// behind a TLS-terminating proxy is plain HTTP. requestIsHTTPS remains the
+// fallback for a Fleet whose public_url has not been set yet.
+func (s *Server) cookieSecure(r *http.Request) bool {
+	if u, ok := s.PublicURL(r.Context()); ok {
+		return u.Scheme == "https"
+	}
+	return requestIsHTTPS(r)
+}
+
+// clearAuthCookies expires both cookies on the client. Secure must match what
+// startSession set, or the browser treats these as different cookies and
+// keeps the live ones.
+func (s *Server) clearAuthCookies(w http.ResponseWriter, r *http.Request) {
+	secure := s.cookieSecure(r)
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: secure, MaxAge: -1})
 	http.SetCookie(w, &http.Cookie{Name: csrfCookie, Value: "", Path: "/", SameSite: http.SameSiteStrictMode, Secure: secure, MaxAge: -1})
 }
