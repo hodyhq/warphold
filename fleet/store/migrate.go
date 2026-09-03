@@ -19,6 +19,9 @@ var addedColumns = []struct{ table, column, decl string }{
 	{"targets", "sealed_mirror_key", "BLOB"},
 	{"targets", "mirror_lock_verified_at", "TEXT"},
 	{"targets", "endpoint", "TEXT NOT NULL DEFAULT ''"},
+	// Nullable on purpose: NULL is "never probed", which is what every row
+	// written before this column existed truly is.
+	{"targets", "mirror_conditional_put", "INTEGER"},
 	{"agents", "retired_at", "TEXT"},
 }
 

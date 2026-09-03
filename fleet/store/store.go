@@ -62,6 +62,15 @@ func tsp(t *time.Time) any {
 
 func parseTS(s string) time.Time { t, _ := time.Parse(time.RFC3339, s); return t }
 
+// boolp binds an optional flag: NULL when it was never determined, so "no
+// answer" and "the answer was false" stay different in the column.
+func boolp(b *bool) any {
+	if b == nil {
+		return nil
+	}
+	return *b
+}
+
 func parseTSP(ns sql.NullString) *time.Time {
 	if !ns.Valid {
 		return nil

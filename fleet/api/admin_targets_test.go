@@ -60,6 +60,7 @@ func TestHostedTargetMirrorIsSealedAndVerified(t *testing.T) {
 	require.Equal(t, "hody-offsite", list[0]["mirror_bucket"])
 	require.Equal(t, "us-west-004", list[0]["mirror_region"])
 	require.NotEmpty(t, list[0]["mirror_lock_verified_at"])
+	require.Equal(t, true, list[0]["mirror_conditional_put"])
 	for _, k := range []string{"mirror_key", "mirror_key_id", "sealed_mirror_key", "sealed_admin_key", "key", "key_id"} {
 		_, has := list[0][k]
 		require.False(t, has, "%s must never leave the server", k)
@@ -158,6 +159,52 @@ func TestHostedTargetS3MirrorIsVerifiedOverS3(t *testing.T) {
 	// verified, not the local root.
 	_, has := list[0]["object_lock_verified_at"]
 	require.False(t, has)
+}
+
+// Backblaze B2 has Object Lock but no conditional writes at all: its S3
+// endpoint answers 501 to If-None-Match (docs/RECONCILE-object-lock.md). That
+// is enough for a mirror, whose only writer is the Fleet server, so the target
+// is created and the missing capability is recorded rather than refused.
+func TestHostedTargetB2MirrorVerifiedWithoutConditionalPut(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+	h.s.SetB2ForTesting(fakeB2API{lock: true})
+	h.s.SetCloudForTesting(&fakeCloud{lock: true, condUnsupported: true})
+
+	resp, body := h.do("POST", "/api/v1/fleet/targets", map[string]any{
+		"name": "hosted", "kind": "hosted", "storage_mode": "disk", "path": t.TempDir(),
+		"mirror_kind": "b2", "mirror_bucket": "hody-offsite", "mirror_region": "us-west-004",
+		"mirror_key_id": "k", "mirror_key": "s",
+	})
+	require.Equal(t, 201, resp.StatusCode)
+	require.Equal(t, false, body["mirror_conditional_put"], "the 201 says what the bucket can do")
+
+	_, list := h.doList("GET", "/api/v1/fleet/targets")
+	require.NotEmpty(t, list[0]["mirror_lock_verified_at"], "Object Lock is still required")
+	require.Equal(t, false, list[0]["mirror_conditional_put"])
+}
+
+// The same bucket cannot back a cloud-direct target: there the devices write
+// themselves, and nothing but the provider can stop two of them clobbering one
+// key. The refusal has to name providers that do implement it.
+func TestHostedTargetCloudDirectRefusesAProviderWithoutConditionalPut(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+	h.s.SetB2ForTesting(fakeB2API{lock: true})
+	h.s.SetCloudForTesting(&fakeCloud{lock: true, condUnsupported: true})
+
+	resp, body := h.do("POST", "/api/v1/fleet/targets", map[string]any{
+		"name": "cloud", "kind": "hosted", "storage_mode": "cloud",
+		"bucket": "hody-hosted", "region": "us-west-004", "key_id": "k", "key": "s",
+	})
+	require.Equal(t, 400, resp.StatusCode)
+	require.Equal(t, `bucket "hody-hosted": this provider does not implement conditional writes (If-None-Match), `+
+		`which a cloud-direct target needs because the devices write to the bucket themselves; `+
+		`use an S3-compatible provider that does (AWS S3, Cloudflare R2, MinIO), `+
+		`or Fleet disk storage with a mirror on this bucket instead`, body["error"])
+
+	_, list := h.doList("GET", "/api/v1/fleet/targets")
+	require.Empty(t, list, "an unverified bucket creates no target")
 }
 
 func TestHostedTargetCloudDirect(t *testing.T) {

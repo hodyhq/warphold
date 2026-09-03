@@ -83,9 +83,15 @@ type fakeCloud struct {
 	lock bool // the bucket has Object Lock enabled
 	cond bool // the provider enforces If-None-Match: *
 
+	// condUnsupported is Backblaze B2: the provider refuses the conditional
+	// header itself (501), which is a different answer from taking it and
+	// overwriting anyway. It wins over cond.
+	condUnsupported bool
+
 	mu       sync.Mutex
 	asked    []string // "<endpoint>/<bucket>" per Object Lock probe
 	prefixes []string // the prefix of each conditional-put probe
+	keyIDs   []string // the access key of each conditional-put probe
 }
 
 func (f *fakeCloud) ObjectLock(_ context.Context, ci blob.ConnectionInfo) error {
@@ -102,16 +108,35 @@ func (f *fakeCloud) ObjectLock(_ context.Context, ci blob.ConnectionInfo) error 
 	return nil
 }
 
-func (f *fakeCloud) ConditionalPut(_ context.Context, _ blob.ConnectionInfo, prefix string) error {
+func (f *fakeCloud) ConditionalPut(_ context.Context, ci blob.ConnectionInfo, prefix string) error {
+	o := ci.Config.(*s3.Options)
+
 	f.mu.Lock()
 	f.prefixes = append(f.prefixes, prefix)
+	f.keyIDs = append(f.keyIDs, o.AccessKeyID)
 	f.mu.Unlock()
 
-	if !f.cond {
+	switch {
+	case f.condUnsupported:
+		return gateway.ErrCondPutNotImplemented
+	case !f.cond:
 		return gateway.ErrNoConditionalPut
 	}
 
 	return nil
+}
+
+// lastKeyID is the access key the most recent conditional-put probe used, which
+// is how a test sees which credentials a re-verification actually ran with.
+func (f *fakeCloud) lastKeyID() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if len(f.keyIDs) == 0 {
+		return ""
+	}
+
+	return f.keyIDs[len(f.keyIDs)-1]
 }
 
 func (f *fakeCloud) probed() ([]string, []string) {

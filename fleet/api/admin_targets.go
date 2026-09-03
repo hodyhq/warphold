@@ -72,6 +72,13 @@ type targetOut struct {
 	MirrorRegion         string     `json:"mirror_region,omitempty"`
 	MirrorLockVerifiedAt *time.Time `json:"mirror_lock_verified_at,omitempty"`
 
+	// MirrorConditionalPut is false for a mirror bucket whose provider has no
+	// conditional writes at all (B2). That is allowed for a mirror - Fleet is
+	// its only writer - but the target screen has to be able to say "offsite:
+	// locked, no conditional writes" rather than imply the stronger guarantee.
+	// Absent when the bucket was never probed.
+	MirrorConditionalPut *bool `json:"mirror_conditional_put,omitempty"`
+
 	// Derived, not stored: when anything under this target last reached the
 	// mirror bucket, and whether any of its devices is behind. A target row
 	// has to say "offsite 2 h ago" or "offsite stale", and neither is
@@ -88,6 +95,7 @@ func toTargetOut(t store.Target) targetOut {
 		Endpoint:             t.Endpoint,
 		MirrorKind:           t.MirrorKind, MirrorBucket: t.MirrorBucket, MirrorRegion: t.MirrorRegion,
 		MirrorLockVerifiedAt: t.MirrorLockVerifiedAt,
+		MirrorConditionalPut: t.MirrorConditionalPut,
 	}
 }
 
@@ -156,7 +164,11 @@ func (s *Server) handleTargetCreate(w http.ResponseWriter, r *http.Request) {
 		adminFailed(w, "create target", err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"id": id, "object_lock_verified": t.ObjectLockVerifiedAt != nil})
+	out := map[string]any{"id": id, "object_lock_verified": t.ObjectLockVerifiedAt != nil}
+	if t.MirrorConditionalPut != nil {
+		out["mirror_conditional_put"] = *t.MirrorConditionalPut
+	}
+	writeJSON(w, http.StatusCreated, out)
 }
 
 // applyHosted validates a hosted target and fills in its storage fields. It
@@ -187,6 +199,18 @@ func (s *Server) applyHostedDisk(ctx context.Context, w http.ResponseWriter, in 
 	if in.MirrorKind == "" {
 		return true
 	}
+	return s.applyMirror(ctx, w, in, t)
+}
+
+// applyMirror validates, verifies and seals a mirror onto t. It is shared by
+// target creation and the mirror route, so a mirror attached later is held to
+// exactly the same proof as one configured up front.
+//
+// A mirror bucket must have Object Lock, but need not offer conditional writes:
+// the Fleet server is the mirror's only writer and the job lists before it
+// uploads, so If-None-Match buys nothing here that Object Lock does not already
+// give. The answer is recorded rather than required.
+func (s *Server) applyMirror(ctx context.Context, w http.ResponseWriter, in *targetInput, t *store.Target) bool {
 	if in.MirrorKind != "b2" && in.MirrorKind != "s3" {
 		writeErr(w, http.StatusBadRequest, "mirror_kind must be b2 or s3")
 		return false
@@ -203,7 +227,8 @@ func (s *Server) applyHostedDisk(ctx context.Context, w http.ResponseWriter, in 
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return false
 	}
-	if err := s.verifyBucket(ctx, in.MirrorKind, in.MirrorBucket, in.MirrorRegion, endpoint, in.MirrorKeyID, in.MirrorKey); err != nil {
+	condPut, err := s.verifyBucket(ctx, in.MirrorKind, in.MirrorBucket, in.MirrorRegion, endpoint, in.MirrorKeyID, in.MirrorKey, true)
+	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return false
 	}
@@ -214,7 +239,7 @@ func (s *Server) applyHostedDisk(ctx context.Context, w http.ResponseWriter, in 
 	}
 	now := s.now()
 	t.MirrorKind, t.MirrorBucket, t.MirrorRegion, t.SealedMirrorKey = in.MirrorKind, in.MirrorBucket, in.MirrorRegion, sealed
-	t.MirrorLockVerifiedAt = &now
+	t.MirrorLockVerifiedAt, t.MirrorConditionalPut = &now, &condPut
 	return true
 }
 
@@ -250,7 +275,7 @@ func (s *Server) applyHostedCloud(ctx context.Context, w http.ResponseWriter, in
 		return false
 	}
 
-	if err := s.verifyBucket(ctx, kind, in.Bucket, in.Region, endpoint, in.KeyID, in.Key); err != nil {
+	if _, err := s.verifyBucket(ctx, kind, in.Bucket, in.Region, endpoint, in.KeyID, in.Key, false); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return false
 	}
@@ -269,52 +294,72 @@ func (s *Server) applyHostedCloud(ctx context.Context, w http.ResponseWriter, in
 }
 
 // verifyBucket proves a bucket can hold append-only backups before a target is
-// created on it: Object Lock is enabled, and the provider actually enforces the
-// conditional write the gateway relies on. A rejection names the bucket and the
-// property it is missing, because the fix is in the provider's console and the
-// admin has to know which of the two to go and turn on.
+// created on it: Object Lock is enabled, and - for a bucket devices write to
+// themselves - the provider actually enforces the conditional write the gateway
+// relies on. A rejection names the bucket and the property it is missing,
+// because the fix is in the provider's console and the admin has to know which
+// of the two to go and turn on.
+//
+// mirror says which shape is being verified. A mirror bucket has exactly one
+// writer, the Fleet server, and its job lists before it uploads and never
+// overwrites, so a provider with no If-None-Match at all (B2, measured in
+// docs/RECONCILE-object-lock.md) may still back it; the answer is returned for
+// the target row rather than enforced. A cloud-direct bucket is written by the
+// devices themselves, where nothing but the provider can keep two writers from
+// clobbering each other, so there the conditional write stays mandatory.
+//
+// The first result is whether the provider enforces conditional writes. It is
+// meaningful only when the error is nil.
 //
 // The probes run under fleetPrefix - the prefix the target will really write
 // under - so a prefix-scoped key that cannot write there fails here rather than
 // on the first device's first snapshot.
-func (s *Server) verifyBucket(ctx context.Context, kind, bucket, region, endpoint, keyID, key string) error {
+func (s *Server) verifyBucket(ctx context.Context, kind, bucket, region, endpoint, keyID, key string, mirror bool) (bool, error) {
 	ci := s3ConnInfo(bucket, region, endpoint, keyID, key)
 
 	if kind == "b2" {
 		if s.b2 == nil {
-			return fmt.Errorf("bucket %q: the B2 API is not configured, so Object Lock cannot be verified", bucket)
+			return false, fmt.Errorf("bucket %q: the B2 API is not configured, so Object Lock cannot be verified", bucket)
 		}
 		// §14.5: B2 reports the lock flag on b2_list_buckets'
 		// fileLockConfiguration, which is a different API from S3's
 		// GetObjectLockConfiguration.
 		info, err := s.b2.BucketInfo(ctx, keyID, key, bucket)
 		if err != nil {
-			return fmt.Errorf("b2: %w", err)
+			return false, fmt.Errorf("b2: %w", err)
 		}
 		if !info.LockReadable {
 			// B2 hides fileLockConfiguration from a key that may not read it,
 			// and the flag then decodes as false. That is "cannot verify", not
 			// "unlocked", and the fix is a different key.
-			return fmt.Errorf("bucket %q: cannot verify Object Lock: the application key lacks readBucketRetentions/read capability - use a key that can read the bucket's lock configuration", bucket)
+			return false, fmt.Errorf("bucket %q: cannot verify Object Lock: the application key lacks readBucketRetentions/read capability - use a key that can read the bucket's lock configuration", bucket)
 		}
 		if !info.ObjectLockEnabled {
-			return fmt.Errorf("bucket %q does not have Object Lock enabled", bucket)
+			return false, fmt.Errorf("bucket %q does not have Object Lock enabled", bucket)
 		}
 	} else if err := s.cloud.ObjectLock(ctx, ci); err != nil {
 		if errors.Is(err, gateway.ErrNoObjectLock) {
-			return fmt.Errorf("bucket %q does not have Object Lock enabled", bucket)
+			return false, fmt.Errorf("bucket %q does not have Object Lock enabled", bucket)
 		}
-		return fmt.Errorf("bucket %q: %w", bucket, err)
+		return false, fmt.Errorf("bucket %q: %w", bucket, err)
 	}
 
-	if err := s.cloud.ConditionalPut(ctx, ci, fleetPrefix); err != nil {
-		if errors.Is(err, gateway.ErrNoConditionalPut) {
-			return fmt.Errorf("bucket %q does not enforce conditional writes, so it cannot be append-only; use Fleet disk storage with a mirror instead", bucket)
-		}
-		return fmt.Errorf("bucket %q: %w", bucket, err)
+	switch err := s.cloud.ConditionalPut(ctx, ci, fleetPrefix); {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, gateway.ErrCondPutNotImplemented) && mirror:
+		// The provider has no If-None-Match (B2). Recorded, not refused: the
+		// Fleet server is the mirror's only writer.
+		return false, nil
+	case errors.Is(err, gateway.ErrCondPutNotImplemented):
+		return false, fmt.Errorf("bucket %q: this provider does not implement conditional writes (If-None-Match), which a cloud-direct target needs because the devices write to the bucket themselves; use an S3-compatible provider that does (AWS S3, Cloudflare R2, MinIO), or Fleet disk storage with a mirror on this bucket instead", bucket)
+	case errors.Is(err, gateway.ErrNoConditionalPut):
+		// Not the same as "has no such feature": this bucket took the
+		// precondition and overwrote anyway, so nothing may be built on it.
+		return false, fmt.Errorf("bucket %q does not enforce conditional writes, so it cannot be append-only; use Fleet disk storage with a mirror instead", bucket)
+	default:
+		return false, fmt.Errorf("bucket %q: %w", bucket, err)
 	}
-
-	return nil
 }
 
 // s3Endpoint derives the S3-compatible host for a provider whose endpoint the

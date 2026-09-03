@@ -127,6 +127,15 @@ type mirrorRun struct {
 
 	local, remote gateway.ObjectStore
 
+	// plain is set for a mirror bucket whose provider has no conditional write
+	// (B2's S3 endpoint answers 501 to If-None-Match at all, so every upload
+	// would fail). Safe here and only here: this job is the bucket's only
+	// writer, it lists the mirror before it uploads and skips what is already
+	// there, and the bucket's Object Lock keeps any superseded version. A
+	// cloud-direct target, where the devices write, still requires the
+	// conditional put and is refused without it.
+	plain bool
+
 	objects int
 	skipped int
 	bytes   int64
@@ -202,7 +211,9 @@ func (m *mirrorRun) target(ctx context.Context, t store.Target) {
 	defer closeStore(ctx, remote)
 
 	m.local, m.remote = local, remote
-	defer func() { m.local, m.remote = nil, nil }()
+	m.plain = t.MirrorConditionalPut != nil && !*t.MirrorConditionalPut
+
+	defer func() { m.local, m.remote, m.plain = nil, nil, false }()
 
 	if err := m.walk(ctx, t.Name); err != nil {
 		m.fail(t.Name, err)
@@ -357,8 +368,9 @@ func (m *mirrorRun) mirrored(ctx context.Context, device string) (map[string]str
 	}
 }
 
-// upload streams one object to the mirror. overwrite is false, so a key the
-// listing missed is refused by the provider rather than rewritten.
+// upload streams one object to the mirror. overwrite is false wherever the
+// provider can enforce it, so a key the listing missed is refused rather than
+// rewritten; see mirrorRun.plain for the providers that cannot.
 func (m *mirrorRun) upload(ctx context.Context, o gateway.ObjectInfo) (int64, error) {
 	rc, info, err := m.local.Get(ctx, o.Key, 0, -1)
 	if err != nil {
@@ -367,7 +379,7 @@ func (m *mirrorRun) upload(ctx context.Context, o gateway.ObjectInfo) (int64, er
 
 	defer rc.Close() //nolint:errcheck // read-only handle
 
-	put, err := m.remote.Put(ctx, o.Key, rc, info.Size, false)
+	put, err := m.remote.Put(ctx, o.Key, rc, info.Size, m.plain)
 	if err != nil {
 		if errors.Is(err, gateway.ErrExists) {
 			return 0, err
