@@ -23,7 +23,18 @@ func (s *Server) tokens() *enroll.Tokens {
 	return tk
 }
 
+// publicURLUnsetMsg is the one message every consumer that cannot work
+// without a public URL returns, so the wizard can match on it.
+const publicURLUnsetMsg = "set the public URL before issuing enrollment tokens"
+
 func (s *Server) handleTokenCreate(w http.ResponseWriter, r *http.Request) {
+	// A token is only useful together with an enrollment URL, and that URL
+	// comes from public_url. Issuing one before it is set hands the operator
+	// a token that enrolls devices against the wrong origin.
+	if _, ok := s.PublicURL(r.Context()); !ok {
+		writeErr(w, http.StatusConflict, publicURLUnsetMsg)
+		return
+	}
 	var in struct {
 		GroupID    int64 `json:"group_id"`
 		TTLSeconds int64 `json:"ttl_seconds"`

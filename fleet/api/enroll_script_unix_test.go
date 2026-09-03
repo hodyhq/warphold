@@ -51,6 +51,7 @@ func runEnrollScript(t *testing.T, script, home string, env ...string) (string, 
 // enrollScript downloads the script the server serves into a file.
 func enrollScript(t *testing.T, h *harness, dir string) string {
 	t.Helper()
+	h.setPublicURL()
 	res, err := http.Get(h.srv.URL + "/enroll.sh")
 	require.NoError(t, err)
 	defer res.Body.Close()
