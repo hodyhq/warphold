@@ -55,6 +55,10 @@ type fakeS3 struct {
 	// objectLock is what GetObjectLockConfiguration reports: "Enabled", or ""
 	// for a bucket created without Object Lock, which answers 404.
 	objectLock string
+
+	// objectLockBroken makes the lock endpoint answer 500, the way a provider
+	// that has no Object Lock API at all, or is simply having a bad day, would.
+	objectLockBroken bool
 }
 
 // stored returns a copy of the fake's objects, so a test never races the
@@ -228,6 +232,18 @@ func (f *fakeS3) bucketOp(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 
 	if q.Has("object-lock") {
+		if f.objectLockBroken {
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusInternalServerError)
+			writeXML(w, struct {
+				XMLName xml.Name `xml:"Error"`
+				Code    string
+				Message string
+			}{Code: "InternalError", Message: "we encountered an internal error"})
+
+			return
+		}
+
 		if f.objectLock == "" {
 			// What AWS answers for a bucket created without Object Lock; the
 			// shape is pinned in docs/RECONCILE-object-lock.md.
@@ -753,6 +769,16 @@ func TestProbeObjectLock(t *testing.T) {
 	t.Run("reported disabled", func(t *testing.T) {
 		t.Parallel()
 		require.ErrorIs(t, ProbeObjectLock(t.Context(), testCI(t, &fakeS3{objectLock: "Disabled"})), ErrNoObjectLock)
+	})
+
+	t.Run("provider error is not a verdict", func(t *testing.T) {
+		t.Parallel()
+		// A 500 says nothing about the bucket's lock, so it must not be
+		// reported as ErrNoObjectLock - that would tell the admin to go and
+		// enable a setting that may already be on.
+		err := ProbeObjectLock(t.Context(), testCI(t, &fakeS3{objectLock: "Enabled", objectLockBroken: true}))
+		require.ErrorContains(t, err, "reading the bucket's Object Lock configuration")
+		require.NotErrorIs(t, err, ErrNoObjectLock)
 	})
 
 	t.Run("unusable connection info", func(t *testing.T) {

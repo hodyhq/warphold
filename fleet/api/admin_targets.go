@@ -283,6 +283,12 @@ func (s *Server) verifyBucket(ctx context.Context, kind, bucket, region, endpoin
 		if err != nil {
 			return fmt.Errorf("b2: %w", err)
 		}
+		if !info.LockReadable {
+			// B2 hides fileLockConfiguration from a key that may not read it,
+			// and the flag then decodes as false. That is "cannot verify", not
+			// "unlocked", and the fix is a different key.
+			return fmt.Errorf("bucket %q: cannot verify Object Lock: the application key lacks readBucketRetentions/read capability - use a key that can read the bucket's lock configuration", bucket)
+		}
 		if !info.ObjectLockEnabled {
 			return fmt.Errorf("bucket %q does not have Object Lock enabled", bucket)
 		}

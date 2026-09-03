@@ -16,6 +16,12 @@ import (
 type BucketInfo struct {
 	ID                string
 	ObjectLockEnabled bool
+
+	// LockReadable is B2's isClientAuthorizedToRead: false means the key was
+	// not allowed to see fileLockConfiguration at all, and ObjectLockEnabled is
+	// then simply unknown, not false. Reporting a locked bucket as unlocked
+	// because of a key capability would refuse a bucket that is in fact fine.
+	LockReadable bool
 }
 
 // CreatedKey is a freshly created application key.
@@ -133,7 +139,8 @@ func (c *Client) BucketInfo(ctx context.Context, keyID, key, bucket string) (Buc
 			ID   string `json:"bucketId"`
 			Name string `json:"bucketName"`
 			Lock struct {
-				Value struct {
+				Readable bool `json:"isClientAuthorizedToRead"`
+				Value    struct {
 					Enabled bool `json:"isFileLockEnabled"`
 				} `json:"value"`
 			} `json:"fileLockConfiguration"`
@@ -144,7 +151,7 @@ func (c *Client) BucketInfo(ctx context.Context, keyID, key, bucket string) (Buc
 	}
 	for _, b := range out.Buckets {
 		if b.Name == bucket {
-			return BucketInfo{ID: b.ID, ObjectLockEnabled: b.Lock.Value.Enabled}, nil
+			return BucketInfo{ID: b.ID, ObjectLockEnabled: b.Lock.Value.Enabled, LockReadable: b.Lock.Readable}, nil
 		}
 	}
 	return BucketInfo{}, fmt.Errorf("bucket %q not found or not visible to this key", bucket)

@@ -37,7 +37,7 @@ func fakeB2(t *testing.T) (*httptest.Server, *[]map[string]any) {
 			calls = append(calls, body)
 			switch r.URL.Path {
 			case "/b2api/v3/b2_list_buckets":
-				json.NewEncoder(w).Encode(map[string]any{"buckets": []any{map[string]any{"bucketId": "bkt1", "bucketName": body["bucketName"], "fileLockConfiguration": map[string]any{"value": map[string]any{"isFileLockEnabled": true}}}}})
+				json.NewEncoder(w).Encode(map[string]any{"buckets": []any{map[string]any{"bucketId": "bkt1", "bucketName": body["bucketName"], "fileLockConfiguration": map[string]any{"isClientAuthorizedToRead": true, "value": map[string]any{"isFileLockEnabled": true}}}}})
 			case "/b2api/v3/b2_create_key":
 				json.NewEncoder(w).Encode(map[string]any{"applicationKeyId": "newKeyId", "applicationKey": "newKey"})
 			default:
@@ -82,6 +82,7 @@ func TestBucketInfoCreateDeleteKey(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "bkt1", info.ID)
 	require.True(t, info.ObjectLockEnabled)
+	require.True(t, info.LockReadable)
 
 	k, err := c.CreateKey(ctx, "adminKeyId", "adminKey", b2api.KeyRequest{Name: "warphold-ag1-writer", BucketID: "bkt1", NamePrefix: "agents/ag1/", Capabilities: b2api.WriterCaps})
 	require.NoError(t, err)
@@ -96,4 +97,29 @@ func TestBucketInfoCreateDeleteKey(t *testing.T) {
 
 	_, err = c.BucketInfo(ctx, "bad", "creds", "hody-backups")
 	require.Error(t, err)
+}
+
+// B2 hides fileLockConfiguration.value from a key that is not authorized to
+// read it, so isFileLockEnabled decodes as false on a bucket that may well be
+// locked. LockReadable is what tells those two apart.
+func TestBucketInfoReportsAnUnreadableLockConfiguration(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/b2api/v3/b2_authorize_account" {
+			json.NewEncoder(w).Encode(map[string]any{"accountId": "acc", "authorizationToken": "tok",
+				"apiInfo": map[string]any{"storageApi": map[string]any{"apiUrl": "http://" + r.Host}}})
+
+			return
+		}
+
+		json.NewEncoder(w).Encode(map[string]any{"buckets": []any{map[string]any{
+			"bucketId": "bkt1", "bucketName": "hody-backups",
+			"fileLockConfiguration": map[string]any{"isClientAuthorizedToRead": false, "value": nil},
+		}}})
+	}))
+	t.Cleanup(srv.Close)
+
+	info, err := b2api.New(srv.Client()).WithBase(srv.URL).BucketInfo(context.Background(), "k", "s", "hody-backups")
+	require.NoError(t, err)
+	require.False(t, info.LockReadable)
+	require.False(t, info.ObjectLockEnabled, "unknown decodes as false, which is why LockReadable exists")
 }

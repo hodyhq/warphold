@@ -56,13 +56,16 @@ func newHarness(t *testing.T) *harness {
 }
 
 type fakeB2API struct {
-	lock    bool
-	created []b2api.KeyRequest
-	deleted []string
+	lock bool
+	// lockUnreadable is B2 hiding fileLockConfiguration from an under-scoped
+	// key; the zero value is a key that can read it.
+	lockUnreadable bool
+	created        []b2api.KeyRequest
+	deleted        []string
 }
 
 func (f fakeB2API) BucketInfo(_ context.Context, _, _, _ string) (b2api.BucketInfo, error) {
-	return b2api.BucketInfo{ID: "bkt1", ObjectLockEnabled: f.lock}, nil
+	return b2api.BucketInfo{ID: "bkt1", ObjectLockEnabled: f.lock, LockReadable: !f.lockUnreadable}, nil
 }
 
 func (f fakeB2API) CreateKey(_ context.Context, _, _ string, r b2api.KeyRequest) (b2api.CreatedKey, error) {

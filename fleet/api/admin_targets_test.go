@@ -109,6 +109,57 @@ func TestHostedTargetMirrorRequiresLockAndConditionalWrites(t *testing.T) {
 	}
 }
 
+// An under-scoped B2 key cannot read fileLockConfiguration, so the lock flag
+// decodes as false. That is "cannot verify", not "unlocked", and the admin has
+// to be told to bring a different key rather than to go and enable a setting
+// that may already be on.
+func TestHostedTargetMirrorReportsAnUnverifiableB2Key(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+	h.s.SetB2ForTesting(fakeB2API{lock: true, lockUnreadable: true})
+	h.s.SetCloudForTesting(&fakeCloud{lock: true, cond: true})
+
+	resp, body := h.do("POST", "/api/v1/fleet/targets", map[string]any{
+		"name": "hosted", "kind": "hosted", "storage_mode": "disk", "path": t.TempDir(),
+		"mirror_kind": "b2", "mirror_bucket": "hody-offsite", "mirror_region": "us-west-004",
+		"mirror_key_id": "k", "mirror_key": "s",
+	})
+	require.Equal(t, 400, resp.StatusCode)
+	require.Equal(t, `bucket "hody-offsite": cannot verify Object Lock: the application key lacks `+
+		`readBucketRetentions/read capability - use a key that can read the bucket's lock configuration`, body["error"])
+
+	_, list := h.doList("GET", "/api/v1/fleet/targets")
+	require.Empty(t, list)
+}
+
+// An s3 mirror is verified entirely over S3: GetObjectLockConfiguration against
+// the derived AWS endpoint, then the conditional put.
+func TestHostedTargetS3MirrorIsVerifiedOverS3(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+	c := verifiedFakes(h)
+
+	resp, _ := h.do("POST", "/api/v1/fleet/targets", map[string]any{
+		"name": "hosted", "kind": "hosted", "storage_mode": "disk", "path": t.TempDir(),
+		"mirror_kind": "s3", "mirror_bucket": "hody-offsite", "mirror_region": "us-east-1",
+		"mirror_key_id": "k", "mirror_key": "s",
+	})
+	require.Equal(t, 201, resp.StatusCode)
+
+	asked, prefixes := c.probed()
+	require.Equal(t, []string{"s3.us-east-1.amazonaws.com/hody-offsite"}, asked)
+	require.Equal(t, []string{""}, prefixes)
+
+	_, list := h.doList("GET", "/api/v1/fleet/targets")
+	require.Equal(t, "s3", list[0]["mirror_kind"])
+	require.Equal(t, "us-east-1", list[0]["mirror_region"])
+	require.NotEmpty(t, list[0]["mirror_lock_verified_at"])
+	// A disk target's own lock stamp stays unset: it is the mirror that was
+	// verified, not the local root.
+	_, has := list[0]["object_lock_verified_at"]
+	require.False(t, has)
+}
+
 func TestHostedTargetCloudDirect(t *testing.T) {
 	h := newHarness(t)
 	h.activateAndLogin()
