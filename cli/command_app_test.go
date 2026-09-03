@@ -32,6 +32,25 @@ func TestAppInstallDryRun(t *testing.T) {
 	require.NoFileExists(t, filepath.Join(cfg, "autostart", "warphold-app-tray.desktop"))
 }
 
+// TestAppRefusesWithoutCredentialPersistence pins that the app will not
+// install or start a service whose repository password is never written down:
+// it would open its repository once, in this terminal, and never again after
+// a restart.
+func TestAppRefusesWithoutCredentialPersistence(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("WARPHOLD_STATE_DIR", "")
+
+	e := testenv.NewCLITest(t, nil, testenv.NewInProcRunner(t))
+
+	for _, args := range [][]string{
+		{"--no-persist-credentials", "app", "install", "--dry-run"},
+		{"--no-persist-credentials", "app", "run"},
+	} {
+		stdout, stderr := e.RunAndExpectFailure(t, args...)
+		require.Contains(t, strings.Join(append(stdout, stderr...), "\n"), "--no-persist-credentials")
+	}
+}
+
 // TestAppUninstallKeepsAnAgentTray pins the one thing an uninstall must not
 // do: on a machine that is both a Fleet device and a standalone app, removing
 // the agent's tray entry here would leave that install with no status icon.
@@ -65,7 +84,11 @@ func TestAppUninstallKeepsAnAgentTray(t *testing.T) {
 	require.FileExists(t, agentTray, "an agent install is left alone")
 	require.Contains(t, out, "untouched")
 
-	// Uninstalling twice is not an error, and neither is uninstalling
-	// something that was never installed.
-	e.RunAndExpectSuccess(t, "app", "uninstall")
+	// It claims only what it actually removed.
+	require.Contains(t, out, "- removed "+unit)
+	require.Contains(t, out, "- removed "+appTray)
+
+	again := strings.Join(e.RunAndExpectSuccess(t, "app", "uninstall"), "\n")
+	require.NotContains(t, again, "- removed ")
+
 }

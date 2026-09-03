@@ -19,15 +19,13 @@ import (
 // There is no system scope. The app is one person's backup engine: it runs as
 // them, reads their files, and answers on their loopback only.
 type commandAppInstall struct {
-	scope  string
 	dryRun bool
 	svc    advancedAppServices
 	out    textOutput
 }
 
 func (c *commandAppInstall) setup(svc advancedAppServices, parent commandParent) {
-	cmd := parent.Command("install", "Install the app as a service that starts at login.")
-	cmd.Flag("scope", "user (the app is always a per-user service)").Default(state.ScopeUser).EnumVar(&c.scope, state.ScopeUser)
+	cmd := parent.Command("install", "Install the app as a service that starts at login. Needs credential persistence (do not pass --no-persist-credentials).")
 	cmd.Flag("dry-run", "Print what would be written and run").BoolVar(&c.dryRun)
 	c.svc = svc
 	c.out.setup(svc)
@@ -35,6 +33,11 @@ func (c *commandAppInstall) setup(svc advancedAppServices, parent commandParent)
 }
 
 func (c *commandAppInstall) run(ctx context.Context) error {
+	// Fail before writing a unit that could never open its repository at boot.
+	if _, err := appPersist(c.svc); err != nil {
+		return err
+	}
+
 	bin, err := os.Executable()
 	if err != nil {
 		return err
@@ -96,20 +99,19 @@ func (c *commandAppUninstall) run(ctx context.Context) error {
 	// unit whose file it can no longer read.
 	c.systemctl(ctx, "--user", "disable", "--now", install.AppUnitName)
 
-	if err := removeIfPresent(install.AppUnitPath(cfg)); err != nil {
-		return err
-	}
-
-	c.out.printStdout("- removed %s\n", install.AppUnitPath(cfg))
-
 	// Only the app's own tray entry: an agent install has its own file, and
 	// on a machine that is both, taking that one away would leave the agent
 	// with no status icon and no obvious reason why.
-	if err := removeIfPresent(install.AppAutostartPath(cfg)); err != nil {
-		return err
-	}
+	for _, path := range []string{install.AppUnitPath(cfg), install.AppAutostartPath(cfg)} {
+		removed, err := removeIfPresent(path)
+		if err != nil {
+			return err
+		}
 
-	c.out.printStdout("- removed %s\n", install.AppAutostartPath(cfg))
+		if removed {
+			c.out.printStdout("- removed %s\n", path)
+		}
+	}
 
 	c.systemctl(ctx, "--user", "daemon-reload")
 
@@ -128,11 +130,17 @@ func (c *commandAppUninstall) systemctl(ctx context.Context, args ...string) {
 	}
 }
 
-// removeIfPresent deletes a file that may already be gone.
-func removeIfPresent(path string) error {
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return errors.Wrapf(err, "unable to remove %s", filepath.Clean(path))
-	}
+// removeIfPresent deletes a file that may already be gone, and reports
+// whether it was there, so an uninstall claims only what it actually did.
+func removeIfPresent(path string) (bool, error) {
+	err := os.Remove(path)
 
-	return nil
+	switch {
+	case err == nil:
+		return true, nil
+	case os.IsNotExist(err):
+		return false, nil
+	default:
+		return false, errors.Wrapf(err, "unable to remove %s", filepath.Clean(path))
+	}
 }

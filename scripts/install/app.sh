@@ -26,7 +26,9 @@
 #
 # Options:
 #   --version <tag>   install this release instead of the latest
-#   --system          install to /usr/local/bin for every user (needs root)
+#   --system          install to /usr/local/bin for every user (needs root;
+#                     only for a machine already enrolled with a Fleet server -
+#                     the standalone app is always a per-user install)
 #   --dry-run         print what would be done, write nothing
 #   --no-open         do not open the app in a browser
 #
@@ -99,6 +101,17 @@ else
   STATE_DIR="${WARPHOLD_STATE_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/warphold}"
 fi
 
+if [ -f "$STATE_DIR/agent.json" ]; then MODE=agent; else MODE=app; fi
+
+# --system exists to put the binary where an enrolled machine's system-scope
+# agent service can find it. The standalone app has no system scope: its
+# service, its tray and its repository all belong to one person, and running
+# this as root would write that user unit and that repository into root's home
+# instead.
+if [ "$SCOPE" = system ] && [ "$MODE" = app ]; then
+  die "the app is always a per-user install; run without --system"
+fi
+
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 trap 'rm -rf "$TMP"; exit 130' INT HUP TERM
@@ -156,7 +169,7 @@ if [ "$DRY" = 1 ]; then
   say ""
   say "--dry-run: verified $ASSET, and would then:"
   say "+ install -m 0755 <extracted warphold> $BIN_DIR/warphold"
-  if [ -f "$STATE_DIR/agent.json" ]; then
+  if [ "$MODE" = agent ]; then
     say "+ $BIN_DIR/warphold agent install --scope $SCOPE"
   else
     say "+ $BIN_DIR/warphold app install"
@@ -183,16 +196,11 @@ case ":${PATH:-}:" in
      esac ;;
 esac
 
-# Which service this machine gets depends on what it is. "agent run" needs an
-# enrollment, so installing that unit on a machine that has none would leave
-# systemd restarting into the same error until it gives up; "app run" needs
-# nothing, and is the single-machine product.
-if [ -f "$STATE_DIR/agent.json" ]; then
-  MODE=agent
-else
-  MODE=app
-fi
-
+# Which service this machine gets depends on what it is (MODE, decided above
+# next to STATE_DIR). "agent run" needs an enrollment, so installing that unit
+# on a machine that has none would leave systemd restarting into the same
+# error until it gives up; "app run" needs nothing, and is the single-machine
+# product.
 if [ "$MODE" = agent ]; then
   say "+ $BIN_DIR/warphold agent install --scope $SCOPE"
   if ! "$BIN_DIR/warphold" agent install --scope "$SCOPE"; then
@@ -216,13 +224,13 @@ fi
 # than assumed - and handed to the browser rather than printed here.
 app_url() {
   i=0
-  while [ "$i" -lt 40 ]; do
+  while [ "$i" -lt 15 ]; do
     if url="$("$BIN_DIR/warphold" app url 2>/dev/null)" && [ -n "$url" ]; then
       printf '%s\n' "$url"
       return 0
     fi
     i=$((i + 1))
-    sleep 0.25
+    sleep 1
   done
   return 1
 }

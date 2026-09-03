@@ -10,6 +10,7 @@ import (
 	"github.com/kopia/kopia/agent/poll"
 	"github.com/kopia/kopia/agent/run"
 	"github.com/kopia/kopia/agent/state"
+	"github.com/kopia/kopia/internal/passwordpersist"
 )
 
 // commandAgentRun runs the agent's poll/snapshot loop: it loads the agent's
@@ -44,7 +45,9 @@ func (c *commandAgentRun) run(ctx context.Context) error {
 		return errors.Wrap(err, "repository password not found; re-enroll")
 	}
 
-	h, err := engine.StartHeadless(ctx, cfg, password, c.scope)
+	// None: the agent's password is persisted by enrollment, and the engine's
+	// own connect/disconnect endpoints must not rewrite it.
+	h, err := engine.StartHeadless(ctx, cfg, password, c.scope, passwordpersist.None())
 	if err != nil {
 		return err
 	}

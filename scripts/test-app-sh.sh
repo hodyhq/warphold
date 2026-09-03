@@ -107,6 +107,18 @@ check "told how to open the app"         "grep -q 'warphold app url' '$WORK/inst
 # The token in the URL is handed to a browser, never printed by the installer.
 check "no session token printed"         "! grep -q 'local/session' '$WORK/install.out'"
 
+# ------------------------------------------------- 2b. --system is refused
+
+echo "== --system on a machine that is not enrolled is refused"
+set +e
+run_app --version "v$VER" --no-open --system > "$WORK/system.out" 2>&1
+RC=$?
+set -e
+check "exited non-zero"          "[ $RC -ne 0 ]"
+check "said it is per-user only" "grep -q 'per-user install' '$WORK/system.out'"
+check "wrote no system unit"     "[ ! -e '$WORK/root/etc/systemd/system/warphold-app.service' ]"
+check "wrote no root user unit"  "[ -z \"\$(find '$WORK/root' -name 'warphold-app.service' -print -quit 2>/dev/null)\" ]"
+
 # ---------------------------------------------------------- 3. enrolled
 
 echo "== install on a machine that is enrolled writes the unit and the tray entry"

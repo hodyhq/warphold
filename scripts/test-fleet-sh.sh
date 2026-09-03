@@ -141,6 +141,25 @@ check "exited non-zero"          "[ $RC -ne 0 ]"
 check "said checksum mismatch"   "grep -qi 'checksum mismatch' '$WORK/bad.out'"
 check "installed nothing"        "[ ! -e '$BADROOT/usr/local/bin/warphold' ]"
 
+# ------------------------------------- 7. activation drops to the service user
+#
+# The root override runs unprivileged, so there is no service user to drop to
+# and no ownership for the harness to observe at runtime: what it can check is
+# that the script never runs a state-writing command as the caller. Activation
+# creates fleet.db, seal.key and the host repository under directories already
+# chowned to the service user, so a root-owned file there is a service that
+# cannot write its own database.
+
+echo "== activation runs as the service user, with the secrets in the environment"
+check "has a privilege-drop helper" "grep -q 'as_service_user()' '$FLEET_SH'"
+check "uses runuser"                "grep -q 'runuser -u \"\$SVC_USER\"' '$FLEET_SH'"
+check "falls back to su"            "grep -q 'su -s /bin/sh -c' '$FLEET_SH'"
+check "activation is wrapped"       "grep -q 'as_service_user \"\$BIN_DIR/warphold\" \"\$@\"' '$FLEET_SH'"
+check "no unwrapped activation"     "! grep -qE '^ *\"\\\$BIN_DIR/warphold\" \"\\\$@\"' '$FLEET_SH'"
+check "secrets go through env"      "grep -q 'env WARPHOLD_ADMIN_PASSWORD' '$FLEET_SH'"
+check "secrets never hit a file"    "! grep -q 'WARPHOLD_SEAL_PASSPHRASE.*>' '$FLEET_SH'"
+check "the printed command drops too" "grep -q 'runuser -u \$SVC_USER -- warphold' '$FLEET_SH'"
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

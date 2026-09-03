@@ -23,7 +23,7 @@ type commandAppRun struct {
 }
 
 func (c *commandAppRun) setup(svc advancedAppServices, parent commandParent) {
-	cmd := parent.Command("run", "Run this machine's backup engine and serve the app on loopback.")
+	cmd := parent.Command("run", "Run this machine's backup engine and serve the app on loopback. Needs credential persistence (do not pass --no-persist-credentials).")
 	c.svc = svc
 	c.out.setup(svc)
 	cmd.Action(svc.noRepositoryAction(c.run))
@@ -32,10 +32,15 @@ func (c *commandAppRun) setup(svc advancedAppServices, parent commandParent) {
 func (c *commandAppRun) run(ctx context.Context) error {
 	cfg := state.RepoConfigPath(state.ScopeApp)
 
+	persist, err := appPersist(c.svc)
+	if err != nil {
+		return err
+	}
+
 	// No password yet is the first run, not a failure. Anything else - an
 	// unreadable password file - is: starting with an empty password would
 	// look to the user like the repository had gone missing.
-	password, err := engine.AppPasswordPersist().GetPassword(ctx, cfg)
+	password, err := persist.GetPassword(ctx, cfg)
 	if err != nil && !errors.Is(err, passwordpersist.ErrPasswordNotFound) {
 		return errors.Wrap(err, "unable to read the repository password")
 	}
@@ -47,7 +52,7 @@ func (c *commandAppRun) run(ctx context.Context) error {
 	// engine.json, and a stale one points the tray at a dead port.
 	c.svc.onTerminate(cancel)
 
-	h, err := engine.StartHeadless(ctx, cfg, password, state.ScopeApp)
+	h, err := engine.StartHeadless(ctx, cfg, password, state.ScopeApp, persist)
 	if err != nil {
 		return err
 	}

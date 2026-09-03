@@ -42,6 +42,11 @@ func home() string {
 // Dir is where agent.json and repository.config live. $WARPHOLD_STATE_DIR
 // overrides every scope, for tests.
 func Dir(scope string) string {
+	return appSuffix(scope, baseDir(scope))
+}
+
+// baseDir is the scope's directory before the app suffix.
+func baseDir(scope string) string {
 	if d := os.Getenv("WARPHOLD_STATE_DIR"); d != "" {
 		return d
 	}
@@ -50,38 +55,40 @@ func Dir(scope string) string {
 		return "/etc/warphold"
 	}
 
-	base := filepath.Join(home(), ".config", "warphold")
 	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" {
-		base = filepath.Join(x, "warphold")
+		return filepath.Join(x, "warphold")
 	}
 
+	return filepath.Join(home(), ".config", "warphold")
+}
+
+// appSuffix keeps the standalone app one level below whichever directory the
+// scope resolved to - including an explicit WARPHOLD_STATE_DIR, so pointing
+// both an agent and an app at one directory still gives them separate
+// repositories rather than one they would fight over.
+func appSuffix(scope, dir string) string {
 	if scope == ScopeApp {
-		return filepath.Join(base, "app")
+		return filepath.Join(dir, "app")
 	}
 
-	return base
+	return dir
 }
 
 // CacheDir is the Kopia content cache directory for the agent's repository.
 func CacheDir(scope string) string {
 	if d := os.Getenv("WARPHOLD_STATE_DIR"); d != "" {
-		return filepath.Join(d, "cache")
+		return filepath.Join(appSuffix(scope, d), "cache")
 	}
 
 	if scope == ScopeSystem {
 		return "/var/cache/warphold"
 	}
 
-	base := filepath.Join(home(), ".cache", "warphold")
 	if x := os.Getenv("XDG_CACHE_HOME"); x != "" {
-		base = filepath.Join(x, "warphold")
+		return appSuffix(scope, filepath.Join(x, "warphold"))
 	}
 
-	if scope == ScopeApp {
-		return filepath.Join(base, "app")
-	}
-
-	return base
+	return appSuffix(scope, filepath.Join(home(), ".cache", "warphold"))
 }
 
 // RepoConfigPath is the Kopia repository config file for the agent's scope.

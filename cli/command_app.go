@@ -4,9 +4,12 @@ import (
 	"context"
 	"os"
 
+	"github.com/pkg/errors"
+
 	"github.com/kopia/kopia/agent/engine"
 	"github.com/kopia/kopia/agent/state"
 	"github.com/kopia/kopia/internal/apiclient"
+	"github.com/kopia/kopia/internal/passwordpersist"
 	"github.com/kopia/kopia/internal/serverapi"
 )
 
@@ -30,6 +33,24 @@ func (c *commandApp) setup(svc advancedAppServices, parent commandParent) {
 	c.uninstall.setup(svc, cmd)
 	c.status.setup(svc, cmd)
 	c.url.setup(svc, cmd)
+}
+
+// appPersist is where the app's repository password is stored. Its repository
+// is created by the UI's setup wizard, so unlike an agent's there is no
+// enrollment to have saved the password already - and the service has to
+// reopen that repository unattended at every boot, which it cannot do if the
+// password was never written down.
+//
+// The strategy itself is the CLI's own (keyring then file, or file alone), so
+// the app stores its password exactly where every other Kopia command on this
+// machine does.
+func appPersist(svc advancedAppServices) (passwordpersist.Strategy, error) {
+	p := svc.passwordPersistenceStrategy()
+	if p == passwordpersist.None() {
+		return nil, errors.New("the app must store its repository password to restart unattended: re-run without --no-persist-credentials (or KOPIA_PERSIST_CREDENTIALS_ON_CONNECT=false)")
+	}
+
+	return p, nil
 }
 
 // commandAppStatus reports what the standalone app's engine is backing up. It

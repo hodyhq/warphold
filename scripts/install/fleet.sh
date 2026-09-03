@@ -59,6 +59,33 @@ say() { printf '%s\n' "$*"; }
 die() { printf 'fleet.sh: %s\n' "$*" >&2; exit 1; }
 run() { printf '+ %s\n' "$*"; [ "$DRY" = 1 ] || "$@"; }
 
+# as_service_user runs a command as the account the service runs as. Anything
+# that writes into the state or data directory has to: activation creates
+# fleet.db, seal.key and the host repository under directories already chowned
+# to $SVC_USER, and a file root writes there is a file the service cannot
+# rewrite afterwards.
+#
+# Secrets reach the child through the environment of the "env" that invokes
+# this - runuser and su both keep a non-login environment - so they are never
+# an argument (visible in "ps") and never a file (readable on disk).
+#
+# Under WARPHOLD_INSTALL_ROOT there is no service user and no privilege to
+# drop, so the command runs as-is.
+as_service_user() {
+  if [ -n "$ROOT" ]; then
+    "$@"
+  elif command -v runuser >/dev/null 2>&1; then
+    runuser -u "$SVC_USER" -- "$@"
+  else
+    # su takes one shell string, so every argument is single-quoted into it.
+    q=''
+    for a in "$@"; do
+      q="$q '$(printf '%s' "$a" | sed "s/'/'\\\\''/g")'"
+    done
+    su -s /bin/sh -c "$q" "$SVC_USER"
+  fi
+}
+
 # fetch downloads a URL to stdout, refusing a plaintext or downgraded
 # redirect for anything that starts out over TLS: --proto '=https' allows only
 # https for the request and every redirect it follows, and --tlsv1.2 sets the
@@ -307,9 +334,9 @@ if [ -n "${WARPHOLD_SETUP_PUBLIC_URL:-}" ] && [ -n "${WARPHOLD_SETUP_EMAIL:-}" ]
   else
     say "note: this build has no --public-url yet; set it in the dashboard afterwards."
   fi
-  WARPHOLD_ADMIN_PASSWORD="$WARPHOLD_SETUP_PASSWORD" \
-  WARPHOLD_SEAL_PASSPHRASE="$WARPHOLD_SETUP_PASSPHRASE" \
-    "$BIN_DIR/warphold" "$@"
+  env WARPHOLD_ADMIN_PASSWORD="$WARPHOLD_SETUP_PASSWORD" \
+      WARPHOLD_SEAL_PASSPHRASE="$WARPHOLD_SETUP_PASSPHRASE" \
+      as_service_user "$BIN_DIR/warphold" "$@"
   say ""
   say "Fleet is activated. Sign in at $WARPHOLD_SETUP_PUBLIC_URL"
   say ""
@@ -339,7 +366,9 @@ say "    WARPHOLD_SETUP_PUBLIC_URL=https://fleet.example.com \\"
 say "    WARPHOLD_SETUP_EMAIL=admin@example.com \\"
 say "    WARPHOLD_SETUP_PASSWORD=... WARPHOLD_SETUP_PASSPHRASE=... sh fleet.sh"
 say "which runs:"
-say "    warphold --config-file $CONFIG_FILE fleet activate \\"
+say "    runuser -u $SVC_USER -- warphold --config-file $CONFIG_FILE fleet activate \\"
 say "        --email <email> --public-url <public url>"
+say "(as $SVC_USER, so the database, the seal key and the host repository stay"
+say " writable by the service)"
 say "with the password and passphrase read from the environment, so neither"
 say "appears in 'ps'."

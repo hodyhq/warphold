@@ -14,6 +14,7 @@ import (
 
 	"github.com/kopia/kopia/agent/engine"
 	"github.com/kopia/kopia/agent/state"
+	"github.com/kopia/kopia/internal/passwordpersist"
 )
 
 // startUnconfiguredApp starts the engine the standalone app runs on its first
@@ -29,7 +30,7 @@ func startUnconfiguredApp(t *testing.T) (*engine.Headless, string) {
 	stateDir := filepath.Join(cfgHome, "warphold", "app")
 	require.Equal(t, stateDir, state.Dir(state.ScopeApp))
 
-	h, err := engine.StartHeadless(ctx, state.RepoConfigPath(state.ScopeApp), "", state.ScopeApp)
+	h, err := engine.StartHeadless(ctx, state.RepoConfigPath(state.ScopeApp), "", state.ScopeApp, passwordpersist.File())
 	require.NoError(t, err)
 
 	t.Cleanup(func() { h.Stop(ctx) }) //nolint:errcheck
@@ -62,6 +63,35 @@ func TestAppEngineStartsWithoutARepository(t *testing.T) {
 
 	// The API answers - as "not connected", not as a failure.
 	require.Equal(t, http.StatusOK, get(t, h, "/api/v1/repo/status"))
+}
+
+// TestAppStateDirOverrideKeepsTheAppSeparate pins that an explicit
+// WARPHOLD_STATE_DIR - which the installed unit bakes in - still puts the app
+// one level down, so an agent and an app pointed at one directory do not end
+// up sharing a repository.
+func TestAppStateDirOverrideKeepsTheAppSeparate(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("WARPHOLD_STATE_DIR", dir)
+
+	require.Equal(t, dir, state.Dir(state.ScopeUser))
+	require.Equal(t, filepath.Join(dir, "app"), state.Dir(state.ScopeApp))
+	require.Equal(t, filepath.Join(dir, "app", "cache"), state.CacheDir(state.ScopeApp))
+}
+
+// TestAgentEngineRefusesAMissingRepository pins that the first-run tolerance
+// above is the app scope's alone: an enrolled agent connected its repository
+// at enrollment, so a missing repository.config there is a real failure and
+// must be reported rather than becoming an engine that quietly backs nothing
+// up.
+func TestAgentEngineRefusesAMissingRepository(t *testing.T) {
+	t.Setenv("WARPHOLD_STATE_DIR", t.TempDir())
+
+	h, err := engine.StartHeadless(context.Background(), state.RepoConfigPath(state.ScopeUser), "", state.ScopeUser, passwordpersist.None())
+	if h != nil {
+		defer h.Stop(context.Background()) //nolint:errcheck
+	}
+
+	require.Error(t, err)
 }
 
 // TestAppEngineServesSoloUI pins what the SPA sees in solo mode: the bundle
@@ -157,4 +187,51 @@ func get(t *testing.T, h *engine.Headless, path string) int {
 	defer resp.Body.Close() //nolint:errcheck
 
 	return resp.StatusCode
+}
+
+// TestAppLocalInfoIsTheHostname pins the label the app's own page shows:
+// there is no enrollment to name it, so /local/info answers with this
+// machine's hostname - the same label the tray uses, so the two never
+// disagree.
+func TestAppLocalInfoIsTheHostname(t *testing.T) {
+	h, _ := startUnconfiguredApp(t)
+
+	info, err := engine.ReadInfo(state.ScopeApp)
+	require.NoError(t, err)
+
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, h.BaseURL+"/local/session?t="+url.QueryEscape(info.LocalToken), nil)
+	require.NoError(t, err)
+
+	session, err := client.Do(req)
+	require.NoError(t, err)
+
+	defer session.Body.Close() //nolint:errcheck
+
+	var cookie *http.Cookie
+
+	for _, c := range session.Cookies() {
+		if c.Name == "wh_local" {
+			cookie = c
+		}
+	}
+
+	require.NotNil(t, cookie)
+
+	infoReq, err := http.NewRequestWithContext(context.Background(), http.MethodGet, h.BaseURL+"/local/info", nil)
+	require.NoError(t, err)
+	infoReq.AddCookie(cookie)
+
+	resp, err := client.Do(infoReq)
+	require.NoError(t, err)
+
+	defer resp.Body.Close() //nolint:errcheck
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	host, err := os.Hostname()
+	require.NoError(t, err)
+	require.JSONEq(t, `{"name":"`+host+`","group":""}`, string(body))
 }

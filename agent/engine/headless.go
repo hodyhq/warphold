@@ -56,32 +56,17 @@ func randomHex(n int) string {
 	return hex.EncodeToString(b)
 }
 
-// AppPasswordPersist is where the standalone app's repository password is
-// kept: a 0600 file beside repository.config, inside the app's 0700 state
-// directory. Unlike an agent's, this repository is created by the UI's setup
-// wizard rather than by enrollment, so the engine itself is the only thing
-// that can persist the password - without it the app could never reopen its
-// repository after a restart. A keyring is not used: the service can start
-// before the user logs in, where there is no session bus to unlock one.
-func AppPasswordPersist() passwordpersist.Strategy { return passwordpersist.File() }
-
 // StartHeadless opens the repository at configFile and serves the control +
 // UI API, plus the WarpHold UI itself, on 127.0.0.1:0. scope selects the state directory (see state.Dir),
 // which holds the UI preferences and the engine.json written once the engine
 // is listening; Stop removes that file.
 //
-// A configFile that does not exist yet is not an error: the engine comes up
-// with no repository and the UI's setup wizard creates one, exactly as
-// upstream's "server start" does (cli/config.go openRepository).
-func StartHeadless(ctx context.Context, configFile, repoPassword, scope string) (_ *Headless, retErr error) {
-	// Only the app's own repository is created through the UI, so only the
-	// app scope persists the password the wizard chooses; an agent's comes
-	// from enrollment and the engine must not touch it.
-	persist := passwordpersist.None()
-	if scope == state.ScopeApp {
-		persist = AppPasswordPersist()
-	}
-
+// persist is where the server's own connect/create endpoints store the
+// repository password. The agent passes passwordpersist.None() - its password
+// comes from enrollment and nothing here may touch it; the app passes the
+// CLI's configured strategy, because its repository is created by the UI's
+// setup wizard and that password has nowhere else to go.
+func StartHeadless(ctx context.Context, configFile, repoPassword, scope string, persist passwordpersist.Strategy) (_ *Headless, retErr error) {
 	h := &Headless{User: headlessUser, Password: randomHex(32), LocalToken: randomHex(32), scope: scope}
 	srv, err := server.New(ctx, &server.Options{
 		ConfigFile:        configFile,
@@ -108,10 +93,17 @@ func StartHeadless(ctx context.Context, configFile, repoPassword, scope string) 
 	}
 	h.srv = srv
 	open := func(ctx context.Context) (repo.Repository, error) {
-		// A nil repository means "not configured": the server starts, reports
-		// itself unconnected and lets the UI connect it. An os.Stat error
-		// other than IsNotExist is left to repo.Open to report.
-		if _, err := os.Stat(configFile); os.IsNotExist(err) {
+		// The standalone app's first run has no repository at all: the UI's
+		// setup wizard is what creates one, so a nil repository here means
+		// "not configured" and the server comes up unconnected, exactly as
+		// upstream's "server start" does (cli/config.go openRepository).
+		//
+		// The agent scope deliberately does not get this: it is enrolled, its
+		// repository was connected at enrollment, and a missing config file
+		// there means something went wrong and must be reported - not an
+		// engine that quietly backs nothing up. An os.Stat error other than
+		// IsNotExist is left to repo.Open to report.
+		if _, err := os.Stat(configFile); os.IsNotExist(err) && scope == state.ScopeApp {
 			return nil, nil
 		}
 
