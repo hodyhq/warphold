@@ -11,10 +11,15 @@ import (
 	"io"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // MaxKeyLen is the longest object key we accept, matching S3's own limit.
 const MaxKeyLen = 1024
+
+// tmpDir is reserved: it is where backends stage partial writes, so no device
+// may own a key under it.
+const tmpDir = ".tmp"
 
 // ObjectInfo is what HEAD and LIST return.
 type ObjectInfo struct {
@@ -40,21 +45,34 @@ var ErrRange = errors.New("invalid range")
 // matching on strings.
 var ErrBadKey = errors.New("invalid object key")
 
+// ErrTooLarge is returned by Put when the body exceeds the store's object-size
+// limit, whether the caller declared the size or streamed it. 413.
+var ErrTooLarge = errors.New("object too large")
+
+// ErrIncompleteBody is returned by Put when the body does not deliver exactly
+// the declared number of bytes. 400 IncompleteBody.
+var ErrIncompleteBody = errors.New("body does not match the declared size")
+
 // ObjectStore is the subset of S3 the gateway needs, over one backing store.
 //
+// Keys are flat: exactly "<device-id>/<blob-name>" (§4.3). There is no object
+// hierarchy below the device, so a device can never make the server create an
+// arbitrarily deep directory tree.
+//
 // ETag is filled in by Put (which hashes as it streams, so it is free there)
-// and by Head, which is where S3 clients look for it. Get and List leave it
-// empty rather than reading every object back only to hash it.
+// and by Head. Get and List leave it empty rather than reading every object
+// back only to hash it.
 type ObjectStore interface {
 	// Put stores r under key. size is the expected byte count, or -1 if it is
-	// unknown; a reader that delivers a different count is an error and stores
-	// nothing. Without overwrite, an existing key is ErrExists and its bytes
-	// are left untouched.
+	// unknown; a reader that delivers a different count is ErrIncompleteBody
+	// and stores nothing. Without overwrite, an existing key is ErrExists and
+	// its bytes are left untouched.
 	Put(ctx context.Context, key string, r io.Reader, size int64, overwrite bool) (ObjectInfo, error)
 
 	// Get returns the bytes at [offset, offset+length), where length < 0 means
 	// "to the end" and a length past the end is clamped. The ObjectInfo
-	// describes the whole object, not the returned range.
+	// describes the whole object, not the returned range, and its ETag is
+	// empty - call Head for that.
 	Get(ctx context.Context, key string, offset, length int64) (io.ReadCloser, ObjectInfo, error)
 
 	// Head returns the object's metadata, including its ETag.
@@ -62,7 +80,7 @@ type ObjectStore interface {
 
 	// List returns objects under prefix in lexicographic order, starting after
 	// the key after (exclusive) and capped at max. truncated reports whether
-	// more objects follow the last one returned.
+	// more objects follow the last one returned. ETag is left empty.
 	List(ctx context.Context, prefix, after string, max int) (objs []ObjectInfo, truncated bool, err error)
 
 	// Delete removes exactly one object. A missing key is ErrNotFound.
@@ -79,6 +97,10 @@ type ObjectStore interface {
 // does not start with prefix. The returned key is the input unchanged - it
 // never rewrites, so the caller cannot be surprised by a different key.
 //
+// It also rejects, for the reasons in checkKey: invalid UTF-8, C1 controls,
+// backslashes, a second '/' (the key space is flat, §4.3), and anything under
+// the reserved ".tmp" directory.
+//
 // A non-empty prefix must end in '/'. Otherwise "abc123" would confine a device
 // to its own keys and to every device whose id merely starts with "abc123".
 func NormalizeKey(key, prefix string) (string, error) {
@@ -86,8 +108,14 @@ func NormalizeKey(key, prefix string) (string, error) {
 		return "", err
 	}
 
-	if prefix != "" && !strings.HasSuffix(prefix, "/") {
-		return "", fmt.Errorf("%w: prefix %q does not end in a slash", ErrBadKey, prefix)
+	if prefix != "" {
+		if !strings.HasSuffix(prefix, "/") {
+			return "", fmt.Errorf("%w: prefix %q does not end in a slash", ErrBadKey, prefix)
+		}
+
+		if strings.TrimSuffix(prefix, "/") == tmpDir {
+			return "", fmt.Errorf("%w: prefix %q is reserved", ErrBadKey, prefix)
+		}
 	}
 
 	if !strings.HasPrefix(key, prefix) {
@@ -107,20 +135,34 @@ func checkKey(key string) error {
 		return fmt.Errorf("%w: %d bytes, limit %d", ErrBadKey, len(key), MaxKeyLen)
 	case key[0] == '/':
 		return fmt.Errorf("%w: %q is absolute", ErrBadKey, key)
+	case !utf8.ValidString(key):
+		return fmt.Errorf("%w: not valid UTF-8", ErrBadKey)
 	}
 
-	for i := range len(key) {
-		// Backslash is rejected because it is a path separator on Windows, so a
-		// segment check that only splits on '/' would miss `..\` traversal.
-		if c := key[i]; c < 0x20 || c == 0x7f || c == '\\' {
-			return fmt.Errorf("%w: %q contains a forbidden byte", ErrBadKey, key)
+	for _, r := range key {
+		// C0 and C1 controls and DEL have no place in a key and are how a log
+		// line or an XML response gets forged. Backslash is rejected because it
+		// is a path separator on Windows, so a segment check that splits only
+		// on '/' would miss `..\` traversal.
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) || r == '\\' {
+			return fmt.Errorf("%w: %q contains a forbidden character", ErrBadKey, key)
 		}
 	}
 
-	for seg := range strings.SplitSeq(key, "/") {
+	// The key space is flat: "<device-id>/<blob-name>", nothing deeper (§4.3).
+	device, name, found := strings.Cut(key, "/")
+	if !found || strings.Contains(name, "/") {
+		return fmt.Errorf("%w: %q is not <device-id>/<blob-name>", ErrBadKey, key)
+	}
+
+	for _, seg := range []string{device, name} {
 		if seg == "" || seg == "." || seg == ".." {
 			return fmt.Errorf("%w: %q has an empty or relative segment", ErrBadKey, key)
 		}
+	}
+
+	if device == tmpDir {
+		return fmt.Errorf("%w: %q is reserved", ErrBadKey, key)
 	}
 
 	return nil
