@@ -390,6 +390,8 @@ The gateway is the only component whose cost scales with device count.
 
 ## 14. Reconcile at execution time
 
+00. **RESOLVED by the Task 11 review (cloud-direct atomicity):** Kopia's `s3` and `b2` providers reject `DoNotRecreate`, so a Head-then-Put would let a racing PUT silently overwrite. Cloud-direct therefore accepts **S3-compatible endpoints only** (B2 through its S3 endpoint, not the native B2 API), writes with a real conditional put (`If-None-Match: *` → 412 = `ErrExists`), and `ProbeConditionalPut` runs at target creation next to Object-Lock verification; a provider that ignores the precondition is refused with "use Fleet disk + mirror". Uploads over 8 MiB spool to a temp file, never RAM. Per-object retention is not passed through: Object Lock's bucket-default retention is the mechanism.
+
 0. **RESOLVED by the Task 3 review:** minio-go rejects an endpoint with a path (`Endpoint url cannot have fully qualified paths`), so the gateway cannot live under `/s3/`; it is mounted at the bucket path `/warphold/` on the public host. Unsigned `x-amz-*` request headers are rejected; `Content-MD5` is verified by the handler on every PUT (the payload is UNSIGNED over TLS); replay inside the ±15 min skew window is accepted by design (append-only storage makes it harmless).
 
 These are the things this spec asserts from reading code, and which the plan must confirm against reality before depending on them.
