@@ -42,6 +42,11 @@ var (
 	ErrSignatureDoesNotMatch  = errors.New("signature does not match")
 	ErrRequestTimeTooSkewed   = errors.New("request time too skewed")
 
+	// ErrUnsignedAmzHeader is an x-amz-* request header the client left out of
+	// SignedHeaders. Such a header is outside the signature, so a proxy or an
+	// attacker could add one and change how the request is interpreted.
+	ErrUnsignedAmzHeader = errors.New("unsigned x-amz-* header")
+
 	// ErrMalformedQuery is a query string url.ParseQuery cannot read whole.
 	// Go's URL.Query() would silently drop the unreadable pairs, which would
 	// leave them outside the signature; the gateway refuses them instead.
@@ -52,9 +57,6 @@ var (
 	// reached over TLS, where the client sends UNSIGNED-PAYLOAD instead.
 	ErrStreamingUnsupported = errors.New("streaming payload signing is not supported; use an https:// endpoint so the client sends UNSIGNED-PAYLOAD")
 )
-
-// Credential is what a verified request identifies.
-type Credential struct{ AccessKeyID, Secret string }
 
 // SecretLookup resolves an access key id to its secret. A disabled or unknown
 // key returns ok=false; the caller answers InvalidAccessKeyId either way, so a
@@ -68,14 +70,33 @@ const decoySecret = "0000000000000000000000000000000000000000"
 // Verify checks an AWS4-HMAC-SHA256 signature on r and returns the access key
 // id it was signed with. It rejects: a missing or non-AWS4 Authorization
 // header, an X-Amz-Date more than maxClockSkew from now, a SignedHeaders set
-// without "host", "x-amz-content-sha256" or "x-amz-date", a credential scope
-// naming a different service (or, when region is non-empty, a different
-// region), an unknown key, and a signature mismatch (compared with
+// without "host", "x-amz-content-sha256" or "x-amz-date", any x-amz-* request
+// header the client did not sign, a credential scope naming a different region
+// or service, an unknown key, and a signature mismatch (compared with
 // hmac.Equal). It never reads the body: the payload hash is taken verbatim
 // from x-amz-content-sha256.
 //
-// An empty region accepts whatever region the client signed with, which is
-// what an S3 client that discovered the region via GetBucketLocation sends.
+// Region is exact; there is no wildcard. minio-go signs GetBucketLocation with
+// a hardcoded "us-east-1" whatever the client's configured region is
+// (minio-go/bucket-cache.go), so the handler must pass region "us-east-1" for
+// a "?location=" request and the target's configured region for every other
+// request.
+//
+// Mounting: the gateway is mounted at the bucket path ("/warphold/") on the
+// public host — path-style S3, endpoint = the public host, no route prefix —
+// so r.URL.Path is exactly the path the client signed. Mounting it under a
+// prefix such as "/s3" changes the canonical request and every signature
+// fails.
+//
+// Canonicalisation aliasing: different wire spellings of a path or query can
+// canonicalise to the same signed bytes, so callers must key storage access
+// and prefix confinement off the decoded r.URL.Path and r.URL.Query() and
+// never off r.RequestURI or r.URL.RawPath. Normalising the key is the
+// caller's job (Task 2's NormalizeKey): Verify authenticates a request, it
+// does not authorise a key.
+//
+// Replaying a byte-identical signed request inside the skew window is accepted
+// by design — the store is append-only, so a replay is a no-op or a 409.
 func Verify(ctx context.Context, r *http.Request, region, service string, look SecretLookup, now time.Time) (string, error) {
 	akid, scope, signedHeaders, sig, err := parseAuthorization(r.Header.Get("Authorization"))
 	if err != nil {
@@ -105,7 +126,7 @@ func Verify(ctx context.Context, r *http.Request, region, service string, look S
 		return "", ErrRequestTimeTooSkewed
 	}
 
-	if err := requireSignedHeaders(signedHeaders); err != nil {
+	if err := requireSignedHeaders(r, signedHeaders); err != nil {
 		return "", err
 	}
 
@@ -180,7 +201,7 @@ func parseAuthorization(v string) (akid, scope string, signedHeaders []string, s
 }
 
 // parseScope validates "<yyyymmdd>/<region>/<service>/aws4_request" and
-// returns the date and region it names. An empty wantRegion accepts any.
+// returns the date and region it names.
 func parseScope(scope, wantRegion, wantService string) (date, region string, err error) {
 	parts := strings.Split(scope, "/")
 	if len(parts) != 4 || parts[3] != scopeTerminator {
@@ -192,26 +213,33 @@ func parseScope(scope, wantRegion, wantService string) (date, region string, err
 		return "", "", fmt.Errorf("%w: credential scope names service %q", ErrMalformedAuthorization, service)
 	}
 
-	if wantRegion != "" && region != wantRegion {
+	if region != wantRegion {
 		return "", "", fmt.Errorf("%w: credential scope names region %q", ErrMalformedAuthorization, region)
 	}
 
 	return date, region, nil
 }
 
-func requireSignedHeaders(signed []string) error {
+// requireSignedHeaders checks that SignedHeaders names the three headers the
+// signature is worthless without, and that it covers every x-amz-* header the
+// request actually carries. The x-amz-* sweep is deliberately not widened to
+// all headers: proxies legitimately add X-Forwarded-* after the client signed.
+func requireSignedHeaders(r *http.Request, signed []string) error {
+	set := make(map[string]bool, len(signed))
+	for _, h := range signed {
+		set[h] = true
+	}
+
 	for _, required := range []string{hostHeader, contentSHAHeader, dateHeader} {
-		found := false
-
-		for _, h := range signed {
-			if h == required {
-				found = true
-				break
-			}
-		}
-
-		if !found {
+		if !set[required] {
 			return fmt.Errorf("%w: SignedHeaders omits %s", ErrMalformedAuthorization, required)
+		}
+	}
+
+	for name := range r.Header {
+		lower := strings.ToLower(name)
+		if strings.HasPrefix(lower, "x-amz-") && !set[lower] {
+			return fmt.Errorf("%w: %s", ErrUnsignedAmzHeader, lower)
 		}
 	}
 
