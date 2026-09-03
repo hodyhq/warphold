@@ -54,9 +54,12 @@ func (l *Local) Verify(ctx context.Context) (poll.Report, error) {
 	}
 
 	// The engine holds the repository open for snapshots but Kopia's server API
-	// exposes no verify endpoint, so open a second read-only handle against the
-	// same config. Kopia supports concurrent readers, and this also keeps a
-	// long verify off the engine's own request path.
+	// exposes no verify endpoint, so open a second handle against the same
+	// config. Verify only ever reads through it - it opens no write session and
+	// touches nothing but the index, the blob list and object contents - but
+	// the handle itself is write-capable, exactly like the one
+	// `kopia snapshot verify` uses. Kopia supports concurrent openers, and a
+	// separate handle keeps a long verify off the engine's own request path.
 	rep, err := repo.Open(ctx, l.ConfigFile, l.RepoPassword, &repo.Options{})
 	if err != nil {
 		return poll.Report{}, errors.Wrap(err, "open repository")
@@ -73,6 +76,14 @@ func (l *Local) Verify(ctx context.Context) (poll.Report, error) {
 	// real existence check, which is how a deleted or lost pack is caught
 	// without downloading every file.
 	if dr, ok := rep.(repo.DirectRepository); ok {
+		// Pin the index for the whole walk: a background refresh partway
+		// through would leave the blob map below describing an older set of
+		// packs, so every content that moved since would look like a missing
+		// blob. An always-on agent verifying for longer than the refresh
+		// interval would report false damage. cli/command_snapshot_verify.go
+		// does the same, for the same reason.
+		dr.DisableIndexRefresh()
+
 		blobMap, err := blob.ReadBlobMap(ctx, dr.BlobReader())
 		if err != nil {
 			return poll.Report{}, errors.Wrap(err, "read blob map")
