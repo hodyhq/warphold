@@ -81,6 +81,12 @@ type Server struct {
 	// cannot each generate one.
 	setupMu sync.Mutex
 
+	// onActivated runs once, after reloadIfActivated picks up state another
+	// process wrote. reloadErrLogged keeps a load that keeps failing to one
+	// log line instead of one per request. Both are written under activateMu.
+	onActivated     []func()
+	reloadErrLogged bool
+
 	// setupTokenPath and setupToken gate POST /activate before the Fleet is
 	// activated (see handleActivate); both are cleared once activation succeeds.
 	setupTokenPath string
@@ -315,8 +321,17 @@ func (s *Server) removePartialState() {
 // moves from "no state" to "state", never the other way, and never resurrects
 // a server that Close() shut down.
 func (s *Server) reloadIfActivated() {
+	for _, f := range s.reload() {
+		// Off the request goroutine and out from under activateMu: a callback
+		// opens a repository, which has no business blocking a status probe.
+		go f()
+	}
+}
+
+// reload is reloadIfActivated's locked half; it returns the callbacks to run.
+func (s *Server) reload() []func() {
 	if s.Activated() {
-		return
+		return nil
 	}
 
 	s.activateMu.Lock()
@@ -328,20 +343,39 @@ func (s *Server) reloadIfActivated() {
 
 	if haveStore {
 		// Closed, not unactivated.
-		return
+		return nil
 	}
 
 	if _, err := os.Stat(s.paths.KeyFile); err != nil {
-		return
+		return nil
 	}
 
 	if err := s.load(); err != nil {
-		log.Printf("warphold fleet: state appeared in %s but cannot be loaded: %v", s.paths.StateDir, err)
-		return
+		if !s.reloadErrLogged {
+			s.reloadErrLogged = true
+			log.Printf("warphold fleet: state appeared in %s but cannot be loaded (further attempts stay quiet): %v", s.paths.StateDir, err)
+		}
+		return nil
 	}
 
 	s.clearSetupToken()
 	log.Printf("warphold fleet: activated by another process; loaded state from %s", s.paths.StateDir)
+
+	cbs := s.onActivated
+	s.onActivated = nil
+
+	return cbs
+}
+
+// OnActivated registers f to run once, when state written by another process
+// is picked up (see reloadIfActivated) - `warphold fleet activate` runs as a
+// separate process against a service that is already up. It does not fire for
+// state that was already there when the server started; the caller does that
+// work itself at start.
+func (s *Server) OnActivated(f func()) {
+	s.activateMu.Lock()
+	defer s.activateMu.Unlock()
+	s.onActivated = append(s.onActivated, f)
 }
 
 // clearSetupToken deletes the one-time setup token file once activation succeeds.
@@ -383,7 +417,6 @@ func decode(r *http.Request, v any) error {
 // is what lets that validation tell this Fleet apart from another one behind
 // the same URL; it is opaque and authorizes nothing.
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	s.reloadIfActivated()
 	out := map[string]any{"activated": s.Activated()}
 	if s.Activated() {
 		if id, err := s.instanceID(r.Context()); err == nil {
@@ -574,7 +607,6 @@ func (s *Server) AgentForTesting(ctx context.Context, id string) *store.Agent {
 // requireActivated wraps admin handlers so they 409 before activation.
 func (s *Server) requireActivated(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		s.reloadIfActivated()
 		if !s.Activated() {
 			writeErr(w, http.StatusConflict, "fleet is not activated")
 			return

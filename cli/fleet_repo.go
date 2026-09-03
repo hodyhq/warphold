@@ -37,6 +37,33 @@ const (
 	fleetDataRoot    = "/srv/warphold"
 )
 
+// resolveDataDir turns the --data-dir flag (or the default) into an absolute
+// path and refuses one whose own directory entry is a symlink: everything
+// under it is repository data written by a privileged service, and following
+// a link somebody else can point elsewhere is how that data ends up outside
+// the directory the installer secured. Symlinks deeper in the tree are not
+// checked - that is the filesystem's job, not a flag's.
+func resolveDataDir(dataDir, configFile string) (string, error) {
+	if dataDir == "" {
+		dataDir = fleetDataDir(configFile)
+	}
+
+	abs, err := filepath.Abs(dataDir)
+	if err != nil {
+		return "", errors.Wrap(err, "data directory")
+	}
+
+	if !filepath.IsAbs(abs) {
+		return "", errors.Errorf("data directory %q is not absolute", dataDir)
+	}
+
+	if fi, err := os.Lstat(abs); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		return "", errors.Errorf("data directory %v is a symlink; point --data-dir at a real directory", abs)
+	}
+
+	return abs, nil
+}
+
 // fleetDataDir is where this host keeps Fleet data: /srv/warphold on a
 // packaged install - it exists only because scripts/install/fleet.sh created
 // it - and a directory next to the repository config file everywhere else,
@@ -59,8 +86,9 @@ func fleetDataDir(configFile string) string {
 // repository password is random and sealed in the Fleet DB, so nothing has to
 // prompt for it and nothing but this Fleet can read it.
 func ensureFleetRepo(ctx context.Context, fs *api.Server, configFile, dataDir string) (repoDir, repoConfig string, err error) {
-	if dataDir == "" {
-		dataDir = fleetDataDir(configFile)
+	dataDir, err = resolveDataDir(dataDir, configFile)
+	if err != nil {
+		return "", "", err
 	}
 
 	stateDir := fleet.StateDirFor(configFile)
@@ -117,14 +145,17 @@ func serveFleetRepo(ctx context.Context, srv *server.Server, fs *api.Server, con
 		return
 	}
 
-	repoDir, repoConfig, err := ensureFleetRepo(ctx, fs, configFile, "")
-	if err != nil {
-		log(ctx).Warnf("WarpHold Fleet: this host has no usable repository of its own: %v", err)
+	// Checked before anything is created: with a repository already connected
+	// there is nothing to serve it into, and minting one would leave an unused
+	// repository (and its sealed password) behind.
+	if _, err := os.Stat(configFile); err == nil {
+		log(ctx).Infof("WarpHold Fleet: serving the repository %v is connected to; this host gets no repository of its own.", configFile)
 		return
 	}
 
-	if _, err := os.Stat(configFile); err == nil {
-		log(ctx).Infof("WarpHold Fleet: this host's own repository is %v; serving the repository this installation is connected to instead.", repoDir)
+	repoDir, repoConfig, err := ensureFleetRepo(ctx, fs, configFile, "")
+	if err != nil {
+		log(ctx).Warnf("WarpHold Fleet: this host has no usable repository of its own: %v", err)
 		return
 	}
 

@@ -241,6 +241,10 @@ func probePublicURL(ctx context.Context, hc *http.Client, u *url.URL, wantInstan
 // until public_url is set.
 func (s *Server) requireHost(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Every Fleet route goes through requireHost, so this is the one place
+		// that has to notice an activation another process performed - the
+		// installer runs `warphold fleet activate` against a running service.
+		s.reloadIfActivated()
 		if u, ok := s.PublicURL(r.Context()); ok {
 			got := hostOnly(r.Host)
 			if !strings.EqualFold(got, hostOnly(u.Host)) && !isLoopbackHost(got) {

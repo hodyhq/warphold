@@ -30,8 +30,11 @@ func (c *commandFleetActivate) setup(svc appServices, parent commandParent) {
 	// Required() is still satisfied by an environment value: kingpin's
 	// needsValue() treats an envar value as provided.
 	cmd.Flag("email", "First admin email").Required().Envar(svc.EnvName("WARPHOLD_SETUP_EMAIL")).StringVar(&c.email)
-	cmd.Flag("admin-password", "First admin password (8+ chars)").Envar(svc.EnvName("WARPHOLD_ADMIN_PASSWORD")).StringVar(&c.password)
-	cmd.Flag("passphrase", "Sealing passphrase (8+ chars); prompted if omitted").Envar(svc.EnvName("WARPHOLD_SEAL_PASSPHRASE")).StringVar(&c.passphrase)
+	// kingpin binds one environment variable per flag, so the installer's
+	// WARPHOLD_SETUP_* spellings are read in run() and named here instead, to
+	// keep them in --help.
+	cmd.Flag("admin-password", "First admin password (8+ chars); or WARPHOLD_ADMIN_PASSWORD, or WARPHOLD_SETUP_PASSWORD").Envar(svc.EnvName("WARPHOLD_ADMIN_PASSWORD")).StringVar(&c.password)
+	cmd.Flag("passphrase", "Sealing passphrase (8+ chars), prompted if omitted; or WARPHOLD_SEAL_PASSPHRASE, or WARPHOLD_SETUP_PASSPHRASE").Envar(svc.EnvName("WARPHOLD_SEAL_PASSPHRASE")).StringVar(&c.passphrase)
 	cmd.Flag("public-url", "Public URL devices and browsers reach this Fleet on, e.g. https://fleet.example.com").Envar(svc.EnvName("WARPHOLD_SETUP_PUBLIC_URL")).StringVar(&c.publicURL)
 	cmd.Flag("verify-public-url", "Fetch --public-url end to end before finishing and fail if it does not answer as this Fleet").BoolVar(&c.verifyURL)
 	cmd.Flag("data-dir", "Directory for this host's own Fleet data; its repository is created in <data-dir>/"+fleetRepoDirName).StringVar(&c.dataDir)
@@ -67,6 +70,13 @@ func (c *commandFleetActivate) run(ctx context.Context) error {
 		}
 	} else if c.verifyURL {
 		return errors.New("--verify-public-url needs --public-url")
+	}
+
+	// Same reason: a --data-dir that is relative or symlinked must fail here,
+	// not after the Fleet has been activated.
+	dataDir, err := resolveDataDir(c.dataDir, c.svc.repositoryConfigFileName())
+	if err != nil {
+		return err
 	}
 
 	if c.passphrase == "" {
@@ -113,7 +123,7 @@ func (c *commandFleetActivate) run(ctx context.Context) error {
 	// it with a repository of its own rather than "Repository not configured".
 	// A failure here is not fatal: the Fleet is activated and every other
 	// machine's backups work, and the next `server start` retries this.
-	path, _, err := ensureFleetRepo(ctx, s, configFile, c.dataDir)
+	path, _, err := ensureFleetRepo(ctx, s, configFile, dataDir)
 	if err != nil {
 		fmt.Fprintf(c.out.stdout(), "Warning: this host has no repository of its own yet: %v\n", err) //nolint:errcheck
 	} else {
@@ -128,7 +138,7 @@ func (c *commandFleetActivate) run(ctx context.Context) error {
 	// dashboard's Settings page can re-test and change it.
 	if c.verifyURL {
 		if err := s.VerifyPublicURL(ctx, c.publicURL); err != nil {
-			return errors.Wrap(err, "fleet is activated, but the public URL does not reach it")
+			return errors.Wrapf(err, "fleet is activated and %s is stored as its public URL, but nothing there answers as this Fleet; fix the proxy and re-test the URL in Settings (or change it there)", c.publicURL)
 		}
 		fmt.Fprintf(c.out.stdout(), "Public URL %s answers as this Fleet.\n", c.publicURL) //nolint:errcheck
 	} else if c.publicURL != "" {

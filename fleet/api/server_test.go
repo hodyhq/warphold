@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/stretchr/testify/require"
@@ -446,4 +447,46 @@ func TestFailedActivationLeavesNoStateBehind(t *testing.T) {
 
 	require.NoError(t, s.Activate(t.Context(), "seal-me!", "hody@hody.dev", "pw12345678", ""), "retry after a failed activation")
 	require.True(t, s.Activated())
+}
+
+// TestReloadPicksUpAnotherProcessAndRunsCallbacks pins the installer's order:
+// the service is already running when `warphold fleet activate` writes state
+// from a separate process. The next request has to see the activation, and
+// whatever the server registered to do on activation (opening the Fleet host's
+// own repository) has to run without a restart.
+func TestReloadPicksUpAnotherProcessAndRunsCallbacks(t *testing.T) {
+	h := newHarness(t)
+
+	ran := make(chan struct{}, 2)
+	h.s.OnActivated(func() { ran <- struct{}{} })
+
+	resp, body := h.do("GET", "/api/v1/fleet/status", nil)
+	require.Equal(t, 200, resp.StatusCode)
+	require.Equal(t, false, body["activated"])
+
+	// The "other process": same state directory, its own Server.
+	other := api.New(h.stateDir)
+	require.NoError(t, other.Activate(t.Context(), "seal-me-please", "hody@hody.dev", "pw12345678", ""))
+	require.NoError(t, other.Close())
+
+	resp, body = h.do("GET", "/api/v1/fleet/status", nil)
+	require.Equal(t, 200, resp.StatusCode)
+	require.Equal(t, true, body["activated"], "the running server must pick up the activation")
+	require.NotEmpty(t, body["instance_id"])
+
+	select {
+	case <-ran:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the OnActivated callback never ran")
+	}
+
+	// Admin routes work on the reloaded state, and the callback fires once.
+	resp, _ = h.do("POST", "/api/v1/fleet/session", map[string]any{"email": "hody@hody.dev", "password": "pw12345678"})
+	require.Equal(t, 204, resp.StatusCode)
+
+	select {
+	case <-ran:
+		t.Fatal("the OnActivated callback ran twice")
+	case <-time.After(200 * time.Millisecond):
+	}
 }

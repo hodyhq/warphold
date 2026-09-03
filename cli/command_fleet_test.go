@@ -1,6 +1,7 @@
 package cli_test
 
 import (
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -511,4 +512,100 @@ func TestFleetActivateCreatesTheHostRepository(t *testing.T) {
 	again, err := os.ReadFile(filepath.Join(repoDir, "kopia.repository.f"))
 	require.NoError(t, err)
 	require.Equal(t, formatBlob, again, "the repository was not re-created")
+}
+
+// TestFleetActivateAdminPasswordNameWins pins the precedence of the two names
+// for the same secret, and - in the same run - that a Fleet activated by
+// another process is usable over HTTP immediately: the login below goes
+// through requireHost, which is where the running server notices the
+// activation, and it must succeed with the password the winning variable set.
+func TestFleetActivateAdminPasswordNameWins(t *testing.T) {
+	runner := testenv.NewInProcRunner(t)
+	e := testenv.NewCLITest(t, nil, runner)
+
+	e.Environment["WARPHOLD_ADMIN_PASSWORD"] = "admin-name-pw"
+	e.Environment["WARPHOLD_SETUP_PASSWORD"] = "setup-name-pw"
+	e.Environment["WARPHOLD_SETUP_PASSPHRASE"] = "seal-me-please"
+
+	var sp testutil.ServerParameters
+
+	wait, kill := e.RunAndProcessStderr(t, sp.ProcessOutput,
+		"server", "start",
+		"--insecure", "--without-password", "--no-ui", "--no-grpc",
+		"--address=127.0.0.1:0", "--server-control-password=admin-pwd",
+	)
+
+	defer func() {
+		kill()
+		wait() //nolint:errcheck
+	}()
+
+	require.NotEmpty(t, sp.BaseURL, "server did not report its address")
+
+	e.RunAndExpectSuccess(t, "fleet", "activate", "--email", "hody@hody.dev")
+
+	login := func(password string) int {
+		body, err := json.Marshal(map[string]string{"email": "hody@hody.dev", "password": password})
+		require.NoError(t, err)
+
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, sp.BaseURL+"/api/v1/fleet/session", bytes.NewReader(body))
+		require.NoError(t, err)
+
+		req.Header.Set("Content-Type", "application/json")
+
+		res, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		res.Body.Close() //nolint:errcheck,gosec
+
+		return res.StatusCode
+	}
+
+	require.Equal(t, http.StatusNoContent, login("admin-name-pw"), "WARPHOLD_ADMIN_PASSWORD wins, and the running server sees the activation")
+	require.Equal(t, http.StatusUnauthorized, login("setup-name-pw"))
+}
+
+// TestFleetActivateDataDirIsAbsoluteAndNotASymlink: --data-dir names a
+// directory a privileged service writes repository data into. A relative path
+// is stored resolved (so a later `server start` in another working directory
+// finds the same place) and a symlinked directory is refused before anything
+// is activated.
+func TestFleetActivateDataDirIsAbsoluteAndNotASymlink(t *testing.T) {
+	t.Run("relative is stored absolute", func(t *testing.T) {
+		runner := testenv.NewInProcRunner(t)
+		e := testenv.NewCLITest(t, nil, runner)
+
+		wd, err := os.Getwd()
+		require.NoError(t, err)
+
+		rel, err := filepath.Rel(wd, filepath.Join(t.TempDir(), "warphold-data"))
+		require.NoError(t, err)
+
+		e.RunAndExpectSuccess(t, "fleet", "activate",
+			"--email", "hody@hody.dev",
+			"--admin-password", "pw12345678",
+			"--passphrase", "seal-me-please",
+			"--data-dir", rel)
+
+		got := fleetSetting(t, e, "fleet_repo_path")
+		require.True(t, filepath.IsAbs(got), "recorded path must be absolute, got %v", got)
+		require.Equal(t, "fleet-repo", filepath.Base(got))
+	})
+
+	t.Run("a symlinked data directory is refused", func(t *testing.T) {
+		runner := testenv.NewInProcRunner(t)
+		e := testenv.NewCLITest(t, nil, runner)
+
+		base := t.TempDir()
+		require.NoError(t, os.Mkdir(filepath.Join(base, "real"), 0o700))
+		require.NoError(t, os.Symlink(filepath.Join(base, "real"), filepath.Join(base, "link")))
+
+		_, stderr := e.RunAndExpectFailure(t, "fleet", "activate",
+			"--email", "hody@hody.dev",
+			"--admin-password", "pw12345678",
+			"--passphrase", "seal-me-please",
+			"--data-dir", filepath.Join(base, "link"))
+
+		require.Contains(t, strings.Join(stderr, "\n"), "symlink")
+		require.NoFileExists(t, filepath.Join(fleet.StateDirFor(fleetConfigFile(e)), "seal.key"), "refused before activation")
+	})
 }
