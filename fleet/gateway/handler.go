@@ -183,6 +183,10 @@ func orDash(s string) string {
 	return s
 }
 
+// InvalidateKeys drops every cached credential of an agent, so a revocation
+// takes effect on the next request rather than when the cache entry expires.
+func (g *Gateway) InvalidateKeys(agentID string) { g.keys.Invalidate(agentID) }
+
 // Handler returns the gateway as an http.Handler. It reads the full request
 // path (bucket segment included), because that is what the client signed -- do
 // not wrap it in http.StripPrefix.

@@ -123,6 +123,20 @@ func (s *Server) handleAgentRevoke(w http.ResponseWriter, r *http.Request) {
 	} else if err := s.provisioner(ctx).Revoke(ctx, spec, b); err != nil {
 		log.Printf("warphold fleet: revoke %s: b2 key cleanup skipped (%s)", a.ID, errCategory(err))
 	}
+	// The gateway key is disabled unconditionally, outside the best-effort
+	// chain above: it is the credential the device is holding right now, and
+	// it must stop working even when the target lookup that the B2 cleanup
+	// needs has failed (D6). The repository itself stays until the retention
+	// window closes; only the reap job removes it and stamps retired_at.
+	if _, err := s.store().DisableDeviceKeysForAgent(ctx, a.ID, s.now()); err != nil {
+		adminFailed(w, "disable device keys", err)
+		return
+	}
+	// The store is the source of truth, but a lookup already answered from the
+	// key cache would keep working for the rest of its TTL; drop it now.
+	if g := s.gateway(); g != nil {
+		g.InvalidateKeys(a.ID)
+	}
 	if err := s.store().RevokeAgent(ctx, a.ID, s.now()); err != nil {
 		adminFailed(w, "revoke agent", err)
 		return
