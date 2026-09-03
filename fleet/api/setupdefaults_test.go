@@ -76,3 +76,69 @@ func TestSetupDefaultsRefusesCloudAndBadStorage(t *testing.T) {
 	_, targets := h.doList("GET", "/api/v1/fleet/targets")
 	require.Empty(t, targets, "a refused storage mode creates nothing")
 }
+
+// TestSetupDefaultsRepairsAPartialRun: the three rows are not written in one
+// transaction, so a run that died after the target must be completed by the
+// next one rather than skipped forever.
+func TestSetupDefaultsRepairsAPartialRun(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+	h.setPublicURL()
+
+	// The state a crash between CreateTarget and CreateGroup leaves behind.
+	resp, _ := h.do("POST", "/api/v1/fleet/targets", map[string]any{"name": "Fleet disk", "kind": "filesystem", "path": t.TempDir()})
+	require.Equal(t, 201, resp.StatusCode)
+
+	oneLiner, err := h.s.SetupDefaults(t.Context(), "", "disk", filepath.Join(t.TempDir(), "hosted"))
+	require.NoError(t, err)
+	require.Contains(t, oneLiner, "WARPHOLD_ENROLL_TOKEN=wh_", "the missing group was created and can enroll")
+
+	_, targets := h.doList("GET", "/api/v1/fleet/targets")
+	require.Len(t, targets, 1, "the existing target was reused, not duplicated")
+
+	_, groups := h.doList("GET", "/api/v1/fleet/groups")
+	require.Len(t, groups, 1)
+	require.Equal(t, targets[0]["id"], groups[0]["target_id"])
+}
+
+// A fleet somebody has already configured by hand is left alone.
+func TestSetupDefaultsLeavesAConfiguredFleetAlone(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+
+	resp, _ := h.do("POST", "/api/v1/fleet/targets", map[string]any{"name": "my nas", "kind": "filesystem", "path": t.TempDir()})
+	require.Equal(t, 201, resp.StatusCode)
+
+	oneLiner, err := h.s.SetupDefaults(t.Context(), "", "disk", filepath.Join(t.TempDir(), "hosted"))
+	require.NoError(t, err)
+	require.Empty(t, oneLiner)
+
+	_, targets := h.doList("GET", "/api/v1/fleet/targets")
+	require.Len(t, targets, 1)
+	require.Equal(t, "my nas", targets[0]["name"])
+
+	_, groups := h.doList("GET", "/api/v1/fleet/groups")
+	require.Empty(t, groups)
+}
+
+// A hosted root that is a symlink (or a file) is refused before the target is
+// written, so no device is ever pointed at it.
+func TestSetupDefaultsRefusesABadHostedRoot(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+
+	base := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(base, "real"), 0o750))
+	require.NoError(t, os.Symlink(filepath.Join(base, "real"), filepath.Join(base, "link")))
+
+	_, err := h.s.SetupDefaults(t.Context(), "", "disk", filepath.Join(base, "link"))
+	require.ErrorContains(t, err, "symlink")
+
+	file := filepath.Join(base, "file")
+	require.NoError(t, os.WriteFile(file, []byte("x"), 0o600))
+	_, err = h.s.SetupDefaults(t.Context(), "", "disk", file)
+	require.ErrorContains(t, err, "not a directory")
+
+	_, targets := h.doList("GET", "/api/v1/fleet/targets")
+	require.Empty(t, targets)
+}

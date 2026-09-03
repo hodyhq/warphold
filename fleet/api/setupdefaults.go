@@ -41,8 +41,12 @@ var ErrCloudNeedsWizard = errors.New(`cloud storage needs bucket credentials and
 // the enrollment command for that group, complete with a fresh token, or "" if
 // there was nothing to do or no public URL to enroll against.
 //
-// Idempotent by the bluntest rule available: it does nothing at all once any
-// target exists, so re-running setup cannot produce a second "Fleet disk".
+// Idempotent per row rather than all-or-nothing: SQLite gives no transaction
+// across these three inserts here, so a run that dies after the target would
+// otherwise leave a target with no group and a "some target exists, skip
+// everything" rule would never repair it. Each row is created only if the one
+// this function creates is missing. A fleet that already has targets none of
+// which are ours belongs to an operator, and is left completely alone.
 func (s *Server) SetupDefaults(ctx context.Context, publicURL, storage, hostedRoot string) (string, error) {
 	st := s.store()
 	if st == nil {
@@ -68,32 +72,67 @@ func (s *Server) SetupDefaults(ctx context.Context, publicURL, storage, hostedRo
 		return "", err
 	}
 
-	if len(targets) > 0 {
+	targetID := int64(0)
+	for _, t := range targets {
+		if t.Name == setupTargetName {
+			targetID = t.ID
+		}
+	}
+
+	if targetID == 0 && len(targets) > 0 {
+		// Somebody has already configured this fleet by hand.
 		return "", nil
-	}
-
-	if hostedRoot == "" {
-		return "", errors.New("a hosted root directory is required")
-	}
-
-	if err := os.MkdirAll(hostedRoot, setupHostedRootMode); err != nil {
-		return "", err
 	}
 
 	now := s.now()
 
-	targetID, err := st.CreateTarget(ctx, &store.Target{
-		Name: setupTargetName, Kind: "hosted", StorageMode: "disk", Path: hostedRoot, CreatedAt: now,
-	})
+	if targetID == 0 {
+		if hostedRoot == "" {
+			return "", errors.New("a hosted root directory is required")
+		}
+
+		if err := ensureHostedRoot(hostedRoot); err != nil {
+			return "", err
+		}
+
+		if targetID, err = st.CreateTarget(ctx, &store.Target{
+			Name: setupTargetName, Kind: "hosted", StorageMode: "disk", Path: hostedRoot, CreatedAt: now,
+		}); err != nil {
+			return "", err
+		}
+	}
+
+	templates, err := st.Templates(ctx)
 	if err != nil {
 		return "", err
 	}
 
-	templateID, err := st.CreateTemplate(ctx, &store.Template{
-		Name: setupTemplateName, Sources: setupHomeSources, PolicyJSON: setupHomePolicy, CreatedAt: now,
-	})
+	templateID := int64(0)
+	for _, t := range templates {
+		if t.Name == setupTemplateName {
+			templateID = t.ID
+		}
+	}
+
+	if templateID == 0 {
+		if templateID, err = st.CreateTemplate(ctx, &store.Template{
+			Name: setupTemplateName, Sources: setupHomeSources, PolicyJSON: setupHomePolicy, CreatedAt: now,
+		}); err != nil {
+			return "", err
+		}
+	}
+
+	groups, err := st.Groups(ctx)
 	if err != nil {
 		return "", err
+	}
+
+	for _, g := range groups {
+		if g.TargetID == targetID {
+			// The fleet can already enroll into this target; a second token
+			// here would be a surprise, not a service.
+			return "", nil
+		}
 	}
 
 	groupID, err := st.CreateGroup(ctx, &store.Group{
@@ -104,6 +143,23 @@ func (s *Server) SetupDefaults(ctx context.Context, publicURL, storage, hostedRo
 	}
 
 	return s.enrollmentCommand(ctx, groupID)
+}
+
+// ensureHostedRoot creates the directory devices' backups land in, and refuses
+// one that already exists as anything but a real directory: a symlink or a
+// file there would send - or fail - every device's data somewhere nobody
+// chose. Ownership and mode of an existing directory are the installer's
+// business, not this function's.
+func ensureHostedRoot(path string) error {
+	fi, err := os.Lstat(path)
+	switch {
+	case err == nil && fi.Mode()&os.ModeSymlink != 0:
+		return errors.New("hosted root " + path + " is a symlink; point it at a real directory")
+	case err == nil && !fi.IsDir():
+		return errors.New("hosted root " + path + " exists and is not a directory")
+	}
+
+	return os.MkdirAll(path, setupHostedRootMode)
 }
 
 // enrollmentCommand issues one enrollment token for a group and returns the
