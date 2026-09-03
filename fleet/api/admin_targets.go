@@ -243,6 +243,56 @@ func (s *Server) applyMirror(ctx context.Context, w http.ResponseWriter, in *tar
 	return true
 }
 
+// handleTargetMirrorSet attaches an offsite mirror to a hosted disk target, or
+// replaces the one it has, running exactly the verification target creation
+// runs and sealing the credentials the same way. Without it a target created
+// without a mirror could never gain one, and a rotated mirror key meant
+// building a second target row.
+//
+// It cannot remove a mirror: a target whose mirror silently vanished would keep
+// reporting offsite health it no longer has, and deciding what happens to what
+// is already in the bucket is its own piece of work.
+//
+// Nothing caches mirror credentials - jobs/mirror.go opens the bucket from the
+// store on every run - so a replacement takes effect on the next run with no
+// invalidation to do.
+func (s *Server) handleTargetMirrorSet(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	var in targetInput
+	if err := decode(r, &in); err != nil {
+		writeErr(w, http.StatusBadRequest, "malformed body")
+		return
+	}
+	t, err := s.store().Target(r.Context(), id)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "target not found")
+		return
+	}
+	switch {
+	case t.Kind == "hosted" && t.StorageMode == "cloud":
+		writeErr(w, http.StatusConflict, "a cloud-direct target has no mirror: it already writes to the customer's own bucket")
+		return
+	case t.Kind != "hosted" || t.StorageMode != "disk":
+		writeErr(w, http.StatusConflict, "only a hosted target with storage_mode disk can have a mirror")
+		return
+	case in.MirrorKind == "":
+		writeErr(w, http.StatusBadRequest, "mirror_kind is required; a mirror cannot be removed through this route")
+		return
+	}
+	if !s.applyMirror(r.Context(), w, &in, t) {
+		return
+	}
+	if err := s.store().SetTargetMirror(r.Context(), t); err != nil {
+		adminFailed(w, "update target mirror", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toTargetOut(*t))
+}
+
 // applyHostedCloud validates a cloud-direct target: Fleet writes every device's
 // blobs straight through to the customer's own bucket with the fleet's admin
 // key, so the bucket must be proven append-only before a device can be told to

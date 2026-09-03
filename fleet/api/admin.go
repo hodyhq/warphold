@@ -17,6 +17,7 @@ func (s *Server) mountAdmin(m *mux.Router) {
 	}
 	m.HandleFunc("/api/v1/fleet/targets", adm(s.handleTargetCreate)).Methods(http.MethodPost)
 	m.HandleFunc("/api/v1/fleet/targets", adm(s.handleTargetList)).Methods(http.MethodGet)
+	m.HandleFunc("/api/v1/fleet/targets/{id}/mirror", adm(s.handleTargetMirrorSet)).Methods(http.MethodPut)
 	m.HandleFunc("/api/v1/fleet/templates", adm(s.handleTemplateCreate)).Methods(http.MethodPost)
 	m.HandleFunc("/api/v1/fleet/templates/{id}", adm(s.handleTemplateUpdate)).Methods(http.MethodPut)
 	m.HandleFunc("/api/v1/fleet/templates", adm(s.handleTemplateList)).Methods(http.MethodGet)
