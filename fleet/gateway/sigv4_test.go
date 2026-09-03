@@ -47,6 +47,14 @@ func liveLookup() gateway.SecretLookup {
 func signed(t *testing.T, method, uri, payloadHash string, body []byte, extra http.Header) *http.Request {
 	t.Helper()
 
+	return signedIn(t, testRegion, method, uri, payloadHash, body, extra)
+}
+
+// signedIn is signed with an explicit signing region, which GetBucketLocation
+// needs: minio-go signs it with a hardcoded "us-east-1".
+func signedIn(t *testing.T, region, method, uri, payloadHash string, body []byte, extra http.Header) *http.Request {
+	t.Helper()
+
 	var rc io.Reader
 	if body != nil {
 		rc = bytes.NewReader(body)
@@ -67,7 +75,7 @@ func signed(t *testing.T, method, uri, payloadHash string, body []byte, extra ht
 		req.ContentLength = int64(len(body))
 	}
 
-	return roundTrip(t, signer.SignV4(*req, testAKID, testSecret, "", testRegion))
+	return roundTrip(t, signer.SignV4(*req, testAKID, testSecret, "", region))
 }
 
 // roundTrip serializes a client request and parses it back as a server one.
@@ -159,9 +167,20 @@ func TestVerifyAcceptsKopiaRequestProfile(t *testing.T) {
 		uri:         "https://" + testHost + "/warphold?list-type=2&prefix=dev-0001%2Fxn&delimiter=%2F&encoding-type=url&fetch-owner=true",
 		payloadHash: emptySHA,
 	}, {
-		name:        "GetBucketLocation, sent when --region is omitted",
+		name:        "repeated signed header, joined with a comma",
 		method:      http.MethodGet,
-		uri:         "https://" + testHost + "/warphold?location=",
+		uri:         "https://" + testHost + "/warphold/dev-0001/kopia.repository",
+		payloadHash: emptySHA,
+		extra:       http.Header{"X-Amz-Meta-Tag": {"one", "two"}},
+	}, {
+		name:        "key with non-ASCII characters",
+		method:      http.MethodGet,
+		uri:         "https://" + testHost + "/warphold/dev-0001/naïve-été",
+		payloadHash: emptySHA,
+	}, {
+		name:        "key with ~, + and a doubly-encoded percent",
+		method:      http.MethodGet,
+		uri:         "https://" + testHost + "/warphold/dev-0001/a~b+c%2520d",
 		payloadHash: emptySHA,
 	}}
 
@@ -234,15 +253,15 @@ func TestVerifyRejectsTamperedRequests(t *testing.T) {
 		want: gateway.ErrInvalidAccessKeyID,
 	}, {
 		name:   "SignedHeaders without host",
-		mutate: func(_ *testing.T, r *http.Request) { dropSignedHeader(r, "host") },
+		mutate: func(t *testing.T, r *http.Request) { dropSignedHeader(t, r, "host") },
 		want:   gateway.ErrMalformedAuthorization,
 	}, {
 		name:   "SignedHeaders without x-amz-content-sha256",
-		mutate: func(_ *testing.T, r *http.Request) { dropSignedHeader(r, "x-amz-content-sha256") },
+		mutate: func(t *testing.T, r *http.Request) { dropSignedHeader(t, r, "x-amz-content-sha256") },
 		want:   gateway.ErrMalformedAuthorization,
 	}, {
 		name:   "SignedHeaders without x-amz-date",
-		mutate: func(_ *testing.T, r *http.Request) { dropSignedHeader(r, "x-amz-date") },
+		mutate: func(t *testing.T, r *http.Request) { dropSignedHeader(t, r, "x-amz-date") },
 		want:   gateway.ErrMalformedAuthorization,
 	}, {
 		name: "AWS2 algorithm token",
@@ -272,6 +291,14 @@ func TestVerifyRejectsTamperedRequests(t *testing.T) {
 			setAuthField(r, "Credential", testAKID+"/19990101/"+testRegion+"/s3/aws4_request")
 		},
 		want: gateway.ErrMalformedAuthorization,
+	}, {
+		name:   "unsigned x-amz-* header added after signing",
+		mutate: func(_ *testing.T, r *http.Request) { r.Header.Set("X-Amz-Decoded-Content-Length", "4") },
+		want:   gateway.ErrUnsignedAmzHeader,
+	}, {
+		name:   "mounted under a route prefix",
+		mutate: func(_ *testing.T, r *http.Request) { r.URL.Path = "/s3" + r.URL.Path },
+		want:   gateway.ErrSignatureDoesNotMatch,
 	}, {
 		name:   "query string Go cannot parse whole",
 		mutate: func(_ *testing.T, r *http.Request) { r.URL.RawQuery = "list-type=2;prefix=dev-0002/" },
@@ -379,16 +406,62 @@ func TestVerifyNeverReadsTheBody(t *testing.T) {
 	require.Equal(t, testAKID, akid)
 }
 
-// An empty expected region accepts whatever the client signed with, which is
-// what a client that discovered its region via GetBucketLocation sends.
-func TestEmptyExpectedRegionAcceptsAnyRegion(t *testing.T) {
+// GetBucketLocation is the one request minio-go signs with a region other than
+// the configured one: bucket-cache.go hardcodes "us-east-1", and sends it
+// path-style with a trailing slash and, over TLS, UNSIGNED-PAYLOAD. The
+// handler must therefore verify "?location=" against "us-east-1", and nothing
+// else against it.
+func TestGetBucketLocationIsSignedForUSEast1(t *testing.T) {
+	t.Parallel()
+
+	const locationURI = "https://" + testHost + "/warphold/?location="
+
+	r := signedIn(t, "us-east-1", http.MethodGet, locationURI, unsigned, nil, nil)
+
+	akid, err := gateway.Verify(context.Background(), r, "us-east-1", "s3", liveLookup(), signedAt(t, r))
+	require.NoError(t, err)
+	require.Equal(t, testAKID, akid)
+
+	r2 := signedIn(t, "us-east-1", http.MethodGet, locationURI, unsigned, nil, nil)
+
+	_, err = gateway.Verify(context.Background(), r2, testRegion, "s3", liveLookup(), signedAt(t, r2))
+	require.ErrorIs(t, err, gateway.ErrMalformedAuthorization)
+}
+
+// A proxy in front of the gateway adds X-Forwarded-* after the client signed,
+// so those headers must not break verification — only x-amz-* must be signed.
+func TestUnsignedForwardedHeadersAreTolerated(t *testing.T) {
 	t.Parallel()
 
 	r := signed(t, http.MethodGet, "https://"+testHost+"/warphold/dev-0001/kopia.repository", emptySHA, nil, nil)
+	r.Header.Set("X-Forwarded-Host", "attacker.example")
+	r.Header.Set("X-Forwarded-For", "203.0.113.9")
+	r.Header.Set("X-Forwarded-Proto", "https")
 
-	akid, err := gateway.Verify(context.Background(), r, "", "s3", liveLookup(), signedAt(t, r))
+	akid, err := verify(t, r, liveLookup())
 	require.NoError(t, err)
 	require.Equal(t, testAKID, akid)
+	require.Equal(t, testHost, r.Host)
+}
+
+// Clock skew against wall-clock times that owe nothing to the request, so a
+// bug that compares the date to itself cannot pass.
+func TestClockSkewAgainstAbsoluteTimes(t *testing.T) {
+	t.Parallel()
+
+	for name, now := range map[string]time.Time{
+		"a server clock stuck in 2001":   time.Date(2001, 9, 11, 12, 0, 0, 0, time.UTC),
+		"a server clock running to 2099": time.Date(2099, 12, 31, 23, 59, 0, 0, time.UTC),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			r := signed(t, http.MethodGet, "https://"+testHost+"/warphold/dev-0001/kopia.repository", emptySHA, nil, nil)
+
+			_, err := gateway.Verify(context.Background(), r, testRegion, "s3", liveLookup(), now)
+			require.ErrorIs(t, err, gateway.ErrRequestTimeTooSkewed)
+		})
+	}
 }
 
 // The known-answer vector from AWS's own SigV4 documentation ("Example: GET
@@ -446,12 +519,20 @@ func swapCredentialAKID(r *http.Request, akid string) {
 	r.Header.Set("Authorization", strings.Replace(auth, "Credential="+testAKID, "Credential="+akid, 1))
 }
 
-func dropSignedHeader(r *http.Request, name string) {
+func dropSignedHeader(t *testing.T, r *http.Request, name string) {
+	t.Helper()
+
 	auth := r.Header.Get("Authorization")
+	require.Contains(t, auth, "SignedHeaders=")
+
 	for _, form := range []string{name + ";", ";" + name} {
-		if strings.Contains(auth, "SignedHeaders=") && strings.Contains(auth, form) {
-			r.Header.Set("Authorization", strings.Replace(auth, form, "", 1))
+		if after := strings.Replace(auth, form, "", 1); after != auth {
+			r.Header.Set("Authorization", after)
+			require.NotEqual(t, auth, r.Header.Get("Authorization"))
+
 			return
 		}
 	}
+
+	t.Fatalf("SignedHeaders does not list %q, so the test would pass vacuously", name)
 }
