@@ -7,12 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const (
@@ -85,6 +87,14 @@ func parsePublicURL(raw string) (*url.URL, error) {
 	if u.User != nil {
 		return nil, errors.New("public_url must not contain credentials")
 	}
+	// An internationalized host would never match an Origin header, which a
+	// browser always punycodes before sending, so it is rejected here rather
+	// than failing later as a silent CSRF mismatch.
+	for _, r := range u.Host {
+		if r > unicode.MaxASCII {
+			return nil, errors.New("public_url must use the punycode form of an internationalized host name")
+		}
+	}
 	u.Host = strings.ToLower(u.Host)
 	switch u.Scheme {
 	case "https":
@@ -97,6 +107,15 @@ func parsePublicURL(raw string) (*url.URL, error) {
 	}
 	if strings.Trim(u.Path, "/") != "" || u.RawQuery != "" || u.Fragment != "" {
 		return nil, errors.New("public_url must have no path, query or fragment")
+	}
+	// A default port is dropped, so https://h:443 and https://h are one
+	// origin: a browser never puts the default port in an Origin header, and
+	// keeping it here would make every CSRF check fail.
+	if port := u.Port(); port == "443" && u.Scheme == "https" || port == "80" && u.Scheme == "http" {
+		u.Host = u.Hostname()
+		if strings.Contains(u.Host, ":") {
+			u.Host = "[" + u.Host + "]" // an IPv6 literal keeps its brackets
+		}
 	}
 	u.Path, u.RawPath, u.RawQuery, u.ForceQuery, u.Fragment, u.RawFragment = "", "", "", false, "", ""
 	return u, nil
@@ -201,6 +220,10 @@ func probePublicURL(ctx context.Context, hc *http.Client, u *url.URL, wantInstan
 	}
 	resp, err := hc.Do(req)
 	if err != nil {
+		// The admin gets a generic message - the underlying error carries the
+		// resolved address and TLS details - but an operator debugging a
+		// proxy needs the real cause, so it goes to the log once per attempt.
+		log.Printf("warphold fleet: public_url probe of %s failed: %v", u, err)
 		return &proxyError{u.String() + " could not be reached from this server"}
 	}
 	defer resp.Body.Close()
@@ -213,6 +236,9 @@ func probePublicURL(ctx context.Context, hc *http.Client, u *url.URL, wantInstan
 		InstanceID string `json:"instance_id"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxBody)).Decode(&st); err != nil || !st.Activated {
+		if err != nil {
+			log.Printf("warphold fleet: public_url probe of %s failed: %v", u, err)
+		}
 		return &proxyError{u.String() + " did not answer as an activated WarpHold Fleet"}
 	}
 	if st.InstanceID != wantInstance {
@@ -233,7 +259,9 @@ func (s *Server) requireHost(next http.HandlerFunc) http.HandlerFunc {
 		if u, ok := s.PublicURL(r.Context()); ok {
 			got := hostOnly(r.Host)
 			if !strings.EqualFold(got, hostOnly(u.Host)) && !isLoopbackHost(got) {
-				writeErr(w, http.StatusMisdirectedRequest, "request Host does not match the configured public URL")
+				// The configured host is named: a 421 with no expected value
+				// is undiagnosable, and public_url is admin-set, not secret.
+				writeErr(w, http.StatusMisdirectedRequest, "request Host does not match the configured public URL; expected Host "+hostOnly(u.Host))
 				return
 			}
 		}

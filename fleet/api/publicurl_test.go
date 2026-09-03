@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -192,6 +193,7 @@ func TestHostValidation(t *testing.T) {
 	h := newHarness(t)
 	h.activateAndLogin()
 
+	var lastBody map[string]any
 	get := func(host string) int {
 		t.Helper()
 		req, err := http.NewRequest(http.MethodGet, h.srv.URL+"/api/v1/fleet/status", nil)
@@ -201,7 +203,9 @@ func TestHostValidation(t *testing.T) {
 		}
 		res, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
-		res.Body.Close()
+		defer res.Body.Close()
+		lastBody = nil
+		_ = json.NewDecoder(res.Body).Decode(&lastBody)
 		return res.StatusCode
 	}
 
@@ -216,6 +220,9 @@ func TestHostValidation(t *testing.T) {
 	require.Equal(t, 200, get(""), "loopback stays reachable for a local curl")
 	require.Equal(t, 200, get("localhost:1234"))
 	require.Equal(t, http.StatusMisdirectedRequest, get("evil.example.com"))
+	// The expected host is named, or a typo'd public_url is a 421 with no
+	// way to tell what it was compared against.
+	require.Contains(t, lastBody["error"], "expected Host fleet.example.com")
 }
 
 // The setup wizard sets the public URL in the same call that activates, so
@@ -244,4 +251,133 @@ func TestActivateAcceptsPublicURL(t *testing.T) {
 	h.jar = h.login("hody@hody.dev", "pw12345678")
 	_, body = h.do("GET", "/api/v1/fleet/settings", nil)
 	require.Equal(t, "https://fleet.example.com", body["public_url"])
+}
+
+// The origin check wired end to end, through the real middleware and a real
+// public_url: a browser page on another origin cannot drive the admin API
+// even if it somehow held a valid CSRF token, and it is turned away before
+// the token is compared, so it learns nothing about the token either.
+func TestCSRFOriginCheckIsWired(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+	_, body := h.do("PUT", "/api/v1/fleet/settings", map[string]any{"public_url": "https://fleet.example.com"})
+	require.Equal(t, "https://fleet.example.com", body["public_url"])
+
+	put := func(origin string) (int, map[string]any) {
+		t.Helper()
+		req := h.newRequest("PUT", "/api/v1/fleet/settings", jsonBody(map[string]any{"fleet_name": "Moinzadeh"}))
+		req.Header.Set("Content-Type", "application/json")
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		res, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer res.Body.Close()
+		var out map[string]any
+		_ = json.NewDecoder(res.Body).Decode(&out)
+		return res.StatusCode, out
+	}
+
+	code, out := put("https://evil.example.com")
+	require.Equal(t, 403, code)
+	require.Contains(t, out["error"], "origin")
+
+	code, out = put("https://fleet.example.com")
+	require.Equal(t, 200, code, out)
+	require.Equal(t, "Moinzadeh", out["fleet_name"], "a matching origin reaches the handler")
+
+	code, out = put("")
+	require.Equal(t, 200, code, out, "curl and the agent send no Origin at all")
+}
+
+// A foreign origin is rejected before the double-submit token is compared, so
+// a cross-site page cannot use the response to test guessed tokens.
+func TestCSRFOriginCheckPrecedesTheToken(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+	h.do("PUT", "/api/v1/fleet/settings", map[string]any{"public_url": "https://fleet.example.com"})
+
+	req, err := http.NewRequest("PUT", h.srv.URL+"/api/v1/fleet/settings", jsonBody(map[string]any{"fleet_name": "x"}))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	for _, c := range h.jar {
+		req.AddCookie(c)
+	}
+	req.Header.Set(csrfHeaderName, "not-the-token") // would fail the token check too
+	req.Header.Set("Origin", "https://evil.example.com")
+	res, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer res.Body.Close()
+	var out map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&out)
+	require.Equal(t, 403, res.StatusCode)
+	require.Contains(t, out["error"], "origin", "the origin decides, so the token result never leaks")
+}
+
+// Logout revokes a session, so it carries the same origin check as every
+// other state change.
+func TestLogoutChecksOrigin(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+	h.do("PUT", "/api/v1/fleet/settings", map[string]any{"public_url": "https://fleet.example.com"})
+
+	logout := func(origin string) int {
+		t.Helper()
+		req := h.newRequest("DELETE", "/api/v1/fleet/session", nil)
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		res, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		res.Body.Close()
+		return res.StatusCode
+	}
+
+	require.Equal(t, 403, logout("https://evil.example.com"))
+	require.Equal(t, 204, logout("https://fleet.example.com"), "the session is still alive to revoke")
+}
+
+// Signing in from a foreign origin is refused, and so is signing in over
+// plain HTTP when the fleet is published on https: the Secure cookie the
+// server would set is one the browser silently drops, which looks to the
+// admin like a password that stopped working.
+func TestLoginChecksOriginAndScheme(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+	h.do("PUT", "/api/v1/fleet/settings", map[string]any{"public_url": "https://fleet.example.com"})
+
+	login := func(headers map[string]string) (int, map[string]any) {
+		t.Helper()
+		req, err := http.NewRequest("POST", h.srv.URL+"/api/v1/fleet/session",
+			jsonBody(map[string]string{"email": "hody@hody.dev", "password": "pw12345678"}))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		for k, v := range headers {
+			if k == "Host" {
+				req.Host = v
+				continue
+			}
+			req.Header.Set(k, v)
+		}
+		res, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer res.Body.Close()
+		var out map[string]any
+		_ = json.NewDecoder(res.Body).Decode(&out)
+		return res.StatusCode, out
+	}
+
+	code, out := login(map[string]string{"Origin": "https://evil.example.com"})
+	require.Equal(t, 403, code)
+	require.Contains(t, out["error"], "origin")
+
+	code, out = login(map[string]string{"Host": "fleet.example.com"})
+	require.Equal(t, 400, code, out)
+	require.Equal(t, "reach the fleet over https", out["error"])
+
+	code, _ = login(map[string]string{"Host": "fleet.example.com", "X-Forwarded-Proto": "https"})
+	require.Equal(t, 204, code, "through the TLS proxy it works")
+
+	code, _ = login(nil)
+	require.Equal(t, 204, code, "loopback is the local operator, not a browser")
 }

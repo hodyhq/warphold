@@ -416,6 +416,20 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, "fleet is not activated")
 		return
 	}
+	if pu, _ := s.PublicURL(r.Context()); pu != nil {
+		if !originAllowed(r, pu) {
+			writeErr(w, http.StatusForbidden, "request origin does not match the configured public URL")
+			return
+		}
+		// Signing in over plain HTTP when the fleet is published on https
+		// would set a Secure cookie the browser then drops, leaving the admin
+		// in a login loop with no visible cause. Loopback is exempt, since
+		// that is the local operator, not a browser on the public URL.
+		if pu.Scheme == "https" && !requestIsHTTPS(r) && !isLoopbackHost(hostOnly(r.Host)) {
+			writeErr(w, http.StatusBadRequest, "reach the fleet over https")
+			return
+		}
+	}
 	if !s.login.allow(clientIP(r)) {
 		writeErr(w, http.StatusTooManyRequests, "too many attempts, wait a minute")
 		return

@@ -71,10 +71,9 @@ func (s *Server) requireCSRF(next http.HandlerFunc) http.HandlerFunc {
 		switch r.Method {
 		case http.MethodGet, http.MethodHead, http.MethodOptions:
 		default:
-			if !csrfOK(r) {
-				writeErr(w, http.StatusForbidden, "missing or invalid "+csrfHeader+" header")
-				return
-			}
+			// The origin check runs first, deliberately: it is decided from
+			// headers alone, so a foreign origin is turned away without ever
+			// learning whether its guessed token compared equal.
 			pu, ok := s.PublicURL(r.Context())
 			if !ok {
 				s.csrfWarnOnce.Do(func() {
@@ -83,6 +82,10 @@ func (s *Server) requireCSRF(next http.HandlerFunc) http.HandlerFunc {
 			}
 			if !originAllowed(r, pu) {
 				writeErr(w, http.StatusForbidden, "request origin does not match the configured public URL")
+				return
+			}
+			if !csrfOK(r) {
+				writeErr(w, http.StatusForbidden, "missing or invalid "+csrfHeader+" header")
 				return
 			}
 		}

@@ -103,6 +103,10 @@ func TestParsePublicURL(t *testing.T) {
 		"http://localhost:51515":            "http://localhost:51515",
 		"http://127.0.0.1:8080":             "http://127.0.0.1:8080",
 		"http://[::1]:8080":                 "http://[::1]:8080",
+		// A default port is not part of the origin a browser sends.
+		"https://fleet.example.com:443": "https://fleet.example.com",
+		"http://localhost:80":           "http://localhost",
+		"https://[::1]:443":             "https://[::1]",
 	} {
 		u, err := parsePublicURL(raw)
 		require.NoError(t, err, raw)
@@ -121,8 +125,22 @@ func TestParsePublicURL(t *testing.T) {
 		"https://fleet.example.com#frag",
 		"https://user:pass@fleet.example.com",
 		"https://fleet.example.com; echo pwned",
+		// Internationalized host names must be supplied punycoded, or they
+		// would never match the Origin a browser sends.
+		"https://fleet.exämple.com",
 	} {
 		_, err := parsePublicURL(raw)
 		require.Error(t, err, raw)
 	}
+}
+
+// The default port is stripped so that an Origin header, which never carries
+// one, still matches a public_url written with it.
+func TestDefaultPortMatchesOrigin(t *testing.T) {
+	pub := mustURL(t, "https://fleet.example.com:443")
+	require.Equal(t, "https://fleet.example.com", pub.String())
+
+	r := httptest.NewRequest(http.MethodPost, "/", nil)
+	r.Header.Set("Origin", "https://fleet.example.com")
+	require.True(t, originAllowed(r, pub))
 }
