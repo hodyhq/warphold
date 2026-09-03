@@ -22,8 +22,10 @@ import (
 
 	"github.com/kopia/kopia/fleet"
 	"github.com/kopia/kopia/fleet/b2api"
+	"github.com/kopia/kopia/fleet/gateway"
 	"github.com/kopia/kopia/fleet/seal"
 	"github.com/kopia/kopia/fleet/store"
+	"github.com/kopia/kopia/repo/blob"
 )
 
 // ErrAlreadyActivated is returned by Activate on an activated Fleet.
@@ -65,6 +67,10 @@ type Server struct {
 	nowFn func() time.Time
 	b2    b2api.API
 	cloud cloudAPI
+	// cloudStore builds the cloud-direct backend. It is gateway.NewCloud
+	// everywhere but in a test, which points it at a fake bucket that serves a
+	// self-signed certificate.
+	cloudStore func(context.Context, blob.ConnectionInfo, string) (gateway.ObjectStore, error)
 	// closed is set by Close instead of nilling st: handlers read st through
 	// store() and would otherwise have to re-check for nil between every
 	// call. A closed *sql.DB returns "database is closed" from each query,
@@ -186,6 +192,10 @@ func (s *Server) Activated() bool {
 
 // Close closes the store.
 func (s *Server) Close() error {
+	// Before s.mu, never under it: gateway() holds gwDeps.mu while it reads
+	// s.mu, so taking them the other way round here would be a lock inversion.
+	s.closeGatewayStores()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.st == nil || s.closed {
