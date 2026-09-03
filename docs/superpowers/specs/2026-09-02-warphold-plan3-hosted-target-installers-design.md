@@ -22,7 +22,7 @@ Each of these was made with Hody on 2026-09-02 and is binding on the plan.
 | D1 | **One plan, five ordered milestones**, each ending live-testable: M1 hosted target → M2 hybrid B2 mirror → M3 installers + setup wizard → M4 recovery kit + passphrase rotation + standalone-restore CI test → M5 jobs, SMTP, weekly digest, repository stats. Shipped as **two server PRs** — PR A = M1+M2, PR B = M3+M4+M5 — plus small separate UI PRs. | The plan's task list is milestone-ordered; PR boundaries are marked in it. |
 | D14 | **M6 — site, READMEs, screenshots** (added 2026-09-02, after the first five were fixed). A screenshot pipeline in the UI repo, both READMEs rewritten, and a static site at **warphold.com**. It runs **in parallel with M4/M5** and ships as **its own small PRs**, never inside PR A or PR B. | §13 gains M6; §10.5 specifies it. |
 | D2 | **Complete per-device isolation.** One Kopia repository per device, with its own random repository password. Nothing is shared between devices: not a key, not a repository, not a content index. | Dedup is per device, not fleet-wide. Accepted: a family fleet's cross-machine duplication is small next to the blast radius of a shared repository. |
-| D3 | **The Fleet server is an S3-compatible gateway**, mounted at `/s3/` on the server that already exists. SigV4 auth; one access key id + secret per device, sealed in the store, scoped to the prefix `<device-id>/`. Stateless: no per-device process, no per-device state beyond a SQLite row and a small in-memory cache. Rate-limited per device. Every request logged with its device id. Must scale to 1000+ devices (§11). | New package `fleet/gateway`. Devices run Kopia's **stock** S3 backend (`repo/blob/s3`) — no WarpHold-specific client code on the device. |
+| D3 | **The Fleet server is an S3-compatible gateway**, mounted at the bucket path `/warphold/` (path-style S3, fixed bucket name) on the server that already exists — minio-go/Kopia refuse an endpoint URL that carries a path, so there is no `/s3/` prefix: the endpoint is the public host itself. SigV4 auth; one access key id + secret per device, sealed in the store, scoped to the prefix `<device-id>/`. Stateless: no per-device process, no per-device state beyond a SQLite row and a small in-memory cache. Rate-limited per device. Every request logged with its device id. Must scale to 1000+ devices (§11). | New package `fleet/gateway`. Devices run Kopia's **stock** S3 backend (`repo/blob/s3`) — no WarpHold-specific client code on the device. |
 | D4 | **Task 1 is a spike.** Run stock Kopia (`repository create s3`, snapshots, `snapshot list`) against a minimal append-only S3 store and record which blob-name classes, if any, Kopia must `DeleteObject` or overwrite to complete a snapshot. The gateway then allows DELETE for **exactly** those classes and nothing else. | The append-only rule in §4.3 is written from the spike's output, not from reading the code. Every later gateway task consumes the spike's recorded class list. |
 | D5 | **Backing store per hosted target**, chosen at target creation and in the setup wizard, default **Fleet disk**: (a) *Fleet disk* — root `/srv/warphold/hosted/` (configurable), with an optional **B2 mirror job**; (b) *cloud-direct* — the gateway writes through to a B2 or S3 bucket with the fleet's single admin key. **Devices never hold cloud credentials in either mode.** | `targets` gains a storage mode and mirror configuration (§5). |
 | D6 | **Revoking a device disables its gateway key immediately.** Its repository stays for the retention window (default 30 days), then a server job removes it. | Revocation is two-phase: `device_keys.disabled_at` now, repository deletion later. |
@@ -45,7 +45,7 @@ fleet/gateway/          NEW — the S3-compatible gateway
   object.go             ObjectStore interface + shared key/prefix validation
   local.go              disk backend rooted at the target's path
   cloud.go              write-through backend over repo/blob/{s3,b2} with the admin key
-  handler.go            /s3/ router: Put/Get/Head/List/Delete + GetBucketVersioning
+  handler.go            /warphold/ router: Put/Get/Head/List/Delete + GetBucketLocation (versioning → 501)
   xmlout.go             the S3 XML responses and error codes we emit
   limit.go              per-device token bucket
 fleet/jobs/             NEW — the scheduler and the jobs from original §3.3
@@ -72,8 +72,8 @@ cli/command_fleet_*.go  CHANGED — `--public-url` on activate; `fleet jobs run`
 
 ```
 device ──HTTPS──▶ reverse proxy ──▶ warphold server
-  stock Kopia S3 backend            /s3/  (fleet/gateway)
-  endpoint  <public_url>/s3/          │
+  stock Kopia S3 backend            /warphold/  (fleet/gateway)
+  endpoint  <public host>, bucket warphold │
   bucket    warphold                  ├─ local backend  → /srv/warphold/hosted/<device-id>/…
   prefix    <device-id>/              │      └─ optional mirror job → b2://<bucket>/<device-id>/ (Object Lock)
   keys      per-device SigV4 pair     └─ cloud backend  → b2:// or s3:// with the fleet admin key
@@ -95,7 +95,7 @@ The cost is that WarpHold must implement enough of S3 to satisfy minio-go, which
 
 ### 4.1 Request flow
 
-1. The request arrives at `/s3/<bucket>/<key>` (or `/s3/<bucket>?list-type=2&…`). The bucket name is a fixed constant, `warphold`; a request for any other bucket is `404 NoSuchBucket`.
+1. The request arrives at `/<bucket>/<key>` (or `/<bucket>/?list-type=2&…`, `/<bucket>/?location=`) — path-style, no prefix, exactly the path the client signed. The bucket name is a fixed constant, `warphold`; a request for any other bucket is `404 NoSuchBucket`.
 2. `sigv4.Verify` parses the `Authorization` header (`AWS4-HMAC-SHA256 Credential=<akid>/<date>/<region>/s3/aws4_request, SignedHeaders=…, Signature=…`), rejecting anything that is not `AWS4-HMAC-SHA256`, whose `X-Amz-Date` is more than 15 minutes from the server clock, or whose signed-header set omits `host` or `x-amz-content-sha256`.
 3. `keys.Lookup(akid)` resolves the access key id to `{agent_id, prefix, secret}`. The secret is stored sealed (`seal.Key.Seal`) and is only ever unsealed into a short-lived buffer inside the lookup; the LRU cache holds the unsealed secret for at most 5 minutes (§11). A `disabled_at` row is a lookup miss.
 4. The canonical request is rebuilt and the signature compared with `hmac.Equal`. Failure is `403 SignatureDoesNotMatch` with no detail.
@@ -116,7 +116,7 @@ Steps 2–5 run before any storage call, so an unauthenticated or out-of-prefix 
 | `DeleteObject` | **denied by default** | `403 AccessDenied`, unless the key matches one of the spike-derived classes in §14. `POST ?delete` (bulk) is always `501`. |
 | `GetBucketVersioning` | no | Spike (Task 1): Kopia's `IsVersioned` has no caller; the gateway answers 501 like every other unsupported call. `GetBucketLocation` **is** required whenever the client omits `--region` — answer the advertised region. |
 | `PutObjectRetention` | conditional | Kopia calls it for blob retention (`s3_storage.go:239`). Local backend: `501 NotImplemented` (retention is the mirror job's Object Lock, §7). Cloud-direct: passed through. |
-| everything else | no | `403 AccessDenied` for anything else under `/s3/`, and no S3 API is exposed outside `/s3/`. |
+| everything else | no | `403 AccessDenied` for anything else under `/warphold/`, and no S3 API is exposed outside `/warphold/`. |
 
 **Append-only is the point.** A device's key can write new blobs and read its own; it cannot overwrite history and cannot delete outside the narrow spike-derived set. That is a stronger guarantee than the B2 target's writer key, which — as the original spec's §7 admits — can hide every blob it wrote because B2 implements `DeleteBlob` as `b2_hide_file`.
 
@@ -135,7 +135,7 @@ Written with `O_EXCL` to a temporary name in the same directory and then `rename
 
 **Cloud-direct** (`storage_mode = "cloud"`): `<bucket>/<device-id>/<blob-name>` in the target's B2 or S3 bucket, written by the gateway with the fleet's single admin key. Object Lock is verified at target creation exactly as the existing `b2` target does.
 
-The device sees the same key space in all three modes: `<device-id>/<blob-name>` under bucket `warphold` at `<public_url>/s3/`. Switching a target's backing store therefore does not change anything a device holds.
+The device sees the same key space in all three modes: `<device-id>/<blob-name>` under bucket `warphold` at `<public_url>/warphold/` (endpoint = the public host, path-style). Switching a target's backing store therefore does not change anything a device holds.
 
 ## 5. Data model additions
 
@@ -201,7 +201,7 @@ One setting, several consumers, and the plan wires each one explicitly:
 
 | Consumer | Use |
 |---|---|
-| Gateway endpoint | `<public_url>/s3/` is what goes into the device's sealed bundle |
+| Gateway endpoint | the public host (scheme + host of `public_url`), bucket `warphold`, path-style — this is what goes into the device's sealed bundle; `GetBucketLocation` requests are signed by minio-go with region `us-east-1` and are verified with that region, everything else with the advertised region |
 | `enroll.sh` | the `Server` value templated into the script (today it is derived from the `Host` header; `public_url` takes precedence when set) |
 | Enrollment one-liner | shown in the Groups screen and the wizard's last step |
 | Tray "Details" | unchanged (it is a localhost URL), but the device page links back to `<public_url>` |
@@ -389,6 +389,8 @@ The gateway is the only component whose cost scales with device count.
 | M6 | Screenshot pipeline, both READMEs, `warphold.com` site, apex DNS | `https://warphold.com` serves both tabs with real screenshots, and `curl -fsSL https://get.warphold.com/fleet.sh` (set up in M3) still resolves to the release asset — **its own PRs**, parallel with M4/M5 |
 
 ## 14. Reconcile at execution time
+
+0. **RESOLVED by the Task 3 review:** minio-go rejects an endpoint with a path (`Endpoint url cannot have fully qualified paths`), so the gateway cannot live under `/s3/`; it is mounted at the bucket path `/warphold/` on the public host. Unsigned `x-amz-*` request headers are rejected; `Content-MD5` is verified by the handler on every PUT (the payload is UNSIGNED over TLS); replay inside the ±15 min skew window is accepted by design (append-only storage makes it harmless).
 
 These are the things this spec asserts from reading code, and which the plan must confirm against reality before depending on them.
 
