@@ -12,6 +12,10 @@
 #
 # The last section is the D11 boundary: app.sh installs one machine's app and
 # has no server shaping in it at all.
+#
+# The two install paths are both exercised: a machine that is not enrolled
+# gets the standalone app service ("app run"), and one that is enrolled gets
+# the agent service ("agent run").
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -77,19 +81,31 @@ done
 echo "== --dry-run writes nothing"
 run_app --version "v$VER" --dry-run --no-open > "$WORK/dry.out"
 check "dry-run said what it would install" "grep -q 'would then' '$WORK/dry.out'"
+check "dry-run named the app install"      "grep -q 'warphold app install' '$WORK/dry.out'"
 check "dry-run wrote no binary"            "[ ! -e '$FAKEHOME/.local/bin/warphold' ]"
 check "dry-run wrote nothing at all"       "[ -z \"\$(find '$FAKEHOME/.local' '$WORK/root' -mindepth 1 -print -quit 2>/dev/null)\" ]"
 
 # ---------------------------------------------------------- 2. not enrolled
 
-echo "== fresh install on a machine that is not enrolled"
-run_app --version "v$VER" --no-open > "$WORK/install.out"
+echo "== fresh install on a machine that is not enrolled installs the standalone app"
+run_app --version "v$VER" --no-open > "$WORK/install.out" 2>&1
 BIN="$FAKEHOME/.local/bin/warphold"
+APP_UNIT="$FAKEHOME/.config/systemd/user/warphold-app.service"
+APP_TRAY="$FAKEHOME/.config/autostart/warphold-app-tray.desktop"
+AGENT_TRAY="$FAKEHOME/.config/autostart/warphold-tray.desktop"
 check "binary installed in ~/.local/bin" "[ -x '$BIN' ]"
 check "binary is 0755"                   "[ \"\$(stat -c %a '$BIN')\" = 755 ]"
 check "PATH hint printed"                "grep -q 'is not in your PATH' '$WORK/install.out'"
-check "told how to start the app"        "grep -q 'server start' '$WORK/install.out'"
-check "no service while unenrolled"      "[ ! -e '$FAKEHOME/.config/systemd/user/warphold-agent.service' ]"
+check "app unit written"                 "[ -f '$APP_UNIT' ]"
+check "unit runs the app engine"         "grep -qE 'ExecStart=\"[^\"]*warphold\" app run$' '$APP_UNIT'"
+check "unit restarts on failure"         "grep -q 'Restart=on-failure' '$APP_UNIT'"
+check "unit is a login-scope service"    "grep -q 'WantedBy=default.target' '$APP_UNIT'"
+check "tray autostart written"           "[ -f '$APP_TRAY' ]"
+check "tray watches the app engine"      "grep -q 'agent tray --scope app' '$APP_TRAY'"
+check "no agent unit while unenrolled"   "[ ! -e '$FAKEHOME/.config/systemd/user/warphold-agent.service' ]"
+check "told how to open the app"         "grep -q 'warphold app url' '$WORK/install.out'"
+# The token in the URL is handed to a browser, never printed by the installer.
+check "no session token printed"         "! grep -q 'local/session' '$WORK/install.out'"
 
 # ---------------------------------------------------------- 3. enrolled
 
@@ -101,8 +117,10 @@ EOF
 run_app --version "v$VER" --no-open > "$WORK/enrolled.out" 2>&1
 check "user unit written"      "[ -f '$FAKEHOME/.config/systemd/user/warphold-agent.service' ]"
 check "unit runs the agent"    "grep -q 'agent run --scope user' '$FAKEHOME/.config/systemd/user/warphold-agent.service'"
-check "tray autostart written" "[ -f '$FAKEHOME/.config/autostart/warphold-tray.desktop' ]"
-check "tray entry runs tray"   "grep -q 'agent tray' '$FAKEHOME/.config/autostart/warphold-tray.desktop'"
+check "tray autostart written" "[ -f '$AGENT_TRAY' ]"
+check "tray entry runs tray"   "grep -q 'agent tray' '$AGENT_TRAY'"
+check "agent tray is its own entry" "! grep -q -- '--scope app' '$AGENT_TRAY'"
+check "the app tray survived"       "[ -f '$APP_TRAY' ]"
 
 # ---------------------------------------------------------- 4. idempotent
 

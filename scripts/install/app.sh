@@ -3,9 +3,12 @@
 #
 #   curl -fsSL https://get.warphold.com/app.sh -o app.sh && sh app.sh
 #
-# Installs the warphold binary for this user (~/.local/bin), and, when this
-# machine is already enrolled with a Fleet server, the user-scope agent
-# service and the tray autostart entry through "warphold agent install".
+# Installs the warphold binary for this user (~/.local/bin) and a service that
+# backs this machine up:
+#   - not enrolled anywhere: "warphold app install" - the standalone app, its
+#     own local engine and the tray, and the app is opened in a browser.
+#   - already enrolled with a Fleet server: "warphold agent install" - the
+#     agent service and the tray, exactly as the enrollment one-liner does.
 #
 # This installs the app for one machine and nothing else: no service account,
 # no machine-wide configuration, no control plane. A WarpHold server for a
@@ -39,7 +42,6 @@ ROOT="${WARPHOLD_INSTALL_ROOT:-}"
 SCOPE=user
 DRY=0
 OPEN=1
-LOCAL_URL="http://127.0.0.1:51515"
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'app.sh: %s\n' "$*" >&2; exit 1; }
@@ -51,7 +53,9 @@ while [ $# -gt 0 ]; do
     --system) SCOPE=system; shift ;;
     --dry-run) DRY=1; shift ;;
     --no-open) OPEN=0; shift ;;
-    -h|--help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    # Print the header comment, however long it grows: every line from the
+    # second to the first that is not a comment.
+    -h|--help) awk 'NR > 1 { if (!/^#/) exit; sub(/^# ?/, ""); print }' "$0"; exit 0 ;;
     *) die "unknown argument $1 (try --help)" ;;
   esac
 done
@@ -139,7 +143,7 @@ if [ "$DRY" = 1 ]; then
   if [ -f "$STATE_DIR/agent.json" ]; then
     say "+ $BIN_DIR/warphold agent install --scope $SCOPE"
   else
-    say "+ print how to enroll or how to start the app (this machine is not enrolled)"
+    say "+ $BIN_DIR/warphold app install"
   fi
   exit 0
 fi
@@ -158,12 +162,17 @@ case ":${PATH:-}:" in
      say "    export PATH=\"$BIN_DIR:\$PATH\"" ;;
 esac
 
-# The service that "agent install" writes runs "warphold agent run", which
-# needs this machine's enrollment: installing it before that would leave a
-# unit restarting into the same error until systemd gives up. So the service
-# and the tray entry are written once the machine is enrolled - which is also
-# what the enrollment one-liner does on its own.
+# Which service this machine gets depends on what it is. "agent run" needs an
+# enrollment, so installing that unit on a machine that has none would leave
+# systemd restarting into the same error until it gives up; "app run" needs
+# nothing, and is the single-machine product.
 if [ -f "$STATE_DIR/agent.json" ]; then
+  MODE=agent
+else
+  MODE=app
+fi
+
+if [ "$MODE" = agent ]; then
   say "+ $BIN_DIR/warphold agent install --scope $SCOPE"
   if ! "$BIN_DIR/warphold" agent install --scope "$SCOPE"; then
     say ""
@@ -172,21 +181,56 @@ if [ -f "$STATE_DIR/agent.json" ]; then
     say "             $BIN_DIR/warphold agent install --scope $SCOPE"
   fi
 else
-  say ""
-  say "This machine is not backing anything up yet. Either:"
-  say "  - run the app for this machine alone:"
-  say "        $BIN_DIR/warphold server start --insecure --address $LOCAL_URL"
-  say "  - or join it to a WarpHold server, with the one-line command that"
-  say "    server shows under \"Add device\"."
+  say "+ $BIN_DIR/warphold app install"
+  if ! "$BIN_DIR/warphold" app install; then
+    say ""
+    say "warning: the service and tray files were written, but systemd would not"
+    say "         start them. Re-run once your session is up:"
+    say "             $BIN_DIR/warphold app install"
+  fi
 fi
 
-# Only open something that is actually there: the app is a command this user
-# runs, not a service this script started.
-if [ "$OPEN" = 1 ] && [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] &&
-   command -v xdg-open >/dev/null 2>&1 &&
-   curl -fsS --max-time 1 "$LOCAL_URL" >/dev/null 2>&1; then
-  say "+ opening $LOCAL_URL"
-  xdg-open "$LOCAL_URL" >/dev/null 2>&1 || true
+# The engine listens on a loopback port it picks at startup, and the URL that
+# opens it carries a one-process session token, so the URL is asked for rather
+# than assumed - and handed to the browser rather than printed here.
+app_url() {
+  i=0
+  while [ "$i" -lt 40 ]; do
+    if url="$("$BIN_DIR/warphold" app url 2>/dev/null)" && [ -n "$url" ]; then
+      printf '%s\n' "$url"
+      return 0
+    fi
+    i=$((i + 1))
+    sleep 0.25
+  done
+  return 1
+}
+
+if [ "$MODE" = app ] && [ "$OPEN" = 1 ] &&
+   [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] &&
+   command -v xdg-open >/dev/null 2>&1; then
+  if URL="$(app_url)"; then
+    say "+ opening WarpHold in your browser"
+    xdg-open "$URL" >/dev/null 2>&1 || true
+  else
+    say ""
+    say "note: the app service did not come up in time. Check it with:"
+    say "    systemctl --user status warphold-app"
+  fi
+fi
+
+say ""
+if [ "$MODE" = app ]; then
+  say "Open WarpHold any time with:"
+  say "    $BIN_DIR/warphold app url        # prints the link; open it in a browser"
+  say "The tray icon appears at your next login. To start it now:"
+  say "    $BIN_DIR/warphold agent tray --scope app &"
+  say ""
+  say "To join this machine to a WarpHold server later, use the one-line"
+  say "command that server shows under \"Add device\"."
+else
+  say "The tray icon appears at your next login; \"Details...\" in its menu opens"
+  say "this machine's backups."
 fi
 
 say ""
