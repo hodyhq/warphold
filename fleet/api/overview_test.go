@@ -67,9 +67,9 @@ func TestOverviewCountsBucketsAndDays(t *testing.T) {
 	_, quietBearer := enrollInto(t, h, gid, "never-ran")
 	_, skewBearer := enrollInto(t, h, gid, "skewed-clock")
 
-	now := time.Now().UTC()
-	// Pin the server clock so hour/day bucket boundaries cannot drift between
-	// the fixtures and the request.
+	// A fixed mid-day clock: fixtures are relative to now, so a real clock near
+	// midnight UTC would move "today" and "three days ago" across day buckets.
+	now := time.Date(2026, time.September, 2, 12, 0, 0, 0, time.UTC)
 	h.s.SetNowForTesting(func() time.Time { return now })
 	// A future-dated report (skewed agent clock) must stay out of the window
 	// and cannot vouch for health: the agent stays unknown.
