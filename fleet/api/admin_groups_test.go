@@ -98,6 +98,51 @@ func TestGroupUpdateRefusesRepointWithDevices(t *testing.T) {
 	require.Equal(t, 409, resp.StatusCode, body)
 }
 
+// TestGroupUpdateSameTargetIDWithDevicesIsNotARepoint documents that setting
+// target_id to the value the group already has is a no-op as far as the
+// repoint guard is concerned: it is not "moving" any device's repository, so
+// enrolled devices (including a revoked one) never block it.
+func TestGroupUpdateSameTargetIDWithDevicesIsNotARepoint(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+	h.setPublicURL()
+	gid := h.mkHostedGroup(t, t.TempDir())
+	_, tok := h.do("POST", "/api/v1/fleet/tokens", map[string]any{"group_id": gid})
+
+	admin := h.jar
+	h.jar = nil
+	resp, body := h.do("POST", "/api/v1/fleet/enroll", map[string]any{"token": tok["token"], "hostname": "fw16", "os": "linux", "arch": "amd64", "scope": "user"})
+	require.Equal(t, 201, resp.StatusCode, body)
+	h.jar = admin
+
+	_, list := h.doList("GET", "/api/v1/fleet/groups")
+	sameTarget := findGroup(list, gid)["target_id"]
+
+	resp, body = h.do("PUT", "/api/v1/fleet/groups/"+jsonNum(gid), map[string]any{"target_id": sameTarget})
+	require.Equal(t, 204, resp.StatusCode, body)
+}
+
+// TestGroupUpdateEmptyOrUnknownFieldsIsANoop documents the PUT convention: an
+// empty body, or a body carrying only fields the API doesn't know about,
+// changes nothing and still succeeds -- decode() ignores unrecognized JSON
+// fields, and every column is left in place by UpdateGroup's COALESCE when
+// its pointer is nil.
+func TestGroupUpdateEmptyOrUnknownFieldsIsANoop(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+	gid := h.mkGroup(t)
+	_, before := h.doList("GET", "/api/v1/fleet/groups")
+
+	resp, _ := h.do("PUT", "/api/v1/fleet/groups/"+jsonNum(gid), map[string]any{})
+	require.Equal(t, 204, resp.StatusCode)
+
+	resp, _ = h.do("PUT", "/api/v1/fleet/groups/"+jsonNum(gid), map[string]any{"color": "blue", "nonsense": 42})
+	require.Equal(t, 204, resp.StatusCode)
+
+	_, after := h.doList("GET", "/api/v1/fleet/groups")
+	require.Equal(t, findGroup(before, gid), findGroup(after, gid), "unrecognized/absent fields must not change the row")
+}
+
 func TestGroupDelete(t *testing.T) {
 	h := newHarness(t)
 	h.activateAndLogin()

@@ -53,25 +53,46 @@ func TestUpdateGroupIsPartial(t *testing.T) {
 	require.ErrorIs(t, s.UpdateGroup(ctx, 999999, &newName, nil, nil), store.ErrNotFound)
 }
 
-func TestGroupHasAgentsCountsRevoked(t *testing.T) {
+func TestUpdateGroupRefusesRepointWithAgents(t *testing.T) {
 	s := openTemp(t)
 	ctx := context.Background()
 	now := clock.Now().UTC().Truncate(time.Second)
-	gid, _, _ := seedGroup(t, s, now)
 
-	has, err := s.GroupHasAgents(ctx, gid)
-	require.NoError(t, err)
-	require.False(t, has, "a fresh group has never enrolled a device")
+	mkAgent := func(gid int64, id string) {
+		require.NoError(t, s.CreateAgent(ctx, &store.Agent{ID: id, Name: "n", Hostname: "h", OS: "linux", Arch: "amd64", Scope: "user", GroupID: gid, BearerHash: []byte(id), SealedBundle: []byte("b"), EnrolledAt: now}))
+	}
 
-	require.NoError(t, s.CreateAgent(ctx, &store.Agent{ID: "a1", Name: "n", Hostname: "h", OS: "linux", Arch: "amd64", Scope: "user", GroupID: gid, BearerHash: []byte("h1"), SealedBundle: []byte("b"), EnrolledAt: now}))
-	has, err = s.GroupHasAgents(ctx, gid)
-	require.NoError(t, err)
-	require.True(t, has)
+	t.Run("blocked by a non-revoked agent", func(t *testing.T) {
+		gid, _, _ := seedGroup(t, s, now)
+		tid2, err := s.CreateTarget(ctx, &store.Target{Name: "t2", Kind: "filesystem", Path: t.TempDir(), CreatedAt: now})
+		require.NoError(t, err)
+		mkAgent(gid, "a1")
+		require.ErrorIs(t, s.UpdateGroup(ctx, gid, nil, &tid2, nil), store.ErrGroupInUse)
+	})
 
-	require.NoError(t, s.RevokeAgent(ctx, "a1", now))
-	has, err = s.GroupHasAgents(ctx, gid)
-	require.NoError(t, err)
-	require.True(t, has, "a revoked agent's repository still lives on the group's target")
+	t.Run("still blocked once the agent is revoked", func(t *testing.T) {
+		gid, _, _ := seedGroup(t, s, now)
+		tid2, err := s.CreateTarget(ctx, &store.Target{Name: "t2", Kind: "filesystem", Path: t.TempDir(), CreatedAt: now})
+		require.NoError(t, err)
+		mkAgent(gid, "a2")
+		require.NoError(t, s.RevokeAgent(ctx, "a2", now))
+		require.ErrorIs(t, s.UpdateGroup(ctx, gid, nil, &tid2, nil), store.ErrGroupInUse,
+			"a revoked agent's repository still lives on the group's target")
+	})
+
+	t.Run("setting target_id to its current value is not a repoint, so agents don't block it", func(t *testing.T) {
+		gid, tid, _ := seedGroup(t, s, now)
+		mkAgent(gid, "a3")
+		require.NoError(t, s.UpdateGroup(ctx, gid, nil, &tid, nil))
+	})
+
+	t.Run("a template-only change is never blocked by agents", func(t *testing.T) {
+		gid, _, _ := seedGroup(t, s, now)
+		mkAgent(gid, "a4")
+		tpl2, err := s.CreateTemplate(ctx, &store.Template{Name: "tpl2", Sources: []string{"~"}, PolicyJSON: []byte(`{}`), CreatedAt: now})
+		require.NoError(t, err)
+		require.NoError(t, s.UpdateGroup(ctx, gid, nil, nil, &tpl2))
+	})
 }
 
 func TestDeleteGroup(t *testing.T) {

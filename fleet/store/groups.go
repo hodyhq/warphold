@@ -62,11 +62,22 @@ func (s *Store) Groups(ctx context.Context) ([]Group, error) {
 
 // UpdateGroup applies a partial update to a group: name, target_id and
 // template_id are each left unchanged when nil. The caller is responsible for
-// validating a new target/template exists and, for a target_id change, that
-// the group has no enrolled devices -- this only writes the row.
+// validating that a new target/template exists.
+//
+// A target_id change is refused with ErrGroupInUse when any agent -- revoked
+// or not -- has ever enrolled through the group: its repository lives on
+// whatever target was current at enrollment, so retargeting would silently
+// orphan it even for a device later revoked. That check and the write are the
+// same UPDATE statement: the WHERE guard is evaluated against each row's
+// pre-update value of target_id, so a device enrolling between a check and a
+// separate write can't slip through -- there is no separate write. Retargeting
+// to the target_id already in place is never treated as a change, so it is
+// allowed regardless of enrolled devices.
 func (s *Store) UpdateGroup(ctx context.Context, id int64, name *string, targetID, templateID *int64) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE groups SET name=COALESCE(?,name), target_id=COALESCE(?,target_id), template_id=COALESCE(?,template_id) WHERE id=?`,
-		name, targetID, templateID, id)
+	res, err := s.db.ExecContext(ctx, `UPDATE groups SET
+		name=COALESCE(?,name), target_id=COALESCE(?,target_id), template_id=COALESCE(?,template_id)
+		WHERE id=? AND (COALESCE(?,target_id)=target_id OR NOT EXISTS (SELECT 1 FROM agents WHERE group_id=?))`,
+		name, targetID, templateID, id, targetID, id)
 	if err != nil {
 		return err
 	}
@@ -74,22 +85,17 @@ func (s *Store) UpdateGroup(ctx context.Context, id int64, name *string, targetI
 	if err != nil {
 		return err
 	}
-	if n == 0 {
-		return ErrNotFound
+	if n == 1 {
+		return nil
 	}
-	return nil
-}
-
-// GroupHasAgents reports whether any agent -- revoked or not -- has ever
-// enrolled through this group. Its repository lives on whatever target was
-// current at enrollment time, so retargeting the group would silently orphan
-// that data even for a device that was later revoked; this is what gates a
-// target_id change in UpdateGroup, separately from the narrower check
-// DeleteGroup makes.
-func (s *Store) GroupHasAgents(ctx context.Context, id int64) (bool, error) {
-	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM agents WHERE group_id=?`, id).Scan(&n)
-	return n > 0, err
+	// 0 rows: either the group doesn't exist, or the guard above blocked a
+	// real repoint. Whatever agent blocked it can't have vanished in this
+	// gap -- DeleteGroup refuses to remove a group any agent (revoked or
+	// not) still references -- so this read is safe without a transaction.
+	if _, err := s.Group(ctx, id); err != nil {
+		return err // ErrNotFound, or a real failure
+	}
+	return ErrGroupInUse
 }
 
 // DeleteGroup removes a group, refusing with ErrGroupInUse when a non-revoked

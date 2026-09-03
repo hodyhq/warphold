@@ -64,26 +64,10 @@ func (s *Server) handleGroupUpdate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "name cannot be empty")
 		return
 	}
-	g, err := s.store().Group(r.Context(), id)
-	if err != nil {
-		writeErr(w, http.StatusNotFound, "group not found")
-		return
-	}
 	if in.TargetID != nil {
 		if _, err := s.store().Target(r.Context(), *in.TargetID); err != nil {
 			writeErr(w, http.StatusBadRequest, "unknown target_id")
 			return
-		}
-		if *in.TargetID != g.TargetID {
-			has, err := s.store().GroupHasAgents(r.Context(), id)
-			if err != nil {
-				adminFailed(w, "update group", err)
-				return
-			}
-			if has {
-				writeErr(w, http.StatusConflict, "group has enrolled devices; their repositories live on the current target, so repointing it is a migration, not a rename")
-				return
-			}
 		}
 	}
 	if in.TemplateID != nil {
@@ -92,11 +76,20 @@ func (s *Server) handleGroupUpdate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.store().UpdateGroup(r.Context(), id, in.Name, in.TargetID, in.TemplateID); err != nil {
+	// The group-has-devices check for a target_id change lives inside
+	// UpdateGroup itself, in the same statement as the write -- checking it
+	// here first would leave a window for a device to enroll in between and
+	// get silently repointed.
+	switch err := s.store().UpdateGroup(r.Context(), id, in.Name, in.TargetID, in.TemplateID); {
+	case err == nil:
+		w.WriteHeader(http.StatusNoContent)
+	case errors.Is(err, store.ErrGroupInUse):
+		writeErr(w, http.StatusConflict, "group has enrolled devices; their repositories live on the current target, so repointing it is a migration, not a rename")
+	case errors.Is(err, store.ErrNotFound):
+		writeErr(w, http.StatusNotFound, "group not found")
+	default:
 		adminFailed(w, "update group", err)
-		return
 	}
-	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleGroupDelete removes a group. It is refused with 409 while a
