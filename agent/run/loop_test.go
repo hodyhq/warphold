@@ -3,6 +3,7 @@ package run_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -25,6 +26,9 @@ type fakeLocal struct {
 	tasks      []uitask.Info
 	manifestID string
 	lookups    []string
+	verifies   int
+	verifyRep  poll.Report
+	verifyErr  error
 }
 
 func (f *fakeLocal) Apply(_ context.Context, s []poll.Source) error {
@@ -43,6 +47,14 @@ func (f *fakeLocal) Snapshot(_ context.Context, p string) error {
 
 func (f *fakeLocal) Pause(context.Context, string) error  { return nil }
 func (f *fakeLocal) Resume(context.Context, string) error { return nil }
+
+func (f *fakeLocal) Verify(context.Context) (poll.Report, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.verifies++
+
+	return f.verifyRep, f.verifyErr
+}
 
 func (f *fakeLocal) Tasks(context.Context) ([]uitask.Info, error) {
 	f.mu.Lock()
@@ -257,4 +269,87 @@ func TestWatchFillsSnapshotID(t *testing.T) {
 	defer fl.mu.Unlock()
 	require.Equal(t, []string{"/data@" + stamp(start) + ".." + stamp(end)}, fl.lookups,
 		"looked up once, for the successful snapshot, bounded by its own task window")
+}
+
+// TestVerifyCommandReportsVerifyKind pins the Verify button's round trip: a
+// queued "verify" runs the engine's verification and reports it as kind
+// "verify" carrying the command id, so Fleet acks the command and the device
+// detail can show the result. A verification that found damage is still a
+// report ("failed"), not an error; only a verify that could not run at all is.
+func TestVerifyCommandReportsVerifyKind(t *testing.T) {
+	started := clock.Now().Add(-time.Minute)
+
+	for _, tc := range []struct {
+		name       string
+		rep        poll.Report
+		err        error
+		wantStatus string
+		wantStderr string
+		wantFiles  int64
+	}{
+		{
+			name:       "ok",
+			rep:        poll.Report{Kind: "verify", Status: "ok", StartedAt: started, Files: 12, Bytes: 345},
+			wantStatus: "ok",
+			wantFiles:  12,
+		},
+		{
+			name:       "damage found",
+			rep:        poll.Report{Kind: "verify", Status: "failed", StartedAt: started, Files: 3, Stderr: "missing blob p01"},
+			wantStatus: "failed",
+			wantStderr: "missing blob p01",
+			wantFiles:  3,
+		},
+		{
+			name:       "could not run",
+			err:        errors.New("open repository: no such file"),
+			wantStatus: "error",
+			wantStderr: "open repository: no such file",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+
+			var reports []poll.Report
+
+			polls := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				defer mu.Unlock()
+
+				switch r.URL.Path {
+				case "/api/v1/fleet/agent/poll":
+					polls++
+					json.NewEncoder(w).Encode(poll.PolicyDoc{ETag: "e1", Commands: []poll.Command{{ID: 42, Kind: "verify"}}}) //nolint:errcheck,errchkjson
+				case "/api/v1/fleet/agent/report":
+					var rep poll.Report
+					json.NewDecoder(r.Body).Decode(&rep) //nolint:errcheck
+					reports = append(reports, rep)
+					w.WriteHeader(http.StatusNoContent)
+				}
+			}))
+			defer srv.Close()
+
+			t.Setenv("WARPHOLD_STATE_DIR", t.TempDir())
+
+			st := &state.Config{Server: srv.URL, Bearer: "wa_1", Scope: "user"}
+			fl := &fakeLocal{verifyRep: tc.rep, verifyErr: tc.err}
+			l := run.New(run.Deps{Fleet: &poll.Client{Server: srv.URL, Bearer: "wa_1"}, Local: fl, State: st, Log: t.Logf})
+
+			require.NoError(t, l.PollOnce(context.Background()))
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			require.Equal(t, 1, fl.verifies)
+			require.Len(t, reports, 1)
+			require.Equal(t, "verify", reports[0].Kind, "the device detail must be able to tell a verify apart from a pause")
+			require.EqualValues(t, 42, reports[0].CommandID, "without the command id Fleet never acks and redelivers forever")
+			require.Equal(t, "cmd-42", reports[0].TaskID)
+			require.Equal(t, tc.wantStatus, reports[0].Status)
+			require.Equal(t, tc.wantStderr, reports[0].Stderr)
+			require.Equal(t, tc.wantFiles, reports[0].Files)
+			require.False(t, reports[0].FinishedAt.IsZero())
+		})
+	}
 }

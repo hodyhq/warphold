@@ -3,6 +3,7 @@ package api_test
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -98,28 +99,106 @@ func TestPollReportHealth(t *testing.T) {
 // TestReportRejectsOtherAgentsCommand pins the fix for a cross-agent ack: an
 // agent must not be able to acknowledge (and so silently discard) a command
 // that was queued for a different agent, even though command ids are small
-// sequential integers an attacker could guess.
+// sequential integers an attacker could guess. The guard is per-command, so it
+// must hold for every command kind, not only the snapshot-now it was written
+// for.
 func TestReportRejectsOtherAgentsCommand(t *testing.T) {
+	for _, tc := range []struct{ cmdKind, repKind string }{
+		{"snapshot-now", "command"},
+		{"verify", "verify"},
+	} {
+		t.Run(tc.cmdKind, func(t *testing.T) {
+			h := newHarness(t)
+			h.activateAndLogin()
+			_, bearerA := enrollAgent(t, h)
+			idB, bearerB := enrollAgent(t, h)
+			ctx := t.Context()
+
+			resp, cmd := h.do("POST", "/api/v1/fleet/agents/"+idB+"/commands", map[string]any{"kind": tc.cmdKind, "source": "~"})
+			require.Equal(t, 201, resp.StatusCode)
+			cmdID := int64(cmd["id"].(float64))
+
+			cA := &poll.Client{Server: h.srv.URL, Bearer: bearerA}
+			now := time.Now()
+			err := cA.Report(ctx, poll.Report{TaskID: "steal", Kind: tc.repKind, CommandID: cmdID, Source: "~", StartedAt: now, FinishedAt: now, Status: "ok"})
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "400")
+
+			cB := &poll.Client{Server: h.srv.URL, Bearer: bearerB}
+			docB, err := cB.Poll(ctx, poll.Heartbeat{}, "")
+			require.NoError(t, err)
+			require.Len(t, docB.Commands, 1, "B's command must still be pending; A's report must not have acked it")
+		})
+	}
+}
+
+// TestVerifyReportAckAndHealth pins the Verify button's server side: the
+// agent's kind="verify" report acks the command it carries (so the button does
+// not re-fire forever) and shows up on the device detail.
+//
+// It also pins exactly how a verify does and does not move health, because
+// the two are not the same. A verify is never evidence of a *backup*
+// (store.LastOKReport counts kind='snapshot'), so neither "ok" nor "failed"
+// can turn a device green - a passing verify on a device that has not backed
+// up in a month stays "unknown". But healthOf also reads the latest report of
+// *any* kind and calls it a failed run when its status is "error", so a verify
+// that could not run at all does show red until the next report. Pinned as
+// the behaviour it is; changing it is a separate decision.
+func TestVerifyReportAckAndHealth(t *testing.T) {
 	h := newHarness(t)
 	h.activateAndLogin()
-	_, bearerA := enrollAgent(t, h)
-	idB, bearerB := enrollAgent(t, h)
+	id, bearer := enrollAgent(t, h)
 	ctx := t.Context()
 
-	resp, cmd := h.do("POST", "/api/v1/fleet/agents/"+idB+"/commands", map[string]any{"kind": "snapshot-now", "source": "~"})
+	resp, cmd := h.do("POST", "/api/v1/fleet/agents/"+id+"/commands", map[string]any{"kind": "verify"})
 	require.Equal(t, 201, resp.StatusCode)
 	cmdID := int64(cmd["id"].(float64))
 
-	cA := &poll.Client{Server: h.srv.URL, Bearer: bearerA}
-	now := time.Now()
-	err := cA.Report(ctx, poll.Report{TaskID: "steal", Kind: "command", CommandID: cmdID, Source: "~", StartedAt: now, FinishedAt: now, Status: "ok"})
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "400")
-
-	cB := &poll.Client{Server: h.srv.URL, Bearer: bearerB}
-	docB, err := cB.Poll(ctx, poll.Heartbeat{}, "")
+	c := &poll.Client{Server: h.srv.URL, Bearer: bearer}
+	doc, err := c.Poll(ctx, poll.Heartbeat{}, "")
 	require.NoError(t, err)
-	require.Len(t, docB.Commands, 1, "B's command must still be pending; A's report must not have acked it")
+	require.Len(t, doc.Commands, 1)
+	require.Equal(t, "verify", doc.Commands[0].Kind)
+
+	now := time.Now()
+	rep := poll.Report{TaskID: "cmd-" + strconv.FormatInt(cmdID, 10), Kind: "verify", CommandID: cmdID, StartedAt: now.Add(-time.Minute), FinishedAt: now, Status: "ok", Files: 9, Bytes: 1234}
+	require.NoError(t, c.Report(ctx, rep))
+	// Idempotent on retry: the command is already acked, which must not turn a
+	// duplicate report into a failure the agent keeps retrying.
+	require.NoError(t, c.Report(ctx, rep))
+
+	after, err := c.Poll(ctx, poll.Heartbeat{}, doc.ETag)
+	require.NoError(t, err)
+	require.Nil(t, after, "the verify report must have acked the command")
+
+	_, detail := h.do("GET", "/api/v1/fleet/agents/"+id, nil)
+	require.Equal(t, "unknown", detail["health"], "a passing verify is not evidence of a backup")
+
+	reports := detail["reports"].([]any)
+	require.Len(t, reports, 1, "the retry must dedupe on (agent, task_id)")
+	require.Equal(t, "verify", reports[0].(map[string]any)["kind"], "the device detail shows the last verify")
+
+	// A verify that ran and found damage: status "failed". healthOf sets
+	// LastRunFailed from `latest.Status == "error"` only, so this does not go
+	// red - the device's backups are still whatever they were, and the damage
+	// is visible in the report itself.
+	require.NoError(t, c.Report(ctx, poll.Report{TaskID: "v-failed", Kind: "verify", StartedAt: now, FinishedAt: now.Add(time.Second), Status: "failed", Stderr: "object x is backed by missing blob p01"}))
+	_, detail = h.do("GET", "/api/v1/fleet/agents/"+id, nil)
+	require.Equal(t, "unknown", detail["health"], "damage found by verify must not be scored as a failed backup run")
+
+	// A verify that could not run at all: status "error". This one DOES show
+	// red, because healthOf reads the latest report of any kind and treats
+	// status "error" as a failed run. Pinned as the behaviour it is, not as an
+	// endorsement: it is the same rule that already applies to a failed
+	// pause/resume, and it clears as soon as any later report lands.
+	require.NoError(t, c.Report(ctx, poll.Report{TaskID: "v-error", Kind: "verify", StartedAt: now, FinishedAt: now.Add(2 * time.Second), Status: "error", Stderr: "open repository: no such file"}))
+	_, detail = h.do("GET", "/api/v1/fleet/agents/"+id, nil)
+	require.Equal(t, "red", detail["health"], "a verify that could not run is the latest failed run")
+
+	// ...and the next report is what clears it.
+	require.NoError(t, c.Report(ctx, poll.Report{TaskID: "v-ok-again", Kind: "verify", StartedAt: now, FinishedAt: now.Add(3 * time.Second), Status: "ok"}))
+	_, detail = h.do("GET", "/api/v1/fleet/agents/"+id, nil)
+	require.Equal(t, "unknown", detail["health"], "a later report replaces the failed one; still no backup, so still unknown")
 }
 
 // TestAgentPollRejectsBeforeActivation pins that a request carrying a bearer
