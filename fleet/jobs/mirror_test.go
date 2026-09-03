@@ -393,9 +393,43 @@ func TestMirrorRejectsAnUnsealableKey(t *testing.T) {
 	require.Empty(t, contents(t, f.mirror))
 }
 
-// TestMirrorConnectionInfo pins the production connection info, which the
-// fixture above replaces: B2 is reached through its S3 endpoint, because the
-// cloud backend needs a conditional PUT that B2's native API does not have.
+// TestMirrorRecordsFailureWhenCancelledBetweenTargets covers the outer target
+// loop, not the per-device cancellation path TestMirrorContinuesAfterADevice-
+// Fails-adjacent tests already cover: once ctx is cancelled, the loop must
+// break AND say so, not just leave whatever the target in flight happened to
+// fail with as the only error. The fixture's one real target fails on its own
+// (its listing sees the same cancelled ctx) - the assertion is that the
+// loop's own break adds a second, distinct entry on top of that, which is
+// only true once the break itself records the cancellation.
+func TestMirrorRecordsFailureWhenCancelledBetweenTargets(t *testing.T) {
+	f := newMirrorFixture(t, nil)
+	seedAgents(t, f.st, "dev1") // also creates a second, unrelated target row
+
+	f.write(t, f.dir, "dev1/p001", "body")
+
+	cctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	// Cancels as soon as the first target's connection opens: everything
+	// after that - the target's own remaining work, and the loop's next
+	// iteration - sees a done context, deterministically and without racing
+	// real time.
+	old := openMirror
+	t.Cleanup(func() { openMirror = old })
+	openMirror = func(c context.Context, tg store.Target, cr mirrorCreds) (gateway.ObjectStore, error) {
+		cancel()
+
+		return old(c, tg, cr)
+	}
+
+	detail, err := Mirror(f.st, f.key)(cctx, store.Job{Kind: "mirror"})
+	require.Error(t, err)
+	require.Contains(t, detail, "mirror: context canceled",
+		"the loop's own break must record the cancellation, not just leave it to the target in flight")
+
+	require.Empty(t, contents(t, f.mirror), "cancelled before any upload could start")
+}
+
 func TestMirrorConnectionInfo(t *testing.T) {
 	creds := mirrorCreds{KeyID: "id", Key: "secret"}
 	base := store.Target{MirrorKind: "b2", MirrorBucket: "offsite", MirrorRegion: "us-west-004"}

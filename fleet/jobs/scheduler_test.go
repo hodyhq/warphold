@@ -219,6 +219,39 @@ func TestSchedulerStopsCleanly(t *testing.T) {
 	NewScheduler(st, nil, 0).Stop() // safe on a scheduler that never started
 }
 
+// TestSchedulerStopReturnsWhenARunnerIgnoresCtx covers the bounded wait: a
+// runner that never notices ctx is done must not hang Stop forever.
+func TestSchedulerStopReturnsWhenARunnerIgnoresCtx(t *testing.T) {
+	old := stopWait
+	stopWait = 10 * time.Millisecond
+	t.Cleanup(func() { stopWait = old })
+
+	st := openTemp(t)
+	ctx := context.Background()
+
+	entered := make(chan struct{})
+
+	s := NewScheduler(st, map[string]Runner{"slow": func(context.Context, store.Job) (string, error) {
+		close(entered)
+		select {} // never returns, the way a stuck syscall would
+	}}, time.Millisecond)
+
+	_, err := st.EnqueueJob(ctx, &store.Job{Kind: "slow", ScheduledFor: time.Now()})
+	require.NoError(t, err)
+
+	s.Start(ctx)
+	<-entered
+
+	stopped := make(chan struct{})
+	go func() { s.Stop(); close(stopped) }()
+
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not return within its bound")
+	}
+}
+
 func TestSchedulerRequeuesAStaleClaim(t *testing.T) {
 	st := openTemp(t)
 	ctx := context.Background()
@@ -243,6 +276,64 @@ func TestSchedulerRequeuesAStaleClaim(t *testing.T) {
 
 	eventually(t, func() bool { return ran.Load() == 1 })
 	require.Equal(t, "ok", jobsOf(t, st, "stats")[0].Status)
+}
+
+// TestSchedulerRequeuesAClaimThatGoesStaleWhileRunning covers the loop path:
+// a claim that is still fresh when the scheduler starts, and only crosses the
+// kind's timeout later while the scheduler keeps ticking. Before the fix,
+// requeueStale ran once before the loop and never again, so this claim would
+// stay 'running' forever and permanently block enqueueIntervals for its kind.
+func TestSchedulerRequeuesAClaimThatGoesStaleWhileRunning(t *testing.T) {
+	st := openTemp(t)
+	ctx := context.Background()
+
+	t0 := time.Now()
+
+	var clock atomic.Int64
+	clock.Store(t0.UnixNano())
+	setClock := func(d time.Duration) { clock.Store(t0.Add(d).UnixNano()) }
+
+	var ran atomic.Int64
+
+	s := NewScheduler(st, map[string]Runner{"mirror": func(context.Context, store.Job) (string, error) {
+		ran.Add(1)
+
+		return "0 objects, 0 bytes, 0 skipped", nil
+	}}, time.Millisecond)
+	s.Now = func() time.Time { return time.Unix(0, clock.Load()) }
+	s.Timeouts = map[string]time.Duration{"mirror": 5 * time.Minute}
+
+	_, err := st.EnqueueJob(ctx, &store.Job{Kind: "mirror", ScheduledFor: t0.Add(-time.Minute)})
+	require.NoError(t, err)
+
+	// Claimed the way a previous run of the scheduler would have: started_at
+	// is t0, so it is not stale yet by the kind's 5-minute timeout.
+	_, err = st.ClaimDueJob(ctx, t0)
+	require.NoError(t, err)
+
+	s.Start(ctx)
+	defer s.Stop()
+
+	// The claim is still fresh: the requeueStale call before the loop (kept
+	// for the crash-at-start case) must not touch it.
+	time.Sleep(20 * time.Millisecond)
+	require.Zero(t, ran.Load())
+	require.Equal(t, "running", jobsOf(t, st, "mirror")[0].Status)
+
+	// Six minutes on: the claim is now older than the timeout, but only while
+	// the scheduler is already running its loop. Only a requeueStale call
+	// made from inside the loop - not the one-shot call before it - can
+	// notice this and return the row to pending.
+	setClock(6 * time.Minute)
+	eventually(t, func() bool { return ran.Load() == 1 })
+	require.Equal(t, "ok", jobsOf(t, st, "mirror")[0].Status)
+
+	// With the stale claim cleared, enqueueIntervals is unstuck too: once the
+	// interval has elapsed it enqueues, and the scheduler runs, a fresh
+	// mirror job on its own.
+	setClock(6*time.Minute + time.Hour + time.Second)
+	eventually(t, func() bool { return ran.Load() == 2 })
+	require.Len(t, jobsOf(t, st, "mirror"), 2)
 }
 
 func TestSchedulerEnqueuesTheMirrorItself(t *testing.T) {

@@ -29,6 +29,11 @@ const DefaultTimeout = 6 * time.Hour
 // DefaultTick is how often the scheduler looks for due work (spec §10).
 const DefaultTick = time.Minute
 
+// stopWait bounds how long Stop waits for a running job to notice ctx is
+// done. A var, not a const, so a test can shrink it rather than wait 30s for
+// a runner that deliberately ignores its context.
+var stopWait = 30 * time.Second
+
 // interval describes a kind the scheduler keeps enqueued itself, so a fleet
 // needs no cron. Other kinds are enqueued by whatever triggers them.
 type interval struct {
@@ -110,7 +115,15 @@ func (s *Scheduler) Stop() {
 	}
 
 	cancel()
-	<-done
+
+	select {
+	case <-done:
+	case <-time.After(stopWait):
+		// The Runner contract is to return promptly once ctx is done; one
+		// that does not must not hang the caller of Stop forever too. The
+		// scheduler goroutine is left running past this return.
+		log.Printf("warphold fleet: scheduler did not stop within %s; a runner is ignoring its context", stopWait)
+	}
 }
 
 func (s *Scheduler) now() time.Time {
@@ -135,12 +148,16 @@ func (s *Scheduler) timeout(kind string) time.Duration {
 }
 
 func (s *Scheduler) run(ctx context.Context) {
-	s.requeueStale(ctx)
-
 	t := time.NewTicker(s.tick)
 	defer t.Stop()
 
 	for {
+		// Every tick, not once at start: a claim can still be fresh when the
+		// scheduler starts and only cross its kind's timeout later, while this
+		// same process keeps running. A one-shot check before the loop would
+		// miss that and leave the row - and enqueueIntervals for its kind -
+		// stuck 'running' forever.
+		s.requeueStale(ctx)
 		s.enqueueIntervals(ctx)
 
 		for ctx.Err() == nil && s.runOne(ctx) {

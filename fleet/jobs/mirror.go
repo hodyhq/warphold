@@ -94,9 +94,12 @@ func Mirror(st *store.Store, k seal.Key) Runner {
 		}
 
 		for i := range targets {
-			if ctx.Err() != nil {
+			if err := ctx.Err(); err != nil {
 				// Shutting down or out of time: stop here rather than opening
-				// a provider connection per remaining target only to fail.
+				// a provider connection per remaining target only to fail -
+				// but say so, or a partial mirror would report itself ok.
+				m.fail("mirror", err)
+
 				break
 			}
 
@@ -189,7 +192,9 @@ func (m *mirrorRun) target(ctx context.Context, t store.Target) {
 
 	remote, err := openMirror(ctx, t, c)
 	if err != nil {
-		m.fail(t.Name, err)
+		// openMirror surfaces gateway/cloud.go messages verbatim ("needs the
+		// bucket's region"); prefix so the noun in the jobs UI is right.
+		m.fail(t.Name, fmt.Errorf("mirror bucket: %w", err))
 
 		return
 	}
