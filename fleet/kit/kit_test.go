@@ -75,12 +75,16 @@ func TestCommandsUseVerifiedUpstreamFlags(t *testing.T) {
 		require.True(t, strings.HasPrefix(c[2], "kopia restore <snapshot-id> "))
 	})
 
-	t.Run("hosted over plain http needs --disable-tls", func(t *testing.T) {
+	t.Run("hosted over plain http gets no --disable-tls: it can never reach the gateway", func(t *testing.T) {
 		d := hostedData()
 		d.Endpoint = "http://10.99.90.5:8080"
 		c := kit.Commands(d)
 		require.Contains(t, c[0], "--endpoint 10.99.90.5:8080")
-		require.True(t, strings.HasSuffix(c[0], " --disable-tls"))
+		require.NotContains(t, c[0], "--disable-tls")
+		require.True(t, strings.HasSuffix(c[0], "--region warphold"))
+
+		out := render(t, d)
+		require.Contains(t, out, "cannot talk to the WarpHold gateway without TLS")
 	})
 
 	t.Run("b2", func(t *testing.T) {

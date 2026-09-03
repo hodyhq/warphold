@@ -28,7 +28,12 @@ type Data struct {
 
 	// Commands are the literal, copy-pasteable connect/list/restore lines,
 	// normally filled by Commands.
-	Commands  []string
+	Commands []string
+
+	// Note is an extra warning printed above Commands, normally filled by
+	// Render. It is non-empty only for a hosted target behind a plain-http
+	// Fleet URL, where no connect command can actually work.
+	Note      string
 	Generated time.Time
 }
 
@@ -40,6 +45,9 @@ type Data struct {
 // cli/storage_b2.go declares --bucket, --key-id, --key and --prefix;
 // cli/storage_filesystem.go declares --path. This is the one artefact that has
 // to still work with an unfamiliar binary, so it prints nothing it invented.
+//
+// --disable-tls is a verified flag but is never emitted for a hosted target:
+// see the comment in the "hosted" case below.
 func Commands(d Data) []string {
 	var connect string
 
@@ -52,11 +60,13 @@ func Commands(d Data) []string {
 			" --access-key " + d.ReadKeyID +
 			" --secret-access-key " + d.ReadKey +
 			" --region " + d.Region
-		// minio-go talks TLS unless told otherwise, so the flag appears only
-		// for a plain-http endpoint -- and then it is required.
-		if strings.HasPrefix(d.Endpoint, "http://") {
-			connect += " --disable-tls"
-		}
+		// --disable-tls is never printed here: the gateway's sigv4 verifier
+		// refuses aws-chunked streaming signatures by design
+		// (fleet/gateway/sigv4.go, ErrStreamingUnsupported), and minio-go's S3
+		// client -- what this connect command drives -- only sends
+		// aws-chunked over plain HTTP. So a plain-http connect command can
+		// never actually reach the gateway; hostedHTTPNote flags the real fix
+		// instead of printing a dead command.
 
 	case "b2":
 		connect = "kopia repository connect b2" +
@@ -89,6 +99,20 @@ func hostOf(endpoint string) string {
 	return endpoint
 }
 
+// hostedHTTPNote returns the warning printed in place of a connect command
+// for a hosted target whose Fleet is reachable only over plain HTTP: stock
+// Kopia's S3 client can never write to or read from such a gateway (see the
+// comment in Commands), so the kit tells the reader how to fix the Fleet
+// instead of handing them a command that will fail.
+func hostedHTTPNote(d Data) string {
+	if d.TargetKind != "hosted" || !strings.HasPrefix(d.Endpoint, "http://") {
+		return ""
+	}
+
+	return "This Fleet is served over plain HTTP; stock Kopia's S3 client cannot talk to the WarpHold gateway without TLS. " +
+		"Put the Fleet behind HTTPS (or use --root-ca-pem-path with a self-signed cert) before restoring."
+}
+
 //go:embed kit.html.tmpl
 var pageTmpl string
 
@@ -101,6 +125,10 @@ var page = template.Must(template.New("kit").Funcs(template.FuncMap{
 func Render(w io.Writer, d Data) error {
 	if d.Commands == nil {
 		d.Commands = Commands(d)
+	}
+
+	if d.Note == "" {
+		d.Note = hostedHTTPNote(d)
 	}
 
 	return page.Execute(w, d)

@@ -71,6 +71,7 @@ write to them, delete them, or reach any other device.</p>{{end}}
 
 <div class="box">
 <h2>Commands</h2>
+{{if .Note}}<p class="sub">{{.Note}}</p>{{end}}
 {{range .Commands}}<pre>{{.}}</pre>
 {{end}}
 <p class="sub">Replace &lt;snapshot-id&gt; with an id from <em>kopia snapshot list</em>; append a
