@@ -12,14 +12,19 @@ import (
 )
 
 func (s *Server) mountAdmin(m *mux.Router) {
-	adm := func(h http.HandlerFunc) http.HandlerFunc { return s.requireActivated(s.requireAdmin(h)) }
+	adm := func(h http.HandlerFunc) http.HandlerFunc {
+		return s.requireHost(s.requireActivated(s.requireAdmin(h)))
+	}
 	m.HandleFunc("/api/v1/fleet/targets", adm(s.handleTargetCreate)).Methods(http.MethodPost)
 	m.HandleFunc("/api/v1/fleet/targets", adm(s.handleTargetList)).Methods(http.MethodGet)
+	m.HandleFunc("/api/v1/fleet/targets/{id}/mirror", adm(s.handleTargetMirrorSet)).Methods(http.MethodPut)
 	m.HandleFunc("/api/v1/fleet/templates", adm(s.handleTemplateCreate)).Methods(http.MethodPost)
 	m.HandleFunc("/api/v1/fleet/templates/{id}", adm(s.handleTemplateUpdate)).Methods(http.MethodPut)
 	m.HandleFunc("/api/v1/fleet/templates", adm(s.handleTemplateList)).Methods(http.MethodGet)
 	m.HandleFunc("/api/v1/fleet/groups", adm(s.handleGroupCreate)).Methods(http.MethodPost)
 	m.HandleFunc("/api/v1/fleet/groups", adm(s.handleGroupList)).Methods(http.MethodGet)
+	m.HandleFunc("/api/v1/fleet/groups/{id}", adm(s.handleGroupUpdate)).Methods(http.MethodPut)
+	m.HandleFunc("/api/v1/fleet/groups/{id}", adm(s.handleGroupDelete)).Methods(http.MethodDelete)
 	m.HandleFunc("/api/v1/fleet/admins", adm(s.handleAdminList)).Methods(http.MethodGet)
 	m.HandleFunc("/api/v1/fleet/admins", adm(s.handleAdminCreate)).Methods(http.MethodPost)
 	m.HandleFunc("/api/v1/fleet/admins/me/password", adm(s.handleAdminPassword)).Methods(http.MethodPost)

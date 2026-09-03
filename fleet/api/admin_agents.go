@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"time"
@@ -8,8 +9,62 @@ import (
 	"github.com/gorilla/mux"
 
 	"github.com/kopia/kopia/fleet/health"
+	"github.com/kopia/kopia/fleet/jobs"
 	"github.com/kopia/kopia/fleet/store"
 )
+
+// mirrorOut is a device's offsite copy: when its blobs last reached the
+// mirror bucket, how much is there, and whether that was long enough ago to
+// be a problem. It is null for a device whose target has no mirror at all -
+// "no offsite" and "offsite behind" are different states and the UI says so.
+type mirrorOut struct {
+	MirroredAt    *time.Time `json:"mirrored_at"`
+	MirroredBytes int64      `json:"mirrored_bytes"`
+	Stale         bool       `json:"stale"`
+}
+
+// mirrorStale calls a copy stale once it is older than three mirror
+// intervals, so a fleet can miss two runs (one slow, one failed) before it
+// complains. A device that has never been mirrored is stale by definition:
+// its target has a mirror and the device is not in it.
+func mirrorStale(at *time.Time, now time.Time, every time.Duration) bool {
+	return at == nil || now.Sub(*at) > 3*every
+}
+
+// mirrorFor resolves a device's offsite state through its group's target, or
+// nil when that target keeps no mirror.
+//
+// A store failure is returned, not swallowed: omitting the line would read as
+// "this fleet keeps no offsite copy", which is the wrong answer in the
+// dangerous direction.
+func (s *Server) mirrorFor(ctx context.Context, a store.Agent) (*mirrorOut, error) {
+	st := s.store()
+
+	g, err := st.Group(ctx, a.GroupID)
+	if err != nil {
+		return nil, err
+	}
+
+	t, err := st.Target(ctx, g.TargetID)
+	if err != nil {
+		return nil, err
+	}
+
+	if t.MirrorKind == "" {
+		return nil, nil
+	}
+
+	var m mirrorOut
+	// No stats row yet means nothing has been mirrored, which is exactly what
+	// a zero mirrorOut says; a read failure is not worth failing the page over.
+	if rs, err := st.RepoStat(ctx, a.ID); err == nil {
+		m.MirroredAt, m.MirroredBytes = rs.MirroredAt, rs.MirroredBytes
+	}
+
+	m.Stale = mirrorStale(m.MirroredAt, s.now(), jobs.MirrorInterval(ctx, st))
+
+	return &m, nil
+}
 
 var allowedCommands = map[string]bool{"snapshot-now": true, "pause": true, "resume": true, "verify": true}
 
@@ -94,11 +149,18 @@ func (s *Server) handleAgentGet(w http.ResponseWriter, r *http.Request) {
 		t := ok.FinishedAt
 		lastOK = &t
 	}
+	mirror, err := s.mirrorFor(ctx, *a)
+	if err != nil {
+		adminFailed(w, "read offsite state", err)
+		return
+	}
+
 	// Flatten agentOut's fields alongside reports (spec: "same object + reports:[last 20]").
 	writeJSON(w, http.StatusOK, struct {
 		agentOut
 		Reports []store.Report `json:"reports"`
-	}{s.agentOut(*a, lr, lastOK), reports})
+		Mirror  *mirrorOut     `json:"mirror"`
+	}{s.agentOut(*a, lr, lastOK), reports, mirror})
 }
 
 func (s *Server) handleAgentRevoke(w http.ResponseWriter, r *http.Request) {
@@ -120,11 +182,33 @@ func (s *Server) handleAgentRevoke(w http.ResponseWriter, r *http.Request) {
 		log.Printf("warphold fleet: revoke %s: b2 key cleanup skipped (%s)", a.ID, errCategory(err))
 	} else if b, err := s.bundleFor(ctx, a); err != nil {
 		log.Printf("warphold fleet: revoke %s: b2 key cleanup skipped (%s)", a.ID, errCategory(err))
-	} else if err := s.provisioner().Revoke(ctx, spec, b); err != nil {
+	} else if err := s.provisioner(ctx, t).Revoke(ctx, spec, b); err != nil {
 		log.Printf("warphold fleet: revoke %s: b2 key cleanup skipped (%s)", a.ID, errCategory(err))
+	}
+	// The gateway key is disabled unconditionally, outside the best-effort
+	// chain above: it is the credential the device is holding right now, and
+	// it must stop working even when the target lookup that the B2 cleanup
+	// needs has failed (D6). The repository itself stays until the retention
+	// window closes; only the reap job removes it and stamps retired_at.
+	if _, err := s.store().DisableDeviceKeysForAgent(ctx, a.ID, s.now()); err != nil {
+		adminFailed(w, "disable device keys", err)
+		return
+	}
+	// The store is the source of truth, but a lookup already answered from the
+	// key cache would keep working for the rest of its TTL; drop it now.
+	if g := s.gateway(); g != nil {
+		g.InvalidateKeys(a.ID)
 	}
 	if err := s.store().RevokeAgent(ctx, a.ID, s.now()); err != nil {
 		adminFailed(w, "revoke agent", err)
+		return
+	}
+	// Phase two: the repository is removed when the retention window closes.
+	// Scheduled after the revoke lands, so a queued reap can never outlive a
+	// revocation that failed.
+	retention := time.Duration(s.revokedRetentionDays(ctx)) * 24 * time.Hour
+	if _, err := s.store().ScheduleReap(ctx, a.ID, s.now().Add(retention)); err != nil {
+		adminFailed(w, "schedule reap", err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

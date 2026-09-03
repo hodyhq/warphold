@@ -21,6 +21,9 @@ import (
 
 	"github.com/kopia/kopia/fleet/api"
 	"github.com/kopia/kopia/fleet/b2api"
+	"github.com/kopia/kopia/fleet/gateway"
+	"github.com/kopia/kopia/repo/blob"
+	"github.com/kopia/kopia/repo/blob/s3"
 )
 
 // jsonNum formats a float64 (as decoded from JSON) back into an integer path segment.
@@ -53,13 +56,16 @@ func newHarness(t *testing.T) *harness {
 }
 
 type fakeB2API struct {
-	lock    bool
-	created []b2api.KeyRequest
-	deleted []string
+	lock bool
+	// lockUnreadable is B2 hiding fileLockConfiguration from an under-scoped
+	// key; the zero value is a key that can read it.
+	lockUnreadable bool
+	created        []b2api.KeyRequest
+	deleted        []string
 }
 
 func (f fakeB2API) BucketInfo(_ context.Context, _, _, _ string) (b2api.BucketInfo, error) {
-	return b2api.BucketInfo{ID: "bkt1", ObjectLockEnabled: f.lock}, nil
+	return b2api.BucketInfo{ID: "bkt1", ObjectLockEnabled: f.lock, LockReadable: !f.lockUnreadable}, nil
 }
 
 func (f fakeB2API) CreateKey(_ context.Context, _, _ string, r b2api.KeyRequest) (b2api.CreatedKey, error) {
@@ -67,6 +73,78 @@ func (f fakeB2API) CreateKey(_ context.Context, _, _ string, r b2api.KeyRequest)
 }
 
 func (f fakeB2API) DeleteKey(_ context.Context, _, _, _ string) error { return nil }
+
+// fakeCloud stands in for an S3-compatible provider. The wire shapes it would
+// otherwise exercise are covered against a real fake S3 server in
+// fleet/gateway's TestProbeObjectLock and TestProbeConditionalPut; what is
+// tested through here is which bucket and prefix the API asks about, and what
+// it does with each answer.
+type fakeCloud struct {
+	lock bool // the bucket has Object Lock enabled
+	cond bool // the provider enforces If-None-Match: *
+
+	// condUnsupported is Backblaze B2: the provider refuses the conditional
+	// header itself (501), which is a different answer from taking it and
+	// overwriting anyway. It wins over cond.
+	condUnsupported bool
+
+	mu       sync.Mutex
+	asked    []string // "<endpoint>/<bucket>" per Object Lock probe
+	prefixes []string // the prefix of each conditional-put probe
+	keyIDs   []string // the access key of each conditional-put probe
+}
+
+func (f *fakeCloud) ObjectLock(_ context.Context, ci blob.ConnectionInfo) error {
+	o := ci.Config.(*s3.Options)
+
+	f.mu.Lock()
+	f.asked = append(f.asked, o.Endpoint+"/"+o.BucketName)
+	f.mu.Unlock()
+
+	if !f.lock {
+		return gateway.ErrNoObjectLock
+	}
+
+	return nil
+}
+
+func (f *fakeCloud) ConditionalPut(_ context.Context, ci blob.ConnectionInfo, prefix string) error {
+	o := ci.Config.(*s3.Options)
+
+	f.mu.Lock()
+	f.prefixes = append(f.prefixes, prefix)
+	f.keyIDs = append(f.keyIDs, o.AccessKeyID)
+	f.mu.Unlock()
+
+	switch {
+	case f.condUnsupported:
+		return gateway.ErrCondPutNotImplemented
+	case !f.cond:
+		return gateway.ErrNoConditionalPut
+	}
+
+	return nil
+}
+
+// lastKeyID is the access key the most recent conditional-put probe used, which
+// is how a test sees which credentials a re-verification actually ran with.
+func (f *fakeCloud) lastKeyID() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if len(f.keyIDs) == 0 {
+		return ""
+	}
+
+	return f.keyIDs[len(f.keyIDs)-1]
+}
+
+func (f *fakeCloud) probed() ([]string, []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return append([]string(nil), f.asked...), append([]string(nil), f.prefixes...)
+}
 
 // csrfCookieName and csrfHeaderName mirror the server's double-submit pair;
 // the harness echoes the cookie back in the header the way the UI must.
@@ -199,6 +277,18 @@ func (h *harness) activateAndLogin() {
 	resp.Body.Close()
 	require.Equal(h.t, 201, resp.StatusCode)
 	h.jar = h.login("hody@hody.dev", "pw12345678")
+}
+
+// setPublicURL points the fleet's public_url at the harness's own httptest
+// server. It is http://127.0.0.1:<port>, which parsePublicURL allows because
+// it is loopback. Enrollment tokens and /enroll.sh are gated on this setting,
+// so any test that reaches them calls this first; the ones that deliberately
+// exercise the unset state (the gate, and the requestIsHTTPS fallback) do not.
+func (h *harness) setPublicURL() string {
+	h.t.Helper()
+	resp, body := h.do("PUT", "/api/v1/fleet/settings", map[string]any{"public_url": h.srv.URL})
+	require.Equal(h.t, 200, resp.StatusCode, body)
+	return h.srv.URL
 }
 
 func TestStatusActivateLogin(t *testing.T) {

@@ -35,3 +35,19 @@ CREATE TABLE IF NOT EXISTS sessions (
   admin_id INTEGER NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
   created_at TEXT NOT NULL, expires_at TEXT NOT NULL, revoked_at TEXT);
 CREATE INDEX IF NOT EXISTS sessions_admin ON sessions(admin_id);
+CREATE TABLE IF NOT EXISTS device_keys (
+  access_key_id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES agents(id), sealed_secret BLOB NOT NULL,
+  prefix TEXT NOT NULL, read_only INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, disabled_at TEXT);
+CREATE INDEX IF NOT EXISTS device_keys_agent ON device_keys(agent_id);
+CREATE TABLE IF NOT EXISTS jobs (
+  id INTEGER PRIMARY KEY, kind TEXT NOT NULL, agent_id TEXT REFERENCES agents(id), scheduled_for TEXT NOT NULL,
+  started_at TEXT, finished_at TEXT, status TEXT NOT NULL DEFAULT 'pending', detail TEXT NOT NULL DEFAULT '');
+CREATE INDEX IF NOT EXISTS jobs_due ON jobs(status, scheduled_for);
+CREATE INDEX IF NOT EXISTS jobs_agent ON jobs(agent_id, finished_at DESC);
+CREATE TABLE IF NOT EXISTS kit_acks (
+  agent_id TEXT PRIMARY KEY REFERENCES agents(id), acknowledged_at TEXT NOT NULL,
+  acknowledged_by INTEGER NOT NULL REFERENCES admins(id));
+CREATE TABLE IF NOT EXISTS repo_stats (
+  agent_id TEXT PRIMARY KEY REFERENCES agents(id), collected_at TEXT NOT NULL,
+  logical_bytes INTEGER NOT NULL DEFAULT 0, stored_bytes INTEGER NOT NULL DEFAULT 0,
+  blob_count INTEGER NOT NULL DEFAULT 0, mirrored_at TEXT, mirrored_bytes INTEGER NOT NULL DEFAULT 0);

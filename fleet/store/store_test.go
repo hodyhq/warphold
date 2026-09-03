@@ -2,12 +2,15 @@ package store_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	_ "modernc.org/sqlite" // pure-Go driver, registers "sqlite"
 
 	"github.com/kopia/kopia/fleet/store"
 	"github.com/kopia/kopia/internal/clock"
@@ -385,4 +388,107 @@ func TestSetSettingsIsAtomicAndReadable(t *testing.T) {
 	v, err = s.Setting(ctx, "poll_interval")
 	require.NoError(t, err)
 	require.Equal(t, "120", v)
+}
+
+func TestHostedTargetRoundTrip(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	now := clock.Now().UTC().Truncate(time.Second)
+	verified := now.Add(-time.Hour)
+
+	id, err := s.CreateTarget(ctx, &store.Target{
+		Name: "hosted", Kind: "hosted", Path: "/srv/warphold/hosted", StorageMode: "disk",
+		MirrorKind: "b2", MirrorBucket: "hody-offsite", MirrorRegion: "us-west-004",
+		SealedMirrorKey: []byte("sealed"), MirrorLockVerifiedAt: &verified, CreatedAt: now,
+	})
+	require.NoError(t, err)
+
+	got, err := s.Target(ctx, id)
+	require.NoError(t, err)
+	require.Equal(t, "hosted", got.Kind)
+	require.Equal(t, "disk", got.StorageMode)
+	require.Equal(t, "/srv/warphold/hosted", got.Path)
+	require.Equal(t, "b2", got.MirrorKind)
+	require.Equal(t, "hody-offsite", got.MirrorBucket)
+	require.Equal(t, "us-west-004", got.MirrorRegion)
+	require.Equal(t, []byte("sealed"), got.SealedMirrorKey)
+	require.NotNil(t, got.MirrorLockVerifiedAt)
+	require.True(t, verified.Equal(*got.MirrorLockVerifiedAt))
+	require.Nil(t, got.ObjectLockVerifiedAt)
+
+	list, err := s.Targets(ctx)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	require.Equal(t, *got, list[0])
+}
+
+func TestCloudDirectTargetRoundTrip(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	now := clock.Now().UTC().Truncate(time.Second)
+	verified := now.Add(-time.Minute)
+
+	id, err := s.CreateTarget(ctx, &store.Target{
+		Name: "cloud", Kind: "hosted", StorageMode: "cloud",
+		Bucket: "hody-hosted", Region: "us-west-004", Endpoint: "s3.us-west-004.backblazeb2.com",
+		SealedAdminKey: []byte("sealed"), ObjectLockVerifiedAt: &verified, CreatedAt: now,
+	})
+	require.NoError(t, err)
+
+	got, err := s.Target(ctx, id)
+	require.NoError(t, err)
+	require.Equal(t, "cloud", got.StorageMode)
+	require.Equal(t, "s3.us-west-004.backblazeb2.com", got.Endpoint)
+	require.Equal(t, []byte("sealed"), got.SealedAdminKey)
+	require.NotNil(t, got.ObjectLockVerifiedAt)
+	require.True(t, verified.Equal(*got.ObjectLockVerifiedAt))
+	require.Empty(t, got.MirrorKind)
+}
+
+// DeleteAgent's two DELETEs must be one transaction: a failure partway
+// through must leave both agent and device key untouched, not the agent's
+// key gone and the agent row still there.
+func TestDeleteAgentRollsBackOnFailure(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "fleet.db")
+	s, err := store.Open(p)
+	require.NoError(t, err)
+	t.Cleanup(func() { s.Close() })
+
+	ctx := context.Background()
+	now := clock.Now().UTC().Truncate(time.Second)
+	tid, err := s.CreateTarget(ctx, &store.Target{Name: "b2", Kind: "b2", Bucket: "hody-backups", SealedAdminKey: []byte("sealed"), CreatedAt: now})
+	require.NoError(t, err)
+	tpl, err := s.CreateTemplate(ctx, &store.Template{Name: "d", Sources: []string{"~"}, PolicyJSON: json.RawMessage(`{}`), CreatedAt: now})
+	require.NoError(t, err)
+	gid, err := s.CreateGroup(ctx, &store.Group{Name: "g", TargetID: tid, TemplateID: tpl, CreatedAt: now})
+	require.NoError(t, err)
+	require.NoError(t, s.CreateAgent(ctx, &store.Agent{
+		ID: "ag_1", Name: "a", Hostname: "h", OS: "linux", Arch: "amd64", Scope: "user", GroupID: gid,
+		BearerHash: []byte("h1"), SealedBundle: []byte("b"), EnrolledAt: now,
+	}))
+	require.NoError(t, s.CreateDeviceKey(ctx, &store.DeviceKey{
+		AccessKeyID: "WHkey1", AgentID: "ag_1", SealedSecret: []byte("s"), Prefix: "ag_1/", CreatedAt: now,
+	}))
+
+	// From a second connection, drop "agents" so DeleteAgent's first DELETE
+	// (device_keys) succeeds but its second (agents) fails.
+	db2, err := sql.Open("sqlite", p)
+	require.NoError(t, err)
+	defer db2.Close() //nolint:errcheck // test cleanup
+	_, err = db2.Exec(`DROP TABLE agents`)
+	require.NoError(t, err)
+
+	require.Error(t, s.DeleteAgent(ctx, "ag_1"))
+
+	keys, err := s.DeviceKeysForAgent(ctx, "ag_1")
+	require.NoError(t, err)
+	require.Len(t, keys, 1, "a failed second delete must roll back the first")
+}
+
+// SetAgentBundle must report ErrNotFound rather than silent success when the
+// agent id does not exist, matching FinishJob's zero-rows-affected pattern.
+func TestSetAgentBundleOnMissingAgentIsNotFound(t *testing.T) {
+	s := openTemp(t)
+	err := s.SetAgentBundle(context.Background(), "ag_missing", []byte("sealed"))
+	require.ErrorIs(t, err, store.ErrNotFound)
 }

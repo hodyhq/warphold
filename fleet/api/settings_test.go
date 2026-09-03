@@ -1,6 +1,8 @@
 package api_test
 
 import (
+	"maps"
+	"slices"
 	"strings"
 	"testing"
 
@@ -22,6 +24,7 @@ func TestSettingsRequiresAdminAndRoundTrips(t *testing.T) {
 	resp, body := h.do("GET", "/api/v1/fleet/settings", nil)
 	require.Equal(t, 200, resp.StatusCode)
 	require.Equal(t, "", body["fleet_name"], "no fleet name set yet")
+	require.Equal(t, "", body["public_url"], "no public URL set yet")
 	require.Equal(t, float64(300), body["poll_interval"], "the agent default")
 
 	// A partial write leaves the key it does not mention alone.
@@ -51,12 +54,20 @@ func TestSettingsRejectsUnknownKeysAndBadValues(t *testing.T) {
 	h.activateAndLogin()
 
 	for name, in := range map[string]map[string]any{
-		"unknown key":       {"seal_salt": "deadbeef"},
-		"poll below range":  {"poll_interval": 5},
-		"poll above range":  {"poll_interval": 4000},
-		"poll not a number": {"poll_interval": "soon"},
-		"name not a string": {"fleet_name": 7},
-		"name too long":     {"fleet_name": strings.Repeat("x", 65)},
+		"unknown key":           {"seal_salt": "deadbeef"},
+		"poll below range":      {"poll_interval": 5},
+		"poll above range":      {"poll_interval": 4000},
+		"poll not a number":     {"poll_interval": "soon"},
+		"name not a string":     {"fleet_name": 7},
+		"name too long":         {"fleet_name": strings.Repeat("x", 65)},
+		"public_url relative":   {"public_url": "fleet.example.com"},
+		"public_url not http":   {"public_url": "ftp://fleet.example.com"},
+		"public_url plain http": {"public_url": "http://fleet.example.com"},
+		"public_url with path":  {"public_url": "https://fleet.example.com/fleet"},
+		"public_url with query": {"public_url": "https://fleet.example.com?x=1"},
+		"public_url with creds": {"public_url": "https://u:p@fleet.example.com"},
+		"public_url not string": {"public_url": 7},
+		"verify not a bool":     {"public_url": "https://fleet.example.com", "verify": "yes"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			resp, body := h.do("PUT", "/api/v1/fleet/settings", in)
@@ -67,6 +78,10 @@ func TestSettingsRejectsUnknownKeysAndBadValues(t *testing.T) {
 
 	resp, body := h.do("GET", "/api/v1/fleet/settings", nil)
 	require.Equal(t, 200, resp.StatusCode)
-	require.Len(t, body, 2, "only the whitelisted keys are exposed")
+	require.ElementsMatch(t,
+		[]string{"fleet_name", "poll_interval", "public_url", "revoked_retention_days",
+			"trusted_proxies", "gateway_ip_rate", "gateway_ip_burst", "gateway_device_rate",
+			"gateway_device_burst"},
+		slices.Collect(maps.Keys(body)), "only the whitelisted keys are exposed")
 	require.NotContains(t, body, "seal_salt")
 }

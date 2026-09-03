@@ -656,7 +656,14 @@ func (s *Server) SetRepository(ctx context.Context, rep repo.Repository) error {
 		return err
 	}
 
-	s.maint = maybeStartMaintenanceManager(ctx, s.rep, s, s.options.MinMaintenanceInterval)
+	// warphold: opt out of automatic maintenance entirely, the server-mode
+	// counterpart of the CLI's --no-auto-maintenance. Upstream relies on the
+	// repository's maintenance owner to decide who runs it, which is a value
+	// in the repository that can change under a running server; a client that
+	// must never run maintenance needs to say so locally.
+	if !s.options.DisableMaintenance {
+		s.maint = maybeStartMaintenanceManager(ctx, s.rep, s, s.options.MinMaintenanceInterval)
+	}
 
 	s.sched = scheduler.Start(context.WithoutCancel(ctx), s.getSchedulerItems, scheduler.Options{
 		TimeNow:        clock.Now,
@@ -868,6 +875,7 @@ type Options struct {
 	UITitlePrefix            string
 	DebugScheduler           bool
 	MinMaintenanceInterval   time.Duration
+	DisableMaintenance       bool // warphold: never start the maintenance manager (--no-auto-maintenance)
 	EnableErrorNotifications bool
 	NotifyTemplateOptions    notifytemplate.Options
 }

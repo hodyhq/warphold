@@ -22,8 +22,11 @@ import (
 
 	"github.com/kopia/kopia/fleet"
 	"github.com/kopia/kopia/fleet/b2api"
+	"github.com/kopia/kopia/fleet/gateway"
+	"github.com/kopia/kopia/fleet/jobs"
 	"github.com/kopia/kopia/fleet/seal"
 	"github.com/kopia/kopia/fleet/store"
+	"github.com/kopia/kopia/repo/blob"
 )
 
 // ErrAlreadyActivated is returned by Activate on an activated Fleet.
@@ -64,21 +67,53 @@ type Server struct {
 	// SetNowForTesting can move it between requests without racing handlers.
 	nowFn func() time.Time
 	b2    b2api.API
+	cloud cloudAPI
+	// enrollIDHook, if set, is called with every agent id an enrollment mints,
+	// including one a failed enrollment goes on to roll back. Tests use it to
+	// learn the id that a failure response never carries, so a rollback
+	// assertion can name the real path rather than a placeholder.
+	enrollIDHook func(id string)
+
+	// sched runs the scheduled jobs (spec §10). It exists only while the Fleet
+	// is activated: load starts it, Close stops it, so no job ever runs against
+	// a Fleet that has no store or sealing key.
+	sched *jobs.Scheduler
+	// cloudStore builds the cloud-direct backend. It is gateway.NewCloud
+	// everywhere but in a test, which points it at a fake bucket that serves a
+	// self-signed certificate.
+	cloudStore func(context.Context, blob.ConnectionInfo, string) (gateway.ObjectStore, error)
 	// closed is set by Close instead of nilling st: handlers read st through
 	// store() and would otherwise have to re-check for nil between every
 	// call. A closed *sql.DB returns "database is closed" from each query,
 	// which the handlers already surface as an error.
 	closed bool
 
+	// instanceMu serializes the lazy generation of instance_id, so two
+	// concurrent status probes cannot each mint one.
+	instanceMu sync.Mutex
+	// csrfWarnOnce keeps the "public_url is unset, origin check disabled"
+	// warning to one line per server rather than one per request.
+	csrfWarnOnce sync.Once
+
 	// setupTokenPath and setupToken gate POST /activate before the Fleet is
 	// activated (see handleActivate); both are cleared once activation succeeds.
 	setupTokenPath string
 	setupToken     string
+
+	// gwDeps carries the device-facing S3 gateway, built on first use because
+	// it needs the store and sealing key that activation creates.
+	gwDeps gatewayDeps
+
+	// tp* memoize the parsed trusted_proxies setting; the login limiter reads
+	// it per attempt and must not turn a flood into database reads.
+	tpMu     sync.Mutex
+	tpNets   []net.IPNet
+	tpLoaded bool
 }
 
 // New creates a Server for stateDir; if Fleet was activated before, its state is loaded.
 func New(stateDir string) *Server {
-	s := &Server{paths: fleet.PathsFor(stateDir), login: newLimiter(loginMaxAttempts, loginWindow), nowFn: time.Now, b2: b2api.New(nil)}
+	s := &Server{paths: fleet.PathsFor(stateDir), login: newLimiter(loginMaxAttempts, loginWindow), nowFn: time.Now, b2: b2api.New(nil), cloud: gatewayCloud{}}
 	// A missing key file just means "never activated"; anything else (bad
 	// permissions, a corrupt DB) must be loud, because the server would
 	// otherwise report "not activated" and print the setup-token path while
@@ -136,10 +171,37 @@ func (s *Server) load() error {
 	if err != nil {
 		return err
 	}
+	s.invalidateTrustedProxies()
 	s.mu.Lock()
 	s.key, s.st, s.closed = key, st, false
 	s.mu.Unlock()
+	s.startJobs()
 	return nil
+}
+
+// startJobs starts the job scheduler for the now-activated Fleet, replacing any
+// previous one. Only load calls it, so an unactivated Fleet runs nothing.
+//
+// The whole thing runs under s.mu, including Start: Close takes the same lock,
+// so it can neither pick the store between this swap and the start - which
+// would leave a scheduler running against a closed database with nothing left
+// to stop it - nor start one on an already closed Server. Start only spawns a
+// goroutine and never calls back into the Server, so holding the lock is cheap
+// and cannot deadlock.
+func (s *Server) startJobs() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.st == nil || s.closed {
+		return
+	}
+	old := s.sched
+	s.sched = jobs.NewScheduler(s.st, map[string]jobs.Runner{"mirror": jobs.Mirror(s.st, s.key)}, jobs.DefaultTick)
+	s.sched.Start(context.Background())
+	if old != nil {
+		// In a goroutine: Stop waits for the running job, which must not
+		// freeze every handler waiting on s.mu.
+		go old.Stop()
+	}
 }
 
 // now returns the server clock.
@@ -165,15 +227,27 @@ func (s *Server) Activated() bool {
 	return s.st != nil && !s.closed
 }
 
-// Close closes the store.
+// Close stops the scheduler and closes the store. The scheduler is stopped
+// first and outside the lock: Stop waits for the running job, which is still
+// using the store, and a job must never see a closed database.
 func (s *Server) Close() error {
+	// Before s.mu, never under it: gateway() holds gwDeps.mu while it reads
+	// s.mu, so taking them the other way round here would be a lock inversion.
+	s.closeGatewayStores()
+
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.st == nil || s.closed {
+		s.mu.Unlock()
 		return nil
 	}
 	s.closed = true
-	return s.st.Close()
+	st, sched := s.st, s.sched
+	s.sched = nil
+	s.mu.Unlock()
+	if sched != nil {
+		sched.Stop()
+	}
+	return st.Close()
 }
 
 // store returns the active store, or nil before activation. load and Close
@@ -292,21 +366,34 @@ func (s *Server) Mount(m *mux.Router) {
 		s.mu.RUnlock()
 		log.Printf("warphold fleet: not activated; setup token is in %s", path)
 	}
-	m.HandleFunc("/api/v1/fleet/status", s.handleStatus).Methods(http.MethodGet)
-	m.HandleFunc("/api/v1/fleet/activate", s.handleActivate).Methods(http.MethodPost)
-	m.HandleFunc("/api/v1/fleet/session", s.handleLogin).Methods(http.MethodPost)
-	m.HandleFunc("/api/v1/fleet/session", s.handleLogout).Methods(http.MethodDelete)
+	// Every Fleet route goes through requireHost: once public_url is set, a
+	// request arriving under any other name (bar loopback) is misrouted.
+	m.HandleFunc("/api/v1/fleet/status", s.requireHost(s.handleStatus)).Methods(http.MethodGet)
+	m.HandleFunc("/api/v1/fleet/activate", s.requireHost(s.handleActivate)).Methods(http.MethodPost)
+	m.HandleFunc("/api/v1/fleet/session", s.requireHost(s.handleLogin)).Methods(http.MethodPost)
+	m.HandleFunc("/api/v1/fleet/session", s.requireHost(s.handleLogout)).Methods(http.MethodDelete)
 	s.mountAdmin(m)    // Task 7
 	s.mountAgent(m)    // Tasks 11, 14
 	s.mountDownload(m) // Task 2
+	s.mountGateway(m)  // Plan 3, Task 5 - must precede the SPA catch-all
 }
 
 func decode(r *http.Request, v any) error {
 	return json.NewDecoder(io.LimitReader(r.Body, maxBody)).Decode(v)
 }
 
-func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"activated": s.Activated()})
+// handleStatus is the unauthenticated probe target: it is what a reverse
+// proxy, a load balancer and the public_url validation all fetch. instance_id
+// is what lets that validation tell this Fleet apart from another one behind
+// the same URL; it is opaque and authorizes nothing.
+func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	out := map[string]any{"activated": s.Activated()}
+	if s.Activated() {
+		if id, err := s.instanceID(r.Context()); err == nil {
+			out["instance_id"] = id
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // setupAllowed reports whether r may call POST /activate: it must carry the
@@ -329,10 +416,25 @@ func (s *Server) handleActivate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, "activation requires the "+setupTokenHeader+" header")
 		return
 	}
-	var in struct{ Passphrase, Email, Password string }
+	var in struct {
+		Passphrase, Email, Password string
+		// PublicURL is optional here so the setup wizard can set it in the
+		// same call that activates; it is validated for syntax only, because
+		// the end-to-end probe needs a running, activated Fleet to answer.
+		PublicURL string `json:"public_url"`
+	}
 	if err := decode(r, &in); err != nil {
 		writeErr(w, http.StatusBadRequest, "malformed body")
 		return
+	}
+	// The URL is checked before anything is written: activation happens once,
+	// and finishing it with a rejected public_url would leave the wizard with
+	// an activated Fleet and no way to redo the step it thought it just did.
+	if in.PublicURL != "" {
+		if _, err := parsePublicURL(in.PublicURL); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 	if err := s.Activate(r.Context(), in.Passphrase, in.Email, in.Password); err != nil {
 		switch {
@@ -346,6 +448,17 @@ func (s *Server) handleActivate(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	if in.PublicURL != "" {
+		if err := s.SetPublicURL(r.Context(), in.PublicURL); err != nil {
+			// The syntax was checked above, so this is a store failure, and
+			// the Fleet is now activated without a public URL. Say so rather
+			// than reporting a success the operator would have to discover
+			// was partial.
+			log.Printf("warphold fleet: activated but public_url could not be stored: %v", err)
+			writeErr(w, http.StatusInternalServerError, "fleet activated, but the public URL could not be stored; set it in Settings")
+			return
+		}
+	}
 	a, err := s.store().AdminByEmail(r.Context(), normalizeEmail(in.Email))
 	if err != nil {
 		log.Printf("warphold fleet: activated but admin lookup failed: %v", err)
@@ -355,23 +468,26 @@ func (s *Server) handleActivate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"admin_id": a.ID})
 }
 
-// clientIP is the peer address as seen by this process; behind a reverse
-// proxy every request shares one bucket in the login limiter. Trusted-proxy
-// handling (X-Forwarded-For with a configured trust list) is Plan 2.
-func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
-}
-
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if !s.Activated() {
 		writeErr(w, http.StatusConflict, "fleet is not activated")
 		return
 	}
-	if !s.login.allow(clientIP(r)) {
+	if pu, _ := s.PublicURL(r.Context()); pu != nil {
+		if !originAllowed(r, pu) {
+			writeErr(w, http.StatusForbidden, "request origin does not match the configured public URL")
+			return
+		}
+		// Signing in over plain HTTP when the fleet is published on https
+		// would set a Secure cookie the browser then drops, leaving the admin
+		// in a login loop with no visible cause. Loopback is exempt, since
+		// that is the local operator, not a browser on the public URL.
+		if pu.Scheme == "https" && !requestIsHTTPS(r) && !isLoopbackHost(hostOnly(r.Host)) {
+			writeErr(w, http.StatusBadRequest, "reach the fleet over https")
+			return
+		}
+	}
+	if !s.login.allow(s.clientIP(r)) {
 		writeErr(w, http.StatusTooManyRequests, "too many attempts, wait a minute")
 		return
 	}
@@ -411,6 +527,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 // session has nothing to revoke and just gets its cookies cleared.
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if sess := s.currentSession(r); sess != nil {
+		// Origin first, token second: a foreign origin must never learn
+		// whether its guessed token was right (same order as requireCSRF).
+		if pu, _ := s.PublicURL(r.Context()); !originAllowed(r, pu) {
+			writeErr(w, http.StatusForbidden, "request origin does not match the configured public URL")
+			return
+		}
 		if !csrfOK(r) {
 			writeErr(w, http.StatusForbidden, "missing or invalid "+csrfHeader+" header")
 			return
@@ -420,7 +542,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	clearAuthCookies(w, r)
+	s.clearAuthCookies(w, r)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -434,6 +556,14 @@ func (s *Server) SetupTokenPathForTesting() string {
 
 // SetB2ForTesting swaps the B2 client.
 func (s *Server) SetB2ForTesting(b b2api.API) { s.b2 = b }
+
+// SetCloudForTesting swaps the S3-compatible bucket verifier, so a test never
+// reaches a real provider.
+func (s *Server) SetCloudForTesting(c cloudAPI) { s.cloud = c }
+
+// SetEnrollIDHookForTesting installs the callback handleEnroll invokes with
+// every agent id it mints, including one it goes on to roll back on failure.
+func (s *Server) SetEnrollIDHookForTesting(f func(id string)) { s.enrollIDHook = f }
 
 // AdminsForTesting exposes the admin list for tests.
 func (s *Server) AdminsForTesting(ctx context.Context) ([]store.Admin, error) {
@@ -457,6 +587,15 @@ func (s *Server) SeedGroupForTesting(ctx context.Context, path string, sources [
 func (s *Server) IssueTokenForTesting(ctx context.Context, groupID int64) string {
 	plain, _, _ := s.tokens().Issue(ctx, groupID, 0, -1, 0)
 	return plain
+}
+
+// PendingReapsForTesting exposes the reap jobs queued for an agent.
+func (s *Server) PendingReapsForTesting(ctx context.Context, agentID string) []time.Time {
+	at, err := s.store().PendingReaps(ctx, agentID)
+	if err != nil {
+		return nil
+	}
+	return at
 }
 
 // AgentForTesting exposes one agent's stored record for tests, or nil if it does not exist.

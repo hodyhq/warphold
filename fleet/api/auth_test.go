@@ -44,7 +44,7 @@ func TestCSRFDoubleSubmit(t *testing.T) {
 
 	// Safe methods pass through untouched; unsafe ones do not.
 	called := false
-	h := requireCSRF(func(http.ResponseWriter, *http.Request) { called = true })
+	h := (&Server{}).requireCSRF(func(http.ResponseWriter, *http.Request) { called = true })
 
 	rr := httptest.NewRecorder()
 	h(rr, httptest.NewRequest(http.MethodGet, "/", nil))

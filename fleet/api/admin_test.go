@@ -60,7 +60,14 @@ func TestTokensDefaultsAndLimits(t *testing.T) {
 	h := newHarness(t)
 	h.activateAndLogin()
 	gid := h.mkGroup(t)
+
+	// The gate: a token is useless without an enrollment URL to go with it.
 	resp, body := h.do("POST", "/api/v1/fleet/tokens", map[string]any{"group_id": gid})
+	require.Equal(t, 409, resp.StatusCode)
+	require.Equal(t, "set the public URL before issuing enrollment tokens", body["error"])
+
+	h.setPublicURL()
+	resp, body = h.do("POST", "/api/v1/fleet/tokens", map[string]any{"group_id": gid})
 	require.Equal(t, 201, resp.StatusCode)
 	require.Equal(t, float64(1), body["max_uses"])
 	require.True(t, strings.HasPrefix(body["token"].(string), "wh_"))

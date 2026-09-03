@@ -81,6 +81,13 @@ func StartHeadless(ctx context.Context, configFile, repoPassword, scope string) 
 		// the session cookie.
 		DisableCSRFTokenChecks: true,
 		MinMaintenanceInterval: 24 * time.Hour,
+		// The device runs no maintenance: the Fleet identity is the
+		// repository's maintenance owner, and a hosted repository is served
+		// over an append-only gateway that would refuse the deletes and the
+		// kopia.maintenance overwrite a compaction issues. This is the
+		// server-mode equivalent of --no-auto-maintenance; the option's effect
+		// is pinned by internal/server's TestDisableMaintenanceStopsTheMaintenanceManager.
+		DisableMaintenance: true,
 	})
 	if err != nil {
 		return nil, errors.Wrap(err, "server.New")
