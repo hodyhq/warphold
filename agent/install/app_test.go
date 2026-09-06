@@ -1,6 +1,7 @@
 package install_test
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -103,6 +104,76 @@ func TestAutostartScope(t *testing.T) {
 	// rendered.
 	_, err = install.Autostart("/usr/local/bin/warphold", "app --scope evil")
 	require.Error(t, err)
+}
+
+// TestResolveAppUnitAbsent pins that agent install is a no-op toward the app
+// when the app was never installed on this machine: no command is added, and
+// the caller gets AppUnitAbsent.
+func TestResolveAppUnitAbsent(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	p := install.Plan{Commands: [][]string{{"systemctl", "--user", "daemon-reload"}}}
+	status, err := install.ResolveAppUnit(&p, "user")
+	require.NoError(t, err)
+	require.Equal(t, install.AppUnitAbsent, status)
+	require.Equal(t, [][]string{{"systemctl", "--user", "daemon-reload"}}, p.Commands)
+}
+
+// TestResolveAppUnitSuperseded pins that a user-scope agent install stops and
+// disables an app unit installed at the same scope, before the agent's own
+// enable/start command so the two engines never run at once, and touches
+// only the unit: the app's state directory is never referenced, let alone
+// removed.
+func TestResolveAppUnitSuperseded(t *testing.T) {
+	cfg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+	writeAppUnit(t, cfg)
+
+	p := install.Plan{Commands: [][]string{{"systemctl", "--user", "enable", "--now", "warphold-agent"}}}
+	status, err := install.ResolveAppUnit(&p, "user")
+	require.NoError(t, err)
+	require.Equal(t, install.AppUnitSuperseded, status)
+	require.Equal(t, [][]string{
+		{"systemctl", "--user", "disable", "--now", "warphold-app"},
+		{"systemctl", "--user", "enable", "--now", "warphold-agent"},
+	}, p.Commands)
+}
+
+// TestResolveAppUnitOtherScope pins that a system-scope agent install never
+// guesses which user's session to touch: it reports the mismatch instead of
+// appending a command, since the app unit is always user-scope.
+func TestResolveAppUnitOtherScope(t *testing.T) {
+	cfg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+	writeAppUnit(t, cfg)
+
+	p := install.Plan{Commands: [][]string{{"systemctl", "daemon-reload"}}}
+	status, err := install.ResolveAppUnit(&p, "system")
+	require.NoError(t, err)
+	require.Equal(t, install.AppUnitOtherScope, status)
+	require.Equal(t, [][]string{{"systemctl", "daemon-reload"}}, p.Commands)
+}
+
+// TestResolveAppUnitOtherScopeCannotSeeUserApp pins that a system-scope
+// install reports AppUnitOtherScope even when it cannot find an app unit
+// under its own (root) config directory: it must not read that as proof no
+// user on the machine has the app, so it never silently falls back to
+// AppUnitAbsent for system scope.
+func TestResolveAppUnitOtherScopeCannotSeeUserApp(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	p := install.Plan{Commands: [][]string{{"systemctl", "daemon-reload"}}}
+	status, err := install.ResolveAppUnit(&p, "system")
+	require.NoError(t, err)
+	require.Equal(t, install.AppUnitOtherScope, status)
+	require.Equal(t, [][]string{{"systemctl", "daemon-reload"}}, p.Commands)
+}
+
+func writeAppUnit(t *testing.T, cfg string) {
+	t.Helper()
+	path := install.AppUnitPath(cfg)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte("[Unit]\n"), 0o644))
 }
 
 // TestAppAndAgentUnitsCoexist pins that installing both on one machine writes
