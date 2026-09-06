@@ -119,7 +119,10 @@ for _ in $(seq 60); do
   [ -n "$STATUS" ] && break
   sleep 0.5
 done
-check "fleet status answers"  "[ '$STATUS' = '{\"activated\":false}' ]"
+# The field, not the whole document: /api/v1/fleet/status grew instance_id
+# when activation started generating one, and an equality assertion here went
+# red on every commit until someone read the payload.
+check "fleet status answers"  "echo '$STATUS' | grep -q '\"activated\":false'"
 check "setup token written"   "[ -s '$ROOT/var/lib/warphold/fleet/setup-token' ]"
 kill "$APP_PID" 2>/dev/null || true
 wait "$APP_PID" 2>/dev/null || true
@@ -197,7 +200,7 @@ for _ in $(seq 60); do
   [ -n "$STATUS" ] && break
   sleep 0.5
 done
-check "the server reports activated" "[ '$STATUS' = '{\"activated\":true}' ]"
+check "the server reports activated" "echo '$STATUS' | grep -q '\"activated\":true'"
 # Activation ran before the service started, so there was never a token to write.
 check "no setup token was needed"    "[ ! -e '$ACTROOT/var/lib/warphold/fleet/setup-token' ]"
 kill "$APP_PID" 2>/dev/null || true
