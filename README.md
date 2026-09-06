@@ -92,7 +92,7 @@ one-line command that enrolls the first device.
 - **Jobs**, run on a schedule per target: `verify` (weekly, `snapshot verify`
   against the repository), `test-restore` (monthly, restores a random file and
   checks its hash), `maintenance` (daily, so devices never run their own),
-  `mirror` (hourly, for mirrored targets), `stats` (every 6 h, feeds the Stored
+  `mirror` (hourly, for mirrored targets), `stats` (daily, feeds the Stored
   tiles), `digest` (weekly fleet-status email over SMTP), and `reap` (removes a
   revoked device's repository after its retention window). Run any of them on
   demand: `warphold fleet jobs run --kind verify --agent <id>`.
