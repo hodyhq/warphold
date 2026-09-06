@@ -83,7 +83,7 @@ e2e-test:
 build-electron: ../dist/kopia-ui/.up-to-date
 
 # rebuild packages if HTML, embedded EXE or build config changed.
-../dist/kopia-ui/.up-to-date: package.json ../dist/kopia_*/kopia* node_modules/.up-to-date public/* resources/*/*/*
+../dist/kopia-ui/.up-to-date: package.json ../dist/warphold_*/warphold* node_modules/.up-to-date public/* resources/*/*/*
 	$(retry) $(npm) $(npm_flags) run build-electron -- $(electron_builder_flags) -p $(electron_publish_flag)
 	echo updated > ../dist/kopia-ui/.up-to-date
 

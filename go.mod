@@ -2,6 +2,8 @@ module github.com/kopia/kopia
 
 go 1.26.0
 
+toolchain go1.26.8
+
 require (
 	cloud.google.com/go/storage v1.65.0
 	fyne.io/systray v1.12.2
