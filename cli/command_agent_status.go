@@ -97,7 +97,7 @@ func (c *commandAgentStatus) startHint() string {
 // 'return c.engineDown(...)' and keep the control flow obvious.
 func (c *commandAgentStatus) engineDown(err error) error {
 	c.out.printStderr("%v\n", err)
-	os.Exit(engineDownExitCode) //nolint:forbidigo
+	os.Exit(engineDownExitCode)
 
 	return err
 }

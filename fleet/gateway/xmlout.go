@@ -95,7 +95,7 @@ type locationConstraint struct {
 func writeXML(w http.ResponseWriter, status int, v any) {
 	body, err := xml.Marshal(v)
 	if err != nil {
-		// Marshalling our own structs cannot fail in practice; if it ever did,
+		// Marshaling our own structs cannot fail in practice; if it ever did,
 		// a bare status is still a valid S3 answer.
 		w.WriteHeader(http.StatusInternalServerError)
 		return

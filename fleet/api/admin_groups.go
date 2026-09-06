@@ -24,19 +24,23 @@ func (s *Server) handleGroupCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "name, target_id and template_id are required")
 		return
 	}
+
 	if _, err := s.store().Target(r.Context(), in.TargetID); err != nil {
 		writeErr(w, http.StatusBadRequest, "unknown target_id")
 		return
 	}
+
 	if _, err := s.store().Template(r.Context(), in.TemplateID); err != nil {
 		writeErr(w, http.StatusBadRequest, "unknown template_id")
 		return
 	}
+
 	id, err := s.store().CreateGroup(r.Context(), &store.Group{Name: in.Name, TargetID: in.TargetID, TemplateID: in.TemplateID, CreatedAt: s.now()})
 	if err != nil {
 		adminFailed(w, "create group", err)
 		return
 	}
+
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
 }
 
@@ -51,6 +55,7 @@ func (s *Server) handleGroupUpdate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad id")
 		return
 	}
+
 	var in struct {
 		Name       *string `json:"name"`
 		TargetID   *int64  `json:"target_id"`
@@ -60,16 +65,19 @@ func (s *Server) handleGroupUpdate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "malformed body")
 		return
 	}
+
 	if in.Name != nil && *in.Name == "" {
 		writeErr(w, http.StatusBadRequest, "name cannot be empty")
 		return
 	}
+
 	if in.TargetID != nil {
 		if _, err := s.store().Target(r.Context(), *in.TargetID); err != nil {
 			writeErr(w, http.StatusBadRequest, "unknown target_id")
 			return
 		}
 	}
+
 	if in.TemplateID != nil {
 		if _, err := s.store().Template(r.Context(), *in.TemplateID); err != nil {
 			writeErr(w, http.StatusBadRequest, "unknown template_id")
@@ -101,6 +109,7 @@ func (s *Server) handleGroupDelete(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad id")
 		return
 	}
+
 	switch err := s.store().DeleteGroup(r.Context(), id, s.now()); {
 	case err == nil:
 		w.WriteHeader(http.StatusNoContent)
@@ -119,9 +128,11 @@ func (s *Server) handleGroupList(w http.ResponseWriter, r *http.Request) {
 		adminFailed(w, "list groups", err)
 		return
 	}
+
 	out := make([]groupOut, 0, len(gs))
 	for _, g := range gs {
 		out = append(out, groupOut{ID: g.ID, Name: g.Name, TargetID: g.TargetID, TemplateID: g.TemplateID})
 	}
+
 	writeJSON(w, http.StatusOK, out)
 }

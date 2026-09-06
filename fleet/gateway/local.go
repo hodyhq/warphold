@@ -2,7 +2,7 @@ package gateway
 
 import (
 	"context"
-	"crypto/md5" //nolint:gosec // S3 defines ETag as MD5; it is an identifier here, not a security control.
+	"crypto/md5"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -245,7 +245,7 @@ func writeTemp(ctx context.Context, f *os.File, r io.Reader, size, maxSize int64
 		limit = size
 	}
 
-	h := md5.New() //nolint:gosec // ETag, not a security control.
+	h := md5.New()
 
 	n, err := io.Copy(io.MultiWriter(f, h), io.LimitReader(ctxReader{ctx, r}, limit+1))
 	if err != nil {
@@ -356,7 +356,7 @@ func (l *local) Head(ctx context.Context, key string) (ObjectInfo, error) {
 	if err != nil || !isMD5Hex(etag) {
 		// The xattr is missing, corrupt, or unsupported by this filesystem, so
 		// fall back to hashing the object.
-		h := md5.New() //nolint:gosec // ETag, not a security control.
+		h := md5.New()
 		if _, err := io.Copy(h, ctxReader{ctx, f}); err != nil {
 			return ObjectInfo{}, fmt.Errorf("hashing %q: %w", key, err)
 		}

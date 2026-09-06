@@ -38,6 +38,7 @@ func NewLocal(ctx context.Context, api *apiclient.KopiaAPIClient) (*Local, error
 	if err := api.Get(ctx, "sources", nil, &sr); err != nil {
 		return nil, errors.Wrap(err, "sources")
 	}
+
 	return &Local{API: api, Host: sr.LocalHost, User: sr.LocalUsername}, nil
 }
 
@@ -49,6 +50,7 @@ func ExpandHome(p string) string {
 			return filepath.Join(home, strings.TrimPrefix(p, "~"))
 		}
 	}
+
 	return p
 }
 
@@ -57,6 +59,7 @@ func (l *Local) sourceQuery(path string) string {
 	q.Set("userName", l.User)
 	q.Set("host", l.Host)
 	q.Set("path", path)
+
 	return q.Encode()
 }
 
@@ -66,6 +69,7 @@ func (l *Local) Sources(ctx context.Context) ([]*serverapi.SourceStatus, error) 
 	if err := l.API.Get(ctx, "sources", nil, &sr); err != nil {
 		return nil, err
 	}
+
 	return sr.Sources, nil
 }
 
@@ -75,6 +79,7 @@ func (l *Local) Apply(ctx context.Context, sources []poll.Source) error {
 	for _, s := range sources {
 		path := ExpandHome(s.Path)
 		want[path] = true
+
 		var pol policy.Policy
 		if len(s.Policy) > 0 {
 			if err := json.Unmarshal(s.Policy, &pol); err != nil {
@@ -88,18 +93,22 @@ func (l *Local) Apply(ctx context.Context, sources []poll.Source) error {
 			return errors.Wrapf(err, "add source %s", path)
 		}
 	}
+
 	existing, err := l.Sources(ctx)
 	if err != nil {
 		return err
 	}
+
 	for _, s := range existing {
 		if s.Source.Host != l.Host || s.Source.UserName != l.User || want[s.Source.Path] {
 			continue
 		}
+
 		if err := l.API.Delete(ctx, "policy?"+l.sourceQuery(s.Source.Path), nil, nil, &serverapi.Empty{}); err != nil {
 			return errors.Wrapf(err, "remove policy %s", s.Source.Path)
 		}
 	}
+
 	return l.API.Post(ctx, "refresh", &serverapi.Empty{}, &serverapi.Empty{})
 }
 
@@ -121,10 +130,12 @@ func (l *Local) Resume(ctx context.Context, path string) error {
 
 func (l *Local) sourceAction(ctx context.Context, op, path string) error {
 	var resp serverapi.MultipleSourceActionResponse
+
 	q := ""
 	if path != "" {
 		q = "?" + l.sourceQuery(ExpandHome(path))
 	}
+
 	return l.API.Post(ctx, op+q, &serverapi.Empty{}, &resp)
 }
 
@@ -134,6 +145,7 @@ func (l *Local) Tasks(ctx context.Context) ([]uitask.Info, error) {
 	if err := l.API.Get(ctx, "tasks", nil, &tr); err != nil {
 		return nil, err
 	}
+
 	return tr.Tasks, nil
 }
 
@@ -143,6 +155,7 @@ func (l *Local) TaskLog(ctx context.Context, id string) (string, error) {
 	if err := l.API.Get(ctx, "tasks/"+id+"/logs", nil, &out); err != nil {
 		return "", err
 	}
+
 	lines := make([]string, 0, len(out.Logs))
 	for _, raw := range out.Logs {
 		var e struct {
@@ -154,6 +167,7 @@ func (l *Local) TaskLog(ctx context.Context, id string) (string, error) {
 			lines = append(lines, string(raw))
 		}
 	}
+
 	return strings.Join(lines, "\n"), nil
 }
 
@@ -164,6 +178,7 @@ func counter(t uitask.Info, names ...string) int64 {
 			n += c.Value
 		}
 	}
+
 	return n
 }
 
@@ -173,21 +188,25 @@ func ToReport(t uitask.Info, source string) poll.Report {
 	if t.EndTime != nil {
 		r.FinishedAt = *t.EndTime
 	}
+
 	switch t.Status {
 	case uitask.StatusSuccess:
 		r.Status = "ok"
 	case uitask.StatusCanceled:
-		r.Status = "cancelled"
+		r.Status = "canceled"
 	default:
 		r.Status = "error"
 	}
+
 	if t.Kind == "Snapshot" {
 		r.Kind = "snapshot"
 	} else {
 		r.Kind = strings.ToLower(t.Kind)
 	}
+
 	r.Bytes = counter(t, "Hashed Bytes", "Cached Bytes")
 	r.Files = counter(t, "Hashed Files", "Cached Files")
+
 	return r
 }
 
@@ -197,17 +216,21 @@ func (l *Local) Status(ctx context.Context) (engineStatus string, repoConnected 
 	if err != nil {
 		return "unknown", false
 	}
+
 	allPaused := len(sources) > 0
 	for _, s := range sources {
 		if s.CurrentTask != "" {
 			return "uploading", true
 		}
+
 		if s.Status != "PAUSED" {
 			allPaused = false
 		}
 	}
+
 	if allPaused {
 		return "paused", true
 	}
+
 	return "idle", true
 }

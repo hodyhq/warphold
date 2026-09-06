@@ -125,26 +125,31 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		adminFailed(w, "list agents", err)
 		return
 	}
+
 	groups, err := st.Groups(ctx)
 	if err != nil {
 		adminFailed(w, "list groups", err)
 		return
 	}
+
 	targets, err := st.Targets(ctx)
 	if err != nil {
 		adminFailed(w, "list targets", err)
 		return
 	}
+
 	latest, err := st.LatestReports(ctx)
 	if err != nil {
 		adminFailed(w, "read reports", err)
 		return
 	}
+
 	lastOK, err := st.LastOKReports(ctx)
 	if err != nil {
 		adminFailed(w, "read reports", err)
 		return
 	}
+
 	fleetName, err := st.Setting(ctx, fleetNameSetting)
 	if err != nil {
 		adminFailed(w, "read settings", err)
@@ -167,6 +172,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	// ago (on the hour); one window covers whichever reaches further back.
 	dayStart := now.Truncate(24*time.Hour).AddDate(0, 0, -(overviewDays - 1))
 	hourStart := now.Truncate(time.Hour).Add(-(overviewHours - 1) * time.Hour)
+
 	since := dayStart
 	if hourStart.Before(since) {
 		since = hourStart
@@ -183,16 +189,20 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	// from the counts, the strips and the timeline alike, so the four health
 	// buckets always add up to Counts.Agents.
 	live := make(map[string]store.Agent, len(agents))
+
 	days := make(map[string][]string, len(agents))
 	for _, a := range agents {
 		if a.RevokedAt != nil {
 			continue
 		}
+
 		live[a.ID] = a
+
 		strip := make([]string, overviewDays)
 		for i := range strip {
 			strip[i] = "none"
 		}
+
 		days[a.ID] = strip
 	}
 
@@ -208,10 +218,12 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		if rep.Kind != "snapshot" {
 			continue
 		}
+
 		agent, ok := live[rep.AgentID]
 		if !ok {
 			continue
 		}
+
 		finished := rep.FinishedAt.UTC()
 		if d := int(finished.Truncate(24*time.Hour).Sub(dayStart) / (24 * time.Hour)); d >= 0 && d < overviewDays {
 			strip := days[rep.AgentID]
@@ -224,6 +236,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 				strip[d] = "bad"
 			}
 		}
+
 		if h := int(finished.Truncate(time.Hour).Sub(hourStart) / time.Hour); h >= 0 && h < overviewHours {
 			if rep.Status == "ok" {
 				buckets[h].OK++
@@ -231,6 +244,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 				buckets[h].Failed++
 			}
 		}
+
 		if rep.Status != "ok" {
 			// ReportsBetween is oldest first, so the last error wins.
 			latestFailure = &overviewFailure{AgentID: rep.AgentID, Name: agent.Name, FinishedAt: finished, Stderr: rep.Stderr}
@@ -251,14 +265,17 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		out.StoredBytes += r.StoredBytes
 		totalLogical += r.LogicalBytes
 	}
+
 	if len(repoStats) > 0 && out.StoredBytes > 0 {
 		ratio := float64(totalLogical) / float64(out.StoredBytes)
 		out.DedupRatio = &ratio
 	}
+
 	for _, b := range buckets {
 		out.Last24h.Completed += b.OK
 		out.Last24h.Failed += b.Failed
 	}
+
 	out.LatestFailure = latestFailure
 
 	groupNames := make(map[int64]string, len(groups))
@@ -271,16 +288,20 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		if _, ok := live[a.ID]; !ok {
 			continue
 		}
+
 		var lr *store.Report
 		if x, found := latest[a.ID]; found {
 			lr = &x
 		}
+
 		var okAt *time.Time
+
 		last := "never"
 		if t, found := lastOK[a.ID]; found {
 			okAt = &t
 			last = relativeSince(now.Sub(t))
 		}
+
 		hs := s.healthOf(a, lr, okAt)
 		switch hs {
 		case health.Green:
@@ -292,6 +313,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		default:
 			out.Counts.Unknown++
 		}
+
 		out.Devices = append(out.Devices, overviewDevice{
 			ID: a.ID, Name: a.Name, Group: groupNames[a.GroupID],
 			Health: hs, Last: last, SizeBytes: repoStats[a.ID].StoredBytes, Days: days[a.ID],

@@ -115,16 +115,19 @@ func (s *Server) healthOf(a store.Agent, latest *store.Report, lastOK *time.Time
 	if latest != nil {
 		in.LastRunFailed = latest.Status == "error"
 	}
+
 	return health.Status(in, s.now())
 }
 
 func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+
 	as, err := s.store().Agents(ctx)
 	if err != nil {
 		adminFailed(w, "list agents", err)
 		return
 	}
+
 	latest, _ := s.store().LatestReports(ctx)
 	// One batch query, not one LastOKReport per agent: this endpoint renders
 	// the whole fleet and the per-row lookup made it O(agents) round trips.
@@ -142,16 +145,19 @@ func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 		adminFailed(w, "read repository stats", err)
 		return
 	}
+
 	out := make([]agentOut, 0, len(as))
 	for _, a := range as {
 		var lr *store.Report
 		if x, ok := latest[a.ID]; ok {
 			lr = &x
 		}
+
 		var ok *time.Time
 		if t, found := lastOK[a.ID]; found {
 			ok = &t
 		}
+
 		var acked *time.Time
 		if t, found := kitAcks[a.ID]; found {
 			acked = &t
@@ -159,26 +165,32 @@ func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 
 		out = append(out, s.agentOut(a, lr, ok, acked, repoStats[a.ID].StoredBytes))
 	}
+
 	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleAgentGet(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+
 	a, err := s.store().Agent(ctx, mux.Vars(r)["id"])
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "agent not found")
 		return
 	}
+
 	reports, _ := s.store().ReportsForAgent(ctx, a.ID, 20)
+
 	var lr *store.Report
 	if len(reports) > 0 {
 		lr = &reports[0]
 	}
+
 	var lastOK *time.Time
 	if ok, err := s.store().LastOKReport(ctx, a.ID); err == nil && ok != nil {
 		t := ok.FinishedAt
 		lastOK = &t
 	}
+
 	mirror, err := s.mirrorFor(ctx, *a)
 	if err != nil {
 		adminFailed(w, "read offsite state", err)
@@ -207,6 +219,7 @@ func (s *Server) handleAgentGet(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAgentRevoke(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+
 	a, err := s.store().Agent(ctx, mux.Vars(r)["id"])
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "agent not found")
@@ -241,6 +254,7 @@ func (s *Server) handleAgentRevoke(w http.ResponseWriter, r *http.Request) {
 	if g := s.gateway(); g != nil {
 		g.InvalidateKeys(a.ID)
 	}
+
 	if err := s.store().RevokeAgent(ctx, a.ID, s.now()); err != nil {
 		adminFailed(w, "revoke agent", err)
 		return
@@ -253,6 +267,7 @@ func (s *Server) handleAgentRevoke(w http.ResponseWriter, r *http.Request) {
 		adminFailed(w, "schedule reap", err)
 		return
 	}
+
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -262,15 +277,18 @@ func (s *Server) handleAgentCommand(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "kind must be one of snapshot-now, pause, resume, verify")
 		return
 	}
+
 	a, err := s.store().Agent(r.Context(), mux.Vars(r)["id"])
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "agent not found")
 		return
 	}
+
 	id, err := s.store().AddCommand(r.Context(), &store.Command{AgentID: a.ID, Kind: in.Kind, Source: in.Source, CreatedAt: s.now()})
 	if err != nil {
 		adminFailed(w, "add command", err)
 		return
 	}
+
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
 }

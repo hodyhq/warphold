@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -147,8 +148,8 @@ func ClientIP(r *http.Request, trusted []net.IPNet) string {
 	// otherwise have that hop silently invisible here. Values() collects
 	// every line, joined in order, before splitting on commas.
 	hops := strings.Split(strings.Join(r.Header.Values("X-Forwarded-For"), ","), ",")
-	for i := len(hops) - 1; i >= 0; i-- {
-		ip := net.ParseIP(strings.Trim(strings.TrimSpace(hops[i]), "[]"))
+	for _, hop := range slices.Backward(hops) {
+		ip := net.ParseIP(strings.Trim(strings.TrimSpace(hop), "[]"))
 		if ip == nil {
 			// A malformed chain says nothing reliable about any hop in it.
 			return peer

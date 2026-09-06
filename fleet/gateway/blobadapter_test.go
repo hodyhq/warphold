@@ -50,6 +50,7 @@ func TestHostedStorageIsFlatUnlikeFilesystem(t *testing.T) {
 	fsRoot := t.TempDir()
 	fsSt, err := filesystem.New(ctx, &filesystem.Options{Path: fsRoot}, true)
 	require.NoError(t, err)
+
 	defer fsSt.Close(ctx) //nolint:errcheck
 
 	require.NoError(t, fsSt.PutBlob(ctx, blobID, gather.FromSlice([]byte("hello")), blob.PutOptions{}))
@@ -100,6 +101,7 @@ func TestHostedStorageConnectionInfoReopens(t *testing.T) {
 
 	reopened, err := blob.NewStorage(ctx, ci, false)
 	require.NoError(t, err)
+
 	defer reopened.Close(ctx) //nolint:errcheck
 
 	var buf gather.WriteBuffer

@@ -27,13 +27,17 @@ func (s *Store) CreateSession(ctx context.Context, tokenHash []byte, adminID int
 }
 
 func scanSession(row interface{ Scan(...any) error }) (*Session, error) {
-	var v Session
-	var created, expires string
-	var revoked sql.NullString
+	var (
+		v                Session
+		created, expires string
+		revoked          sql.NullString
+	)
 	if err := row.Scan(&v.ID, &v.TokenHash, &v.AdminID, &created, &expires, &revoked); err != nil {
 		return nil, notFound(err)
 	}
+
 	v.CreatedAt, v.ExpiresAt, v.RevokedAt = parseTS(created), parseTS(expires), parseTSP(revoked)
+
 	return &v, nil
 }
 

@@ -94,6 +94,7 @@ func (k *Keys) Lookup(ctx context.Context, accessKeyID string) (agentID, prefix,
 		if len(k.cache) >= cacheSize {
 			k.cache = make(map[string]keyEntry, cacheSize)
 		}
+
 		k.cache[accessKeyID] = e
 	}
 	k.mu.Unlock()
@@ -130,5 +131,6 @@ func (k *Keys) InvalidateAll() {
 func (k *Keys) forget(accessKeyID string) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
+
 	delete(k.cache, accessKeyID)
 }

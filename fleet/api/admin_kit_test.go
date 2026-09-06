@@ -21,9 +21,12 @@ func (h *harness) getRaw(path string) (*http.Response, string) {
 	h.t.Helper()
 	resp, err := http.DefaultClient.Do(h.newRequest("GET", path, nil))
 	require.NoError(h.t, err)
+
 	defer resp.Body.Close()
+
 	b, err := io.ReadAll(resp.Body)
 	require.NoError(h.t, err)
+
 	return resp, string(b)
 }
 
@@ -33,8 +36,10 @@ var kitCreds = regexp.MustCompile(`--access-key (\S+) --secret-access-key (\S+)`
 
 func readCredsFrom(t *testing.T, page string) (string, string) {
 	t.Helper()
+
 	m := kitCreds.FindStringSubmatch(page)
 	require.Len(t, m, 3, "the page must print an --access-key/--secret-access-key pair")
+
 	return m[1], m[2]
 }
 
@@ -42,30 +47,36 @@ func readCredsFrom(t *testing.T, page string) (string, string) {
 // using the credentials from the kit rather than the device's own.
 func storeWithCreds(t *testing.T, connectToken, akid, secret string) blob.Storage {
 	t.Helper()
+
 	ci, _, err := repo.DecodeToken(connectToken)
 	require.NoError(t, err)
+
 	o, ok := ci.Config.(*s3.Options)
 	require.True(t, ok)
+
 	opts := *o
 	opts.AccessKeyID, opts.SecretAccessKey = akid, secret
 	st, err := s3.New(context.Background(), &opts, false)
 	require.NoError(t, err)
 	t.Cleanup(func() { st.Close(context.Background()) }) //nolint:errcheck
+
 	return st
 }
 
-// enrollHosted enrols one device on a hosted target and returns its id and
+// enrollHosted enrolls one device on a hosted target and returns its id and
 // connect token, with the admin session restored in the jar.
 func (h *harness) enrollHosted(t *testing.T) (string, string) {
 	t.Helper()
 	h.setPublicURL()
-	gid := h.mkHostedGroup(t, t.TempDir())
+	gid := h.mkHostedGroup(t, h.hostedDir(t))
 	_, tok := h.do("POST", "/api/v1/fleet/tokens", map[string]any{"group_id": gid})
 	admin := h.jar
 	h.jar = nil
 	resp, body := h.do("POST", "/api/v1/fleet/enroll", map[string]any{"token": tok["token"], "hostname": "fw16", "os": "linux", "arch": "amd64", "scope": "user"})
 	require.Equal(t, 201, resp.StatusCode, body)
+
 	h.jar = admin
+
 	return body["agent_id"].(string), body["connect_token"].(string)
 }
 
@@ -81,6 +92,7 @@ func TestRecoveryKitIsAdminOnlyAndSelfContained(t *testing.T) {
 	h.jar = nil
 	resp, _ := h.getRaw("/api/v1/fleet/agents/" + id + "/kit")
 	require.Equal(t, 401, resp.StatusCode, "the kit is admin-session only")
+
 	h.jar = admin
 
 	resp, page := h.getRaw("/api/v1/fleet/agents/" + id + "/kit")
@@ -112,6 +124,7 @@ func TestRecoveryKitMintsAReadOnlyKeyAndReusesIt(t *testing.T) {
 
 	ci, _, err := repo.DecodeToken(connect)
 	require.NoError(t, err)
+
 	deviceKey := ci.Config.(*s3.Options).AccessKeyID //nolint:forcetypeassert
 
 	_, page := h.getRaw("/api/v1/fleet/agents/" + id + "/kit")
@@ -175,6 +188,7 @@ func TestRecoveryKitAckShowsUpOnTheAgent(t *testing.T) {
 
 	_, body := h.do("GET", "/api/v1/fleet/agents/"+id, nil)
 	require.Nil(t, body["kit_acked_at"], "a fresh device has no acknowledgement")
+
 	_, list := h.doList("GET", "/api/v1/fleet/agents")
 	require.Len(t, list, 1)
 	require.Nil(t, list[0]["kit_acked_at"])
@@ -184,6 +198,7 @@ func TestRecoveryKitAckShowsUpOnTheAgent(t *testing.T) {
 
 	_, body = h.do("GET", "/api/v1/fleet/agents/"+id, nil)
 	require.NotNil(t, body["kit_acked_at"])
+
 	_, list = h.doList("GET", "/api/v1/fleet/agents")
 	require.NotNil(t, list[0]["kit_acked_at"])
 
@@ -207,6 +222,7 @@ func TestRecoveryKitForFilesystemTarget(t *testing.T) {
 	h.jar = nil
 	resp, body := h.do("POST", "/api/v1/fleet/enroll", map[string]any{"token": tok["token"], "hostname": "nuc", "os": "linux", "arch": "amd64"})
 	require.Equal(t, 201, resp.StatusCode, body)
+
 	h.jar = admin
 
 	_, password, err := repo.DecodeToken(body["connect_token"].(string))

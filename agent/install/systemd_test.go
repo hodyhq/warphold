@@ -2,6 +2,7 @@ package install_test
 
 import (
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -11,12 +12,23 @@ import (
 )
 
 func TestSystemdPlans(t *testing.T) {
+	// systemd is Linux-only (warphold ships Linux-only releases; Windows is
+	// compile-only), and the system-scope assertions below key the Files map
+	// with a hardcoded forward-slash path while install.Systemd builds it
+	// with filepath.Join, which is a backslash path on Windows -- a lookup
+	// mismatch in the test, not anything a Windows build needs to get right.
+	if runtime.GOOS == "windows" {
+		t.Skip("linux-only: systemd unit generation")
+	}
+
 	// XDG_CONFIG_HOME, not HOME: os.UserHomeDir reads a different variable on
 	// Windows, so a HOME-only test pins a path this code never produces there.
 	cfg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", cfg)
+
 	p, err := install.Systemd("user", "/home/hody/.local/bin/warphold")
 	require.NoError(t, err)
+
 	unit, ok := p.Files[filepath.Join(cfg, "systemd", "user", "warphold-agent.service")]
 	require.True(t, ok)
 	require.Contains(t, unit, "ExecStart=\"/home/hody/.local/bin/warphold\" agent run --scope user")
@@ -28,6 +40,7 @@ func TestSystemdPlans(t *testing.T) {
 
 	s, err := install.Systemd("system", "/usr/local/bin/warphold")
 	require.NoError(t, err)
+
 	unit = s.Files["/etc/systemd/system/warphold-agent.service"]
 	require.Contains(t, unit, "--scope system")
 	require.Contains(t, unit, "WantedBy=multi-user.target")
@@ -37,6 +50,7 @@ func TestSystemdPlans(t *testing.T) {
 func TestApplyWritesAndRuns(t *testing.T) {
 	dir := t.TempDir()
 	p := install.Plan{Files: map[string]string{filepath.Join(dir, "a", "x.service"): "unit"}, Commands: [][]string{{"systemctl", "daemon-reload"}}}
+
 	var ran []string
 	require.NoError(t, install.Apply(p, func(name string, args ...string) error {
 		ran = append(ran, name+" "+strings.Join(args, " "))
@@ -48,6 +62,7 @@ func TestApplyWritesAndRuns(t *testing.T) {
 
 func TestSystemdRejectsRelativeConfigDir(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "relative/config")
+
 	_, err := install.Systemd("user", "/home/hody/.local/bin/warphold")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not absolute")
@@ -61,6 +76,7 @@ func TestSystemdRejectsTraversalInConfigDir(t *testing.T) {
 	// Concatenated, not filepath.Join: Join cleans, and cleaning is exactly
 	// what this test needs Systemd to refuse to do on its behalf.
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir()+string(filepath.Separator)+"..")
+
 	_, err := install.Systemd("user", "/home/hody/.local/bin/warphold")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), `must not contain ".."`)
@@ -72,6 +88,7 @@ func TestSystemdRejectsTraversalInConfigDir(t *testing.T) {
 func TestSystemdAcceptsTrailingSeparatorInConfigDir(t *testing.T) {
 	cfg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", cfg+string(filepath.Separator))
+
 	p, err := install.Systemd("user", "/home/hody/.local/bin/warphold")
 	require.NoError(t, err)
 	require.Contains(t, p.Files, filepath.Join(cfg, "systemd", "user", "warphold-agent.service"))
@@ -83,6 +100,10 @@ func TestSystemdAcceptsTrailingSeparatorInConfigDir(t *testing.T) {
 // service would look for agent.json in the default location and report itself
 // unenrolled.
 func TestSystemdCarriesStateDirEnvironment(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("linux-only: systemd unit generation")
+	}
+
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("WARPHOLD_STATE_DIR", "/srv/warphold state")
 
@@ -118,6 +139,7 @@ func TestSystemdRejectsInjectableStateDir(t *testing.T) {
 
 func unitOf(t *testing.T, p install.Plan) string {
 	t.Helper()
+
 	for path, content := range p.Files {
 		if strings.HasSuffix(path, ".service") {
 			return content

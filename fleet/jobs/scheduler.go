@@ -146,7 +146,7 @@ func NewScheduler(st *store.Store, runners map[string]Runner, tick time.Duration
 	return &Scheduler{st: st, runners: runners, tick: tick, Timeout: DefaultTimeout}
 }
 
-// Start runs the scheduler in one goroutine until ctx is cancelled or Stop is
+// Start runs the scheduler in one goroutine until ctx is canceled or Stop is
 // called. Calling it on a running scheduler is a no-op.
 func (s *Scheduler) Start(ctx context.Context) {
 	s.mu.Lock()

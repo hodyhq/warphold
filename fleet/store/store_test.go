@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-
 	_ "modernc.org/sqlite" // pure-Go driver, registers "sqlite"
 
 	"github.com/kopia/kopia/fleet/store"
@@ -21,6 +20,7 @@ func openTemp(t *testing.T) *store.Store {
 	s, err := store.Open(filepath.Join(t.TempDir(), "fleet.db"))
 	require.NoError(t, err)
 	t.Cleanup(func() { s.Close() })
+
 	return s
 }
 
@@ -44,6 +44,7 @@ func TestAdminsRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, id, a.ID)
 	require.Equal(t, "owner", a.Role)
+
 	_, err = s.AdminByEmail(ctx, "nobody@x")
 	require.ErrorIs(t, err, store.ErrNotFound)
 	_, err = s.CreateAdmin(ctx, "hody@hody.dev", "x", now)
@@ -94,11 +95,13 @@ func TestReportsDedupeAndLatest(t *testing.T) {
 	id2, err := s.AddReport(ctx, r)
 	require.NoError(t, err)
 	require.Equal(t, id1, id2, "same (agent, task) must not duplicate")
+
 	_, err = s.AddReport(ctx, &store.Report{AgentID: "ag_1", TaskID: "t2", Kind: "snapshot", Source: "/home/hody", StartedAt: now, FinishedAt: now.Add(time.Minute), Status: "error", Stderr: "kopia: error: boom"})
 	require.NoError(t, err)
 	latest, err := s.LatestReports(ctx)
 	require.NoError(t, err)
 	require.Equal(t, "t2", latest["ag_1"].TaskID)
+
 	rs, err := s.ReportsForAgent(ctx, "ag_1", 10)
 	require.NoError(t, err)
 	require.Len(t, rs, 2)
@@ -116,6 +119,7 @@ func TestLastOKReportsBatch(t *testing.T) {
 
 	tid, _ := s.CreateTarget(ctx, &store.Target{Name: "b2", Kind: "b2", Bucket: "hody-backups", SealedAdminKey: []byte("sealed"), CreatedAt: now})
 	tpl, _ := s.CreateTemplate(ctx, &store.Template{Name: "Home", Sources: []string{"~"}, PolicyJSON: []byte(`{}`), CreatedAt: now})
+
 	gid, _ := s.CreateGroup(ctx, &store.Group{Name: "Laptops", TargetID: tid, TemplateID: tpl, CreatedAt: now})
 	for _, id := range []string{"ag_1", "ag_2", "ag_3"} {
 		require.NoError(t, s.CreateAgent(ctx, &store.Agent{ID: id, Name: id, Hostname: id, OS: "linux", Arch: "amd64", Scope: "user", GroupID: gid, BearerHash: []byte("h_" + id), SealedBundle: []byte("b"), EnrolledAt: now}))
@@ -141,10 +145,12 @@ func TestLastOKReportsBatch(t *testing.T) {
 	for _, id := range []string{"ag_1", "ag_2", "ag_3"} {
 		one, err := s.LastOKReport(ctx, id)
 		require.NoError(t, err)
+
 		if one == nil {
 			require.NotContains(t, got, id)
 			continue
 		}
+
 		require.Equal(t, one.FinishedAt, got[id])
 	}
 }
@@ -167,11 +173,14 @@ func TestTokensAndCommandsAndSettings(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, id, tok.ID)
 	require.Equal(t, now, tok.CreatedAt, "created_at round-trips")
+
 	ok, err := s.ConsumeToken(ctx, id, clock.Now())
 	require.NoError(t, err)
 	require.True(t, ok)
+
 	tok, _ = s.TokenByHash(ctx, []byte("th"))
 	require.Equal(t, 1, tok.Uses)
+
 	ok, err = s.ConsumeToken(ctx, id, clock.Now())
 	require.NoError(t, err)
 	require.False(t, ok, "max_uses=1 token is spent")
@@ -250,18 +259,22 @@ func TestSessionsLifecycle(t *testing.T) {
 	// RevokeSessionsForAdmin hits every live session of one admin only.
 	other, err := s.CreateAdmin(ctx, "b@hody.dev", "hash-b", now)
 	require.NoError(t, err)
+
 	h2 := []byte("hash-two")
 	_, err = s.CreateSession(ctx, h2, aid, now, now.Add(time.Hour))
 	require.NoError(t, err)
+
 	h3 := []byte("hash-three")
 	_, err = s.CreateSession(ctx, h3, other, now, now.Add(time.Hour))
 	require.NoError(t, err)
 	require.NoError(t, s.RevokeSessionsForAdmin(ctx, aid, now))
+
 	for _, h := range [][]byte{h1, h2} {
 		got, err = s.SessionByHash(ctx, h)
 		require.NoError(t, err)
 		require.NotNil(t, got.RevokedAt)
 	}
+
 	got, err = s.SessionByHash(ctx, h3)
 	require.NoError(t, err)
 	require.Nil(t, got.RevokedAt, "another admin's session is untouched")
@@ -270,6 +283,7 @@ func TestSessionsLifecycle(t *testing.T) {
 	h4 := []byte("hash-four")
 	keep, err := s.CreateSession(ctx, h4, aid, now, now.Add(time.Hour))
 	require.NoError(t, err)
+
 	h5 := []byte("hash-five")
 	_, err = s.CreateSession(ctx, h5, aid, now, now.Add(time.Hour))
 	require.NoError(t, err)
@@ -339,10 +353,12 @@ func TestReportsBetween(t *testing.T) {
 
 	got, err := s.ReportsBetween(ctx, cutoff, now.Add(5*time.Minute))
 	require.NoError(t, err)
+
 	ids := make([]string, 0, len(got))
 	for _, r := range got {
 		ids = append(ids, r.TaskID)
 	}
+
 	require.Equal(t, []string{"edge", "mid", "new"}, ids, "inclusive cutoff, oldest first, nothing older, nothing future-dated")
 }
 
@@ -379,7 +395,9 @@ func TestReportJSONWireShape(t *testing.T) {
 func TestSetSettingsIsAtomicAndReadable(t *testing.T) {
 	s, err := store.Open(filepath.Join(t.TempDir(), "fleet.db"))
 	require.NoError(t, err)
+
 	defer s.Close()
+
 	ctx := t.Context()
 	require.NoError(t, s.SetSettings(ctx, map[string]string{"fleet_name": "home", "poll_interval": "120"}))
 	v, err := s.Setting(ctx, "fleet_name")
@@ -474,7 +492,9 @@ func TestDeleteAgentRollsBackOnFailure(t *testing.T) {
 	// (device_keys) succeeds but its second (agents) fails.
 	db2, err := sql.Open("sqlite", p)
 	require.NoError(t, err)
+
 	defer db2.Close() //nolint:errcheck // test cleanup
+
 	_, err = db2.Exec(`DROP TABLE agents`)
 	require.NoError(t, err)
 

@@ -25,18 +25,23 @@ const deviceKeyCols = `access_key_id,agent_id,sealed_secret,prefix,read_only,cre
 func (s *Store) CreateDeviceKey(ctx context.Context, k *DeviceKey) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO device_keys(`+deviceKeyCols+`) VALUES(?,?,?,?,?,?,?)`,
 		k.AccessKeyID, k.AgentID, k.SealedSecret, k.Prefix, k.ReadOnly, ts(k.CreatedAt), tsp(k.DisabledAt))
+
 	return err
 }
 
 func scanDeviceKey(row interface{ Scan(...any) error }) (*DeviceKey, error) {
-	var k DeviceKey
-	var created string
-	var disabled sql.NullString
+	var (
+		k        DeviceKey
+		created  string
+		disabled sql.NullString
+	)
 	if err := row.Scan(&k.AccessKeyID, &k.AgentID, &k.SealedSecret, &k.Prefix, &k.ReadOnly, &created, &disabled); err != nil {
 		return nil, notFound(err)
 	}
+
 	k.CreatedAt = parseTS(created)
 	k.DisabledAt = parseTSP(disabled)
+
 	return &k, nil
 }
 
@@ -62,8 +67,10 @@ func (s *Store) DeviceKeysForAgent(ctx context.Context, agentID string) ([]Devic
 		if err != nil {
 			return nil, err
 		}
+
 		out = append(out, *k)
 	}
+
 	return out, rows.Err()
 }
 
@@ -75,6 +82,7 @@ func (s *Store) DeleteDeviceKeysForAgent(ctx context.Context, agentID string) (i
 	if err != nil {
 		return 0, err
 	}
+
 	return res.RowsAffected()
 }
 
@@ -85,6 +93,7 @@ func (s *Store) DisableDeviceKeysForAgent(ctx context.Context, agentID string, a
 	if err != nil {
 		return 0, err
 	}
+
 	return res.RowsAffected()
 }
 

@@ -209,9 +209,18 @@ func (s *blobStore) DisplayName() string {
 }
 
 // Close releases the underlying store's directory handle, when it has one.
-func (s *blobStore) Close(context.Context) error {
-	if c, ok := s.objs.(io.Closer); ok {
-		return c.Close()
+// The local backend's Close takes a context (see local.go), so it is not an
+// io.Closer -- asserting for that here always missed it, leaving the
+// directory handle open for the adapter's whole lifetime. POSIX's
+// advisory-only locking let that go unnoticed; Windows enforces it, and a
+// caller's t.TempDir() cleanup covering that directory fails outright.
+func (s *blobStore) Close(ctx context.Context) error {
+	if c, ok := s.objs.(interface {
+		Close(ctx context.Context) error
+	}); ok {
+		if err := c.Close(ctx); err != nil {
+			return fmt.Errorf("closing %s: %w", s.DisplayName(), err)
+		}
 	}
 
 	return nil

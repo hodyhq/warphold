@@ -14,7 +14,7 @@ import (
 // blobCountAndBytes lists an agent's repository storage directly, the way the
 // fixture corrupts it, as the ground truth for what the stats job should have
 // recorded.
-func blobCountAndBytes(t *testing.T, fx *repoFixture, id string) (count int64, bytes int64) {
+func blobCountAndBytes(t *testing.T, fx *repoFixture, id string) (count, bytes int64) {
 	t.Helper()
 
 	ctx := context.Background()

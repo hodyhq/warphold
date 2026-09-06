@@ -12,6 +12,7 @@ import (
 func TestStatus(t *testing.T) {
 	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 	at := func(d time.Duration) *time.Time { x := now.Add(-d); return &x }
+
 	require.Equal(t, health.Unknown, health.Status(health.Input{}, now))
 	require.Equal(t, health.Red, health.Status(health.Input{LastRunFailed: true}, now))
 	require.Equal(t, health.Green, health.Status(health.Input{LastOK: at(2 * time.Hour)}, now))

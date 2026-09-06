@@ -20,12 +20,16 @@ func (s *Store) CreateAdmin(ctx context.Context, email, pwHash string, at time.T
 const adminCols = `id,email,pw_hash,role,created_at`
 
 func scanAdmin(row interface{ Scan(...any) error }) (*Admin, error) {
-	var a Admin
-	var c string
+	var (
+		a Admin
+		c string
+	)
 	if err := row.Scan(&a.ID, &a.Email, &a.PWHash, &a.Role, &c); err != nil {
 		return nil, notFound(err)
 	}
+
 	a.CreatedAt = parseTS(c)
+
 	return &a, nil
 }
 
@@ -43,14 +47,17 @@ func (s *Store) Admins(ctx context.Context) ([]Admin, error) {
 		return nil, err
 	}
 	defer rows.Close()
+
 	var out []Admin
 	for rows.Next() {
 		a, err := scanAdmin(rows)
 		if err != nil {
 			return nil, err
 		}
+
 		out = append(out, *a)
 	}
+
 	return out, rows.Err()
 }
 
@@ -60,13 +67,16 @@ func (s *Store) UpdateAdminPassword(ctx context.Context, id int64, pwHash string
 	if err != nil {
 		return err
 	}
+
 	n, err := res.RowsAffected()
 	if err != nil {
 		return err
 	}
+
 	if n == 0 {
 		return ErrNotFound
 	}
+
 	return nil
 }
 
@@ -79,15 +89,19 @@ func (s *Store) DeleteAdmin(ctx context.Context, id int64) error {
 	if err != nil {
 		return err
 	}
+
 	n, err := res.RowsAffected()
 	if err != nil {
 		return err
 	}
+
 	if n == 1 {
 		return nil
 	}
+
 	if _, err := s.AdminByID(ctx, id); err != nil {
 		return err // ErrNotFound, or a real failure
 	}
+
 	return ErrLastAdmin
 }

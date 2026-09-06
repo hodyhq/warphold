@@ -25,8 +25,10 @@ import (
 // the tests exercise the real verifying TLS path rather than skipping it.
 func selfSigned(t *testing.T) (tls.Certificate, *x509.CertPool) {
 	t.Helper()
+
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
+
 	tmpl := &x509.Certificate{
 		SerialNumber:          big.NewInt(1),
 		Subject:               pkix.Name{CommonName: "smtp stub"},
@@ -47,10 +49,12 @@ func selfSigned(t *testing.T) (tls.Certificate, *x509.CertPool) {
 		pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}),
 	)
 	require.NoError(t, err)
+
 	pool := x509.NewCertPool()
 	parsed, err := x509.ParseCertificate(der)
 	require.NoError(t, err)
 	pool.AddCert(parsed)
+
 	return cert, pool
 }
 
@@ -78,7 +82,9 @@ func startStub(t *testing.T, authOK bool) *stub {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	t.Cleanup(func() { ln.Close() })
+
 	s := &stub{authOK: authOK, tlsConf: &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}}
+
 	s.port = ln.Addr().(*net.TCPAddr).Port
 	go func() {
 		for {
@@ -86,9 +92,11 @@ func startStub(t *testing.T, authOK bool) *stub {
 			if err != nil {
 				return
 			}
+
 			go s.handle(c)
 		}
 	}()
+
 	return s
 }
 
@@ -98,28 +106,34 @@ func (s *stub) config() Config {
 
 func (s *stub) handle(c net.Conn) {
 	defer c.Close()
+
 	_ = c.SetDeadline(time.Now().Add(10 * time.Second))
 	r, w := bufio.NewReader(c), bufio.NewWriter(c)
 	say := func(lines ...string) {
 		for _, l := range lines {
 			w.WriteString(l + "\r\n") //nolint:errcheck
 		}
+
 		w.Flush() //nolint:errcheck
 	}
 	say("220 stub ESMTP")
+
 	secure := false
 	for {
 		line, err := r.ReadString('\n')
 		if err != nil {
 			return
 		}
+
 		line = strings.TrimRight(line, "\r\n")
+
 		cmd, rest, _ := strings.Cut(line, " ")
 		switch strings.ToUpper(cmd) {
 		case "EHLO", "HELO":
 			s.mu.Lock()
 			plainStub := s.noSTARTTLS
 			s.mu.Unlock()
+
 			if secure || plainStub {
 				say("250-stub", "250 AUTH PLAIN")
 			} else {
@@ -127,19 +141,23 @@ func (s *stub) handle(c net.Conn) {
 			}
 		case "STARTTLS":
 			say("220 Ready to start TLS")
+
 			tc := tls.Server(c, s.tlsConf)
 			if err := tc.Handshake(); err != nil {
 				return
 			}
+
 			c, secure = tc, true
 			_ = c.SetDeadline(time.Now().Add(10 * time.Second))
 			r, w = bufio.NewReader(c), bufio.NewWriter(c)
 		case "AUTH":
 			_, b64, _ := strings.Cut(rest, " ")
 			raw, _ := base64.StdEncoding.DecodeString(b64)
+
 			s.mu.Lock()
 			s.auth = string(raw)
 			s.mu.Unlock()
+
 			if s.authOK {
 				say("235 2.7.0 Authentication successful")
 			} else {
@@ -157,17 +175,21 @@ func (s *stub) handle(c net.Conn) {
 			say("250 2.1.5 Ok")
 		case "DATA":
 			say("354 End data with <CR><LF>.<CR><LF>")
+
 			var b strings.Builder
 			for {
 				l, err := r.ReadString('\n')
 				if err != nil {
 					return
 				}
+
 				if l == ".\r\n" {
 					break
 				}
+
 				b.WriteString(l)
 			}
+
 			s.mu.Lock()
 			s.data = b.String()
 			s.mu.Unlock()
@@ -188,12 +210,14 @@ func addrOf(s string) string {
 			return s[i+1 : i+j]
 		}
 	}
+
 	return s
 }
 
 func (s *stub) snapshot() (auth, from string, rcpt []string, data string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	return s.auth, s.from, append([]string(nil), s.rcpt...), s.data
 }
 
@@ -227,10 +251,13 @@ func TestSendOverImplicitTLS(t *testing.T) {
 	cert, pool := selfSigned(t)
 	rootCAs = pool
 	t.Cleanup(func() { rootCAs = nil })
+
 	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12})
 	require.NoError(t, err)
 	t.Cleanup(func() { ln.Close() })
+
 	s := &stub{authOK: true}
+
 	s.port = ln.Addr().(*net.TCPAddr).Port
 	go func() {
 		for {
@@ -242,6 +269,7 @@ func TestSendOverImplicitTLS(t *testing.T) {
 			go func() { s.mu.Lock(); s.noSTARTTLS = true; s.mu.Unlock(); s.handle(c) }()
 		}
 	}()
+
 	implicitTLSPort = s.port
 	t.Cleanup(func() { implicitTLSPort = 465 })
 
@@ -267,6 +295,7 @@ func TestSendSurfacesTheServersRawError(t *testing.T) {
 
 func TestSendRejectsHeaderInjection(t *testing.T) {
 	s := startStub(t, true)
+
 	base := s.config()
 	for name, mut := range map[string]func(*Config, *string, *[]string){
 		"subject": func(_ *Config, subj *string, _ *[]string) { *subj = "hi\r\nBcc: evil@example.com" },
@@ -279,6 +308,7 @@ func TestSendRejectsHeaderInjection(t *testing.T) {
 			require.Error(t, Send(context.Background(), c, to, subj, "t", "<p>h</p>"))
 		})
 	}
+
 	_, from, _, data := s.snapshot()
 	require.Empty(t, from, "nothing reached the server")
 	require.Empty(t, data)
@@ -292,6 +322,7 @@ func TestSendRefusesToAuthenticateWithoutTLS(t *testing.T) {
 	c.TLS = false
 	err := Send(context.Background(), c, []string{"ops@example.com"}, "hi", "t", "<p>h</p>")
 	require.ErrorContains(t, err, "unencrypted")
+
 	auth, _, _, _ := s.snapshot()
 	require.Empty(t, auth)
 }
@@ -302,23 +333,28 @@ func TestSendRequiresSTARTTLSWhenTLSIsOn(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	t.Cleanup(func() { ln.Close() })
+
 	go func() {
 		c, err := ln.Accept()
 		if err != nil {
 			return
 		}
 		defer c.Close()
+
 		r, w := bufio.NewReader(c), bufio.NewWriter(c)
 		w.WriteString("220 stub ESMTP\r\n") //nolint:errcheck
 		w.Flush()                           //nolint:errcheck
+
 		for {
 			if _, err := r.ReadString('\n'); err != nil {
 				return
 			}
+
 			w.WriteString("250 stub\r\n") //nolint:errcheck
 			w.Flush()                     //nolint:errcheck
 		}
 	}()
+
 	c := Config{Host: "127.0.0.1", Port: ln.Addr().(*net.TCPAddr).Port, From: "fleet@example.com", TLS: true}
 	require.ErrorContains(t, Send(context.Background(), c, []string{"ops@example.com"}, "hi", "t", "<p>h</p>"), "STARTTLS")
 }

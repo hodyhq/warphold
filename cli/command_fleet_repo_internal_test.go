@@ -18,6 +18,7 @@ func TestResolveDataDir(t *testing.T) {
 		if fi, err := os.Stat(fleetDataRoot); err == nil && fi.IsDir() {
 			t.Skipf("%v exists on this host, so the default may be the data root", fleetDataRoot)
 		}
+
 		got, err := resolveDataDir("", configFile)
 		require.NoError(t, err)
 		require.Equal(t, filepath.Join(filepath.Dir(configFile), "data"), got)
@@ -34,6 +35,7 @@ func TestResolveDataDir(t *testing.T) {
 		base := t.TempDir()
 		real := filepath.Join(base, "real")
 		link := filepath.Join(base, "link")
+
 		require.NoError(t, os.Mkdir(real, 0o700))
 		require.NoError(t, os.Symlink(real, link))
 

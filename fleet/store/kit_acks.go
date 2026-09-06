@@ -15,6 +15,7 @@ func (s *Store) SetKitAck(ctx context.Context, agentID string, adminID int64, at
 		`INSERT INTO kit_acks(agent_id,acknowledged_at,acknowledged_by) VALUES(?,?,?)
 		 ON CONFLICT(agent_id) DO UPDATE SET acknowledged_at=excluded.acknowledged_at, acknowledged_by=excluded.acknowledged_by`,
 		agentID, ts(at), adminID)
+
 	return err
 }
 
@@ -27,7 +28,9 @@ func (s *Store) KitAck(ctx context.Context, agentID string) (*time.Time, error) 
 	case err != nil:
 		return nil, err
 	}
+
 	t := parseTS(at)
+
 	return &t, nil
 }
 
@@ -46,7 +49,9 @@ func (s *Store) KitAcks(ctx context.Context) (map[string]time.Time, error) {
 		if err := rows.Scan(&id, &at); err != nil {
 			return nil, err
 		}
+
 		out[id] = parseTS(at)
 	}
+
 	return out, rows.Err()
 }

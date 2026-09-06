@@ -21,12 +21,15 @@ func enrollInto(t *testing.T, h *harness, groupID float64, hostname string) (id,
 	h.jar = nil
 	resp, body := h.do("POST", "/api/v1/fleet/enroll", map[string]any{"token": tok["token"], "hostname": hostname, "os": "linux", "arch": "amd64", "version": "0.1.0", "scope": "user"})
 	require.Equal(t, 201, resp.StatusCode)
+
 	h.jar = admin
+
 	return body["agent_id"].(string), body["bearer"].(string)
 }
 
 func report(t *testing.T, h *harness, bearer, task, kind string, finished time.Time, status, stderr string) {
 	t.Helper()
+
 	c := &poll.Client{Server: h.srv.URL, Bearer: bearer}
 	require.NoError(t, c.Report(t.Context(), poll.Report{
 		TaskID: task, Kind: kind, Source: "~",
@@ -45,6 +48,7 @@ func TestOverviewRequiresAdminAndStartsEmpty(t *testing.T) {
 	h.jar = nil
 	resp, _ = h.do("GET", "/api/v1/fleet/overview", nil)
 	require.Equal(t, 401, resp.StatusCode, "overview is admin-only")
+
 	h.jar = saved
 
 	resp, body := h.do("GET", "/api/v1/fleet/overview", nil)
@@ -98,8 +102,11 @@ func TestOverviewCountsBucketsAndDays(t *testing.T) {
 	require.Equal(t, float64(1), last24h["failed"])
 	buckets := last24h["buckets"].([]any)
 	require.Len(t, buckets, 24)
-	var ok, failed float64
-	var prev time.Time
+
+	var (
+		ok, failed float64
+		prev       time.Time
+	)
 	for i, b := range buckets {
 		m := b.(map[string]any)
 		ok += m["ok"].(float64)
@@ -107,11 +114,14 @@ func TestOverviewCountsBucketsAndDays(t *testing.T) {
 		hour, err := time.Parse(time.RFC3339, m["hour"].(string))
 		require.NoError(t, err)
 		require.Equal(t, hour.Truncate(time.Hour), hour, "buckets start on the hour")
+
 		if i > 0 {
 			require.Equal(t, time.Hour, hour.Sub(prev), "buckets are consecutive hours")
 		}
+
 		prev = hour
 	}
+
 	require.Equal(t, float64(2), ok)
 	require.Equal(t, float64(1), failed)
 	require.Equal(t, now.Truncate(time.Hour), prev.UTC(), "last bucket is the current hour")
@@ -141,6 +151,7 @@ func TestOverviewCountsBucketsAndDays(t *testing.T) {
 
 	skewed := devices[3].(map[string]any)
 	require.Equal(t, "unknown", skewed["health"], "a future-dated OK cannot vouch for health")
+
 	for _, d := range skewed["days"].([]any) {
 		require.Equal(t, "none", d, "future-dated report stays out of the strip")
 	}
@@ -152,6 +163,7 @@ func TestOverviewCountsBucketsAndDays(t *testing.T) {
 	// A revoked device is no longer part of "protected right now".
 	resp, _ := h.do("POST", "/api/v1/fleet/agents/"+redID+"/revoke", nil)
 	require.Equal(t, 204, resp.StatusCode)
+
 	_, body = h.do("GET", "/api/v1/fleet/overview", nil)
 	require.Equal(t, float64(3), body["counts"].(map[string]any)["agents"])
 	require.Len(t, body["devices"], 3)
@@ -180,11 +192,13 @@ func TestOverviewStoredBytesAndDedupRatio(t *testing.T) {
 	require.InDelta(t, 3.0, body["dedup_ratio"], 0.001, "6000 logical over 2000 stored")
 
 	devices := body["devices"].([]any)
+
 	byName := map[string]map[string]any{}
 	for _, d := range devices {
 		m := d.(map[string]any)
 		byName[m["name"].(string)] = m
 	}
+
 	require.Equal(t, float64(1000), byName["laptop-1"]["size_bytes"])
 	require.Equal(t, float64(1000), byName["laptop-2"]["size_bytes"])
 }

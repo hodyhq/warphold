@@ -4,9 +4,10 @@ package tray
 
 import (
 	"context"
+	"time"
+
 	"github.com/godbus/dbus/v5"
 	"github.com/pkg/errors"
-	"time"
 )
 
 // notifyTimeout lets the server pick its own expiry (-1), so a failure

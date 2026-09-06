@@ -18,9 +18,14 @@ env:
   ENABLE_UNICODE_FILENAMES: ${{ secrets.ENABLE_UNICODE_FILENAMES }}
   # disable long filenames since they sometimes get messed up when simulating input keystrokes
   ENABLE_LONG_FILENAMES: false
-concurrency: 
+concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+# warphold: this workflow only builds and drives a browser against a local
+# server; it publishes nothing and needs no write scope. lint.yml already
+# pins its own permissions this way.
+permissions:
+  contents: read
 jobs:
   end-to-end-test:
     name: E2E Test
@@ -38,6 +43,18 @@ jobs:
       id: go
     - name: Install gotestsum
       run: make install-gotestsum
+    # warphold: this job has never passed on macos-latest (chromedp times out
+    # on the very first Navigate, before any element wait) and there is no
+    # passing history to compare against. It relies on whatever Chrome
+    # happens to ship in the runner image; pinning one explicitly is the
+    # cheapest way to rule that out before spending more effort on it.
+    # Both the action and the browser are pinned: the action's default
+    # channel ("stable") is a moving target, which would leave the very
+    # variable this step exists to remove still floating from run to run.
+    - name: Set up Chrome
+      uses: browser-actions/setup-chrome@48ad923757ca74d66703209fe939badbdf80f2f4 # v2.2.0
+      with:
+        chrome-version: '152.0.7977.82'
     - name: Run Tests
       run: make htmlui-e2e-test
     - name: Upload Screenshots

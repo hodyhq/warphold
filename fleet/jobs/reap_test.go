@@ -10,7 +10,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kopia/kopia/fleet/enroll"
-
 	"github.com/kopia/kopia/fleet/store"
 )
 

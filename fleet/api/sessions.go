@@ -33,7 +33,9 @@ func newSessionToken() (string, []byte, error) {
 	if _, err := io.ReadFull(rand.Reader, b); err != nil {
 		return "", nil, err
 	}
+
 	tok := sessionPrefix + base64.RawURLEncoding.EncodeToString(b)
+
 	return tok, sessionTokenHash(tok), nil
 }
 
@@ -51,23 +53,28 @@ func (s *Server) startSession(ctx context.Context, w http.ResponseWriter, r *htt
 	if st == nil {
 		return errors.New("fleet is not activated")
 	}
+
 	tok, hash, err := newSessionToken()
 	if err != nil {
 		return err
 	}
+
 	csrf := make([]byte, 32)
 	if _, err := io.ReadFull(rand.Reader, csrf); err != nil {
 		return err
 	}
+
 	now := s.now()
 	if _, err := st.CreateSession(ctx, hash, adminID, now, now.Add(sessionTTL)); err != nil {
 		return err
 	}
+
 	secure, maxAge := s.cookieSecure(r), int(sessionTTL.Seconds())
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: tok, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: secure, MaxAge: maxAge})
 	// Not HttpOnly on purpose: the admin UI has to read this one to echo it
 	// back in the X-WarpHold-CSRF header. It authorizes nothing on its own.
 	http.SetCookie(w, &http.Cookie{Name: csrfCookie, Value: hex.EncodeToString(csrf), Path: "/", SameSite: http.SameSiteStrictMode, Secure: secure, MaxAge: maxAge})
+
 	return nil
 }
 
@@ -79,14 +86,17 @@ func (s *Server) currentSession(r *http.Request) *store.Session {
 	if err != nil || c.Value == "" {
 		return nil
 	}
+
 	st := s.store()
 	if st == nil {
 		return nil
 	}
+
 	sess, err := st.SessionByHash(r.Context(), sessionTokenHash(c.Value))
 	if err != nil || sess.RevokedAt != nil || !s.now().Before(sess.ExpiresAt) {
 		return nil
 	}
+
 	return sess
 }
 
@@ -101,6 +111,7 @@ func adminFrom(r *http.Request) int64 {
 	if sess := sessionFrom(r); sess != nil {
 		return sess.AdminID
 	}
+
 	return 0
 }
 
@@ -113,6 +124,7 @@ func (s *Server) cookieSecure(r *http.Request) bool {
 	if u, ok := s.PublicURL(r.Context()); ok {
 		return u.Scheme == "https"
 	}
+
 	return requestIsHTTPS(r)
 }
 

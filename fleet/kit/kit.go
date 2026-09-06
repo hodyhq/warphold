@@ -43,7 +43,7 @@ type Data struct {
 // than remembered (spec 14.4): cli/storage_s3.go declares --bucket, --endpoint,
 // --region, --access-key, --secret-access-key, --prefix and --disable-tls;
 // cli/storage_b2.go declares --bucket, --key-id, --key and --prefix;
-// cli/storage_filesystem.go declares --path. This is the one artefact that has
+// cli/storage_filesystem.go declares --path. This is the one artifact that has
 // to still work with an unfamiliar binary, so it prints nothing it invented.
 //
 // --disable-tls is a verified flag but is never emitted for a hosted target:

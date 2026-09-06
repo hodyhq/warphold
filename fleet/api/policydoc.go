@@ -17,10 +17,12 @@ func (s *Server) policyDocFor(ctx context.Context, a *store.Agent) (*poll.Policy
 	if err != nil {
 		return nil, err
 	}
+
 	tpl, err := s.store().Template(ctx, g.TemplateID)
 	if err != nil {
 		return nil, err
 	}
+
 	h := sha256.New()
 	h.Write([]byte(strconv.FormatInt(tpl.ID, 10)))
 	h.Write(tpl.PolicyJSON)
@@ -32,9 +34,11 @@ func (s *Server) policyDocFor(ctx context.Context, a *store.Agent) (*poll.Policy
 	// interval never reaches an enrolled agent.
 	interval := s.pollInterval(ctx)
 	h.Write([]byte(strconv.Itoa(interval)))
+
 	doc := &poll.PolicyDoc{ETag: hex.EncodeToString(h.Sum(nil))[:16], Name: a.Name, Commands: []poll.Command{}, PollIntervalSeconds: interval}
 	for _, p := range tpl.Sources {
 		doc.Sources = append(doc.Sources, poll.Source{Path: p, Policy: tpl.PolicyJSON})
 	}
+
 	return doc, nil
 }

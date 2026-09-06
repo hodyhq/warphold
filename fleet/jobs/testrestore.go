@@ -11,6 +11,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 
 	"github.com/kopia/kopia/fleet/seal"
@@ -140,9 +141,9 @@ func latestSnapshot(ctx context.Context, rep repo.Repository) (*snapshot.Manifes
 
 	sort.Slice(mans, func(i, j int) bool { return mans[i].StartTime.ToTime().Before(mans[j].StartTime.ToTime()) })
 
-	for i := len(mans) - 1; i >= 0; i-- {
-		if mans[i].RootEntry != nil {
-			return mans[i], nil
+	for _, man := range slices.Backward(mans) {
+		if man.RootEntry != nil {
+			return man, nil
 		}
 	}
 

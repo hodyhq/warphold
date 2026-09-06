@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-
 	_ "modernc.org/sqlite" // the store's driver, registered as "sqlite"
 
 	"github.com/kopia/kopia/fleet"
@@ -33,7 +32,7 @@ func dropTable(t *testing.T, h *harness, name string) {
 // returns the group id.
 //
 // The target is written through the store as a *filesystem* target rather than
-// posted as a hosted one, because a device cannot enrol into a hosted target
+// posted as a hosted one, because a device cannot enroll into a hosted target
 // yet - that provisioning arrives in a later task. Nothing under test cares:
 // the offsite rules read `targets.mirror_kind` and never the target's own kind.
 func mirrorGroup(t *testing.T, h *harness) float64 {
@@ -111,6 +110,7 @@ func TestTargetRowMirrorFreshness(t *testing.T) {
 
 	// The plain target enrollAgent-style group made has no mirror at all.
 	h.mkGroup(t)
+
 	rows := byName()
 	require.NotContains(t, rows["local"], "mirror_stale", "a target without a mirror is never stale")
 	require.NotContains(t, rows["local"], "mirrored_at")
@@ -131,6 +131,7 @@ func TestTargetRowMirrorFreshness(t *testing.T) {
 	require.NotNil(t, rows["mirrored"]["mirrored_at"])
 
 	require.NoError(t, st.SetMirrored(ctx, id, now.Add(-time.Minute), 4096))
+
 	rows = byName()
 	require.NotContains(t, rows["mirrored"], "mirror_stale", "a fresh mirror is not stale")
 	require.NotNil(t, rows["mirrored"]["mirrored_at"])

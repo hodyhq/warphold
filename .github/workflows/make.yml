@@ -26,6 +26,10 @@ env:
   NON_TAG_RELEASE_REPO: ${{ secrets.NON_TAG_RELEASE_REPO }}
   # RPM and APT packages GCS bucket/hostname.
   PACKAGES_HOST: ${{ secrets.PACKAGES_HOST }}
+  # warphold: app/ (KopiaUI, the Electron desktop app) is upstream code this
+  # fork does not build, sign or ship -- see the kopia-ui-test target in the
+  # root Makefile for why its e2e suite is skipped in CI.
+  WARPHOLD_SKIP_KOPIAUI_E2E: "true"
 jobs:
   build:
     strategy:

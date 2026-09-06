@@ -200,7 +200,7 @@ func TestSchedulerBoundsARunWithTheTimeout(t *testing.T) {
 	select {
 	case <-released:
 	case <-time.After(10 * time.Second):
-		t.Fatal("the runner's context was never cancelled")
+		t.Fatal("the runner's context was never canceled")
 	}
 
 	eventually(t, func() bool { return jobsOf(t, st, "slow")[0].Status == "error" })
@@ -256,6 +256,7 @@ func TestSchedulerStopReturnsWhenARunnerIgnoresCtx(t *testing.T) {
 
 	s := NewScheduler(st, map[string]Runner{"slow": func(context.Context, store.Job) (string, error) {
 		close(entered)
+
 		select {} // never returns, the way a stuck syscall would
 	}}, time.Millisecond)
 
@@ -314,6 +315,7 @@ func TestSchedulerRequeuesAClaimThatGoesStaleWhileRunning(t *testing.T) {
 
 	var clock atomic.Int64
 	clock.Store(t0.UnixNano())
+
 	setClock := func(d time.Duration) { clock.Store(t0.Add(d).UnixNano()) }
 
 	var ran atomic.Int64

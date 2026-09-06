@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -20,10 +21,12 @@ import (
 // internal/passwordpersist/passwordpersist_file.go): base64 in "<cfg>.kopia-password".
 func passwordFor(t *testing.T, cfg string) string {
 	t.Helper()
+
 	b, err := os.ReadFile(cfg + ".kopia-password")
 	require.NoError(t, err)
 	dec, err := base64.StdEncoding.DecodeString(string(b))
 	require.NoError(t, err)
+
 	return string(dec)
 }
 
@@ -32,7 +35,16 @@ func TestAgentRunOnceAppliesPolicyAndReports(t *testing.T) {
 	stateDir := t.TempDir()
 	t.Setenv("WARPHOLD_STATE_DIR", stateDir)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+
+	// os.UserHomeDir reads $HOME on Unix but %USERPROFILE% on Windows, so
+	// only setting HOME would leave the agent resolving "~" against the
+	// runner's real profile directory instead of this test's sandbox.
+	homeEnv := "HOME"
+	if runtime.GOOS == "windows" {
+		homeEnv = "USERPROFILE"
+	}
+
+	t.Setenv(homeEnv, home)
 	require.NoError(t, os.WriteFile(filepath.Join(home, "note.txt"), []byte("x"), 0o600))
 
 	runner := testenv.NewInProcRunner(t)
@@ -47,16 +59,21 @@ func TestAgentRunOnceAppliesPolicyAndReports(t *testing.T) {
 	pw := passwordFor(t, state.RepoConfigPath("user"))
 	r, err := repo.Open(context.Background(), state.RepoConfigPath("user"), pw, nil)
 	require.NoError(t, err)
+
 	defer r.Close(context.Background())
+
 	pols, err := policy.ListPolicies(context.Background(), r)
 	require.NoError(t, err)
+
 	var found bool
 	for _, p := range pols {
 		if p.Target().Path == home {
 			found = true
+
 			require.NotNil(t, p.RetentionPolicy.KeepLatest)
 			require.EqualValues(t, 3, *p.RetentionPolicy.KeepLatest)
 		}
 	}
+
 	require.True(t, found, "template source '~' expanded to HOME and applied")
 }

@@ -37,6 +37,7 @@ const nonceSize = 24
 func NewSalt() ([]byte, error) {
 	b := make([]byte, 16)
 	_, err := io.ReadFull(rand.Reader, b)
+
 	return b, err
 }
 
@@ -44,6 +45,7 @@ func NewSalt() ([]byte, error) {
 func Derive(passphrase string, salt []byte) Key {
 	var k Key
 	copy(k[:], argon2.IDKey([]byte(passphrase), salt, 3, 64*1024, 4, 32))
+
 	return k
 }
 
@@ -53,7 +55,9 @@ func (k Key) Seal(plain []byte) ([]byte, error) {
 	if _, err := io.ReadFull(rand.Reader, nonce[:]); err != nil {
 		return nil, err
 	}
+
 	key := [32]byte(k)
+
 	return secretbox.Seal(nonce[:], plain, &nonce, &key), nil
 }
 
@@ -62,13 +66,17 @@ func (k Key) Open(sealed []byte) ([]byte, error) {
 	if len(sealed) < nonceSize+secretbox.Overhead {
 		return nil, ErrTampered
 	}
+
 	var nonce [nonceSize]byte
 	copy(nonce[:], sealed[:nonceSize])
+
 	key := [32]byte(k)
+
 	out, ok := secretbox.Open(nil, sealed[nonceSize:], &nonce, &key)
 	if !ok {
 		return nil, ErrTampered
 	}
+
 	return out, nil
 }
 
@@ -99,6 +107,7 @@ func writeSecretFile(path, content string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
+
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return err
 	}
@@ -107,6 +116,7 @@ func writeSecretFile(path, content string) error {
 	if err != nil {
 		return err
 	}
+
 	tmp := f.Name()
 
 	defer func() {
@@ -117,12 +127,15 @@ func writeSecretFile(path, content string) error {
 	if err := f.Chmod(0o600); err != nil {
 		return err
 	}
+
 	if _, err := f.WriteString(content); err != nil {
 		return err
 	}
+
 	if err := f.Sync(); err != nil {
 		return err
 	}
+
 	if err := f.Close(); err != nil {
 		return err
 	}
@@ -156,30 +169,38 @@ func ReadPendingKeyFile(path string) (Key, []byte, error) {
 	if err == nil && len(salt) == 0 {
 		return k, nil, errors.New("seal key file carries no salt")
 	}
+
 	return k, salt, err
 }
 
 func readKeyFile(path string) (Key, []byte, error) {
 	var k Key
+
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return k, nil, err
 	}
+
 	fields := strings.Fields(string(b))
 	if len(fields) == 0 || len(fields) > 2 {
 		return k, nil, errors.New("seal key file is malformed")
 	}
+
 	raw, err := hex.DecodeString(fields[0])
 	if err != nil || len(raw) != len(k) {
 		return k, nil, errors.New("seal key file is malformed")
 	}
+
 	copy(k[:], raw)
+
 	if len(fields) == 1 {
 		return k, nil, nil
 	}
+
 	salt, err := hex.DecodeString(fields[1])
 	if err != nil || len(salt) == 0 {
 		return k, nil, errors.New("seal key file is malformed")
 	}
+
 	return k, salt, nil
 }

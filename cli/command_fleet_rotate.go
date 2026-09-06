@@ -36,6 +36,7 @@ func (c *commandFleetRotatePassphrase) run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+
 		c.current = p
 	}
 

@@ -23,27 +23,34 @@ func (s *Store) PendingCommands(ctx context.Context, agentID string) ([]Command,
 		return nil, err
 	}
 	defer rows.Close()
+
 	var out []Command
 	for rows.Next() {
-		var c Command
-		var created string
-		var acked sql.NullString
+		var (
+			c       Command
+			created string
+			acked   sql.NullString
+		)
 		if err := rows.Scan(&c.ID, &c.AgentID, &c.Kind, &c.Source, &created, &acked); err != nil {
 			return nil, err
 		}
+
 		c.CreatedAt, c.AckedAt = parseTS(created), parseTSP(acked)
 		out = append(out, c)
 	}
+
 	return out, rows.Err()
 }
 
 // CommandAgentID returns the agent_id owning command id, or ErrNotFound.
 func (s *Store) CommandAgentID(ctx context.Context, id int64) (string, error) {
 	var agentID string
+
 	err := s.db.QueryRowContext(ctx, `SELECT agent_id FROM commands WHERE id=?`, id).Scan(&agentID)
 	if err != nil {
 		return "", notFound(err)
 	}
+
 	return agentID, nil
 }
 
@@ -55,12 +62,15 @@ func (s *Store) AckCommand(ctx context.Context, id int64, agentID string, at tim
 	if err != nil {
 		return err
 	}
+
 	n, err := res.RowsAffected()
 	if err != nil {
 		return err
 	}
+
 	if n == 0 {
 		return ErrNotFound
 	}
+
 	return nil
 }

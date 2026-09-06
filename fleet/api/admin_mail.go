@@ -31,6 +31,7 @@ func (s *Server) handleSMTPTest(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusTooManyRequests, "wait a few seconds before sending another test email")
 		return
 	}
+
 	var in struct {
 		To string `json:"to"`
 	}
@@ -50,13 +51,17 @@ func (s *Server) handleSMTPTest(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, "the stored SMTP password could not be unsealed; re-enter it in Settings")
 			return
 		}
+
 		adminFailed(w, "read smtp settings", err)
+
 		return
 	}
+
 	if err := mail.Send(r.Context(), cfg, []string{in.To}, smtpTestSubject, smtpTestText, smtpTestHTML); err != nil {
 		writeErr(w, http.StatusBadRequest, redactCredentials(err.Error(), cfg.Username, cfg.Password))
 		return
 	}
+
 	writeJSON(w, http.StatusOK, map[string]any{"sent": true})
 }
 
@@ -69,5 +74,6 @@ func redactCredentials(msg, username, password string) string {
 			msg = strings.ReplaceAll(msg, secret, "[redacted]")
 		}
 	}
+
 	return msg
 }

@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -59,7 +60,13 @@ func TestAppEngineStartsWithoutARepository(t *testing.T) {
 
 	st, err := os.Stat(filepath.Join(stateDir, "engine.json"))
 	require.NoError(t, err)
-	require.Equal(t, os.FileMode(0o600), st.Mode().Perm())
+
+	if runtime.GOOS != "windows" {
+		// Windows has no POSIX permission bits (files land 0666/0777
+		// regardless of what was requested), so this check only holds where
+		// warphold actually ships: Linux and macOS.
+		require.Equal(t, os.FileMode(0o600), st.Mode().Perm())
+	}
 
 	// The API answers - as "not connected", not as a failure.
 	require.Equal(t, http.StatusOK, get(t, h, "/api/v1/repo/status"))
@@ -100,7 +107,7 @@ func TestAgentEngineRefusesAMissingRepository(t *testing.T) {
 func TestAppEngineServesSoloUI(t *testing.T) {
 	h, _ := startUnconfiguredApp(t)
 
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, h.BaseURL+"/", nil)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, h.BaseURL+"/", http.NoBody)
 	require.NoError(t, err)
 
 	resp, err := http.DefaultClient.Do(req)
@@ -127,7 +134,7 @@ func TestAppEngineSessionHandoff(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, strings.HasPrefix(u, h.BaseURL+"/local/session?t="), u)
 
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, u, nil)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, u, http.NoBody)
 	require.NoError(t, err)
 
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
@@ -150,7 +157,7 @@ func TestAppEngineSessionHandoff(t *testing.T) {
 	require.NotNil(t, cookie, "the handoff sets the session cookie")
 
 	// The cookie authenticates an API call the way the browser will.
-	apiReq, err := http.NewRequestWithContext(context.Background(), http.MethodGet, h.BaseURL+"/api/v1/repo/status", nil)
+	apiReq, err := http.NewRequestWithContext(context.Background(), http.MethodGet, h.BaseURL+"/api/v1/repo/status", http.NoBody)
 	require.NoError(t, err)
 	apiReq.AddCookie(cookie)
 
@@ -162,7 +169,7 @@ func TestAppEngineSessionHandoff(t *testing.T) {
 	require.Equal(t, http.StatusOK, api.StatusCode)
 
 	// A wrong token buys nothing.
-	badReq, err := http.NewRequestWithContext(context.Background(), http.MethodGet, h.BaseURL+"/local/session?t="+url.QueryEscape("nope"), nil)
+	badReq, err := http.NewRequestWithContext(context.Background(), http.MethodGet, h.BaseURL+"/local/session?t="+url.QueryEscape("nope"), http.NoBody)
 	require.NoError(t, err)
 
 	bad, err := client.Do(badReq)
@@ -177,7 +184,7 @@ func TestAppEngineSessionHandoff(t *testing.T) {
 func get(t *testing.T, h *engine.Headless, path string) int {
 	t.Helper()
 
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, h.BaseURL+path, nil)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, h.BaseURL+path, http.NoBody)
 	require.NoError(t, err)
 	req.SetBasicAuth(h.User, h.Password)
 
@@ -201,7 +208,7 @@ func TestAppLocalInfoIsTheHostname(t *testing.T) {
 
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, h.BaseURL+"/local/session?t="+url.QueryEscape(info.LocalToken), nil)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, h.BaseURL+"/local/session?t="+url.QueryEscape(info.LocalToken), http.NoBody)
 	require.NoError(t, err)
 
 	session, err := client.Do(req)
@@ -219,7 +226,7 @@ func TestAppLocalInfoIsTheHostname(t *testing.T) {
 
 	require.NotNil(t, cookie)
 
-	infoReq, err := http.NewRequestWithContext(context.Background(), http.MethodGet, h.BaseURL+"/local/info", nil)
+	infoReq, err := http.NewRequestWithContext(context.Background(), http.MethodGet, h.BaseURL+"/local/info", http.NoBody)
 	require.NoError(t, err)
 	infoReq.AddCookie(cookie)
 

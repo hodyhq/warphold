@@ -239,7 +239,7 @@ func TestKopiaBlobStorageRoundTrip(t *testing.T) {
 //
 // The wrapper is what a device really runs, and it treats the gateway's 403 and
 // 409 as retriable: a single append-only denial costs ten attempts and ~22s of
-// backoff. That is correct behaviour to keep (the rules test would just take
+// backoff. That is correct behavior to keep (the rules test would just take
 // three minutes to assert it), so the denials are asserted here, one attempt
 // each. See task-9-report.
 func deviceClient(t *testing.T, srv *httptest.Server, akid, secret string) *minio.Client {
@@ -475,6 +475,7 @@ func TestKopiaRepositoryFromServerProvisionedRepo(t *testing.T) {
 
 	o, ok := ci.Config.(*s3.Options)
 	require.True(t, ok)
+
 	o.RootCA = testRootCA(srv) // httptest's certificate is its own root
 
 	st, err := s3.New(ctx, o, false)

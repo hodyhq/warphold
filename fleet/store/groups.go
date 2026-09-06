@@ -30,12 +30,16 @@ func (s *Store) CreateGroup(ctx context.Context, g *Group) (int64, error) {
 }
 
 func scanGroup(row interface{ Scan(...any) error }) (*Group, error) {
-	var g Group
-	var c string
+	var (
+		g Group
+		c string
+	)
 	if err := row.Scan(&g.ID, &g.Name, &g.TargetID, &g.TemplateID, &c); err != nil {
 		return nil, notFound(err)
 	}
+
 	g.CreatedAt = parseTS(c)
+
 	return &g, nil
 }
 
@@ -49,14 +53,17 @@ func (s *Store) Groups(ctx context.Context) ([]Group, error) {
 		return nil, err
 	}
 	defer rows.Close()
+
 	var out []Group
 	for rows.Next() {
 		g, err := scanGroup(rows)
 		if err != nil {
 			return nil, err
 		}
+
 		out = append(out, *g)
 	}
+
 	return out, rows.Err()
 }
 
@@ -81,10 +88,12 @@ func (s *Store) UpdateGroup(ctx context.Context, id int64, name *string, targetI
 	if err != nil {
 		return err
 	}
+
 	n, err := res.RowsAffected()
 	if err != nil {
 		return err
 	}
+
 	if n == 1 {
 		return nil
 	}
@@ -95,6 +104,7 @@ func (s *Store) UpdateGroup(ctx context.Context, id int64, name *string, targetI
 	if _, err := s.Group(ctx, id); err != nil {
 		return err // ErrNotFound, or a real failure
 	}
+
 	return ErrGroupInUse
 }
 
@@ -117,6 +127,7 @@ func (s *Store) DeleteGroup(ctx context.Context, id int64, now time.Time) error 
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM enrollment_tokens WHERE group_id=? AND (revoked_at IS NOT NULL OR expires_at<=?)`, id, ts(now)); err != nil {
 		return err
 	}
+
 	res, err := s.db.ExecContext(ctx, `DELETE FROM groups WHERE id=?
 		AND NOT EXISTS (SELECT 1 FROM agents WHERE group_id=? AND revoked_at IS NULL)
 		AND NOT EXISTS (SELECT 1 FROM enrollment_tokens WHERE group_id=? AND revoked_at IS NULL AND expires_at>?)`,
@@ -126,17 +137,22 @@ func (s *Store) DeleteGroup(ctx context.Context, id int64, now time.Time) error 
 		if errors.As(err, &sqliteErr) && sqliteErr.Code()&0xff == sqliteConstraint {
 			return ErrGroupInUse
 		}
+
 		return err
 	}
+
 	n, err := res.RowsAffected()
 	if err != nil {
 		return err
 	}
+
 	if n == 1 {
 		return nil
 	}
+
 	if _, err := s.Group(ctx, id); err != nil {
 		return err // ErrNotFound, or a real failure
 	}
+
 	return ErrGroupInUse
 }

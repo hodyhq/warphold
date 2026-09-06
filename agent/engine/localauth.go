@@ -164,7 +164,7 @@ func (a *localAuth) info(w http.ResponseWriter, r *http.Request) {
 	var out localInfo
 
 	if a.scope == state.ScopeApp {
-		out.Name, _ = os.Hostname() //nolint:errcheck
+		out.Name, _ = os.Hostname()
 	} else if cfg, err := state.Load(a.scope); err == nil {
 		out.Name = cfg.Name
 	}

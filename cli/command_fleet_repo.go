@@ -170,7 +170,7 @@ func serveFleetRepo(ctx context.Context, srv *server.Server, fs *api.Server, con
 	}
 
 	if _, err := srv.InitRepositoryAsync(ctx, "Fleet", func(ctx context.Context) (repo.Repository, error) {
-		return repo.Open(ctx, repoConfig, password, nil) //nolint:wrapcheck
+		return repo.Open(ctx, repoConfig, password, nil)
 	}, true); err != nil {
 		log(ctx).Warnf("WarpHold Fleet: cannot open this host's own repository in %v: %v", repoDir, err)
 		return

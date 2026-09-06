@@ -115,6 +115,7 @@ func (s *Server) RotatePassphrase(ctx context.Context, current, next string, dry
 		if err != nil {
 			return nil, err
 		}
+
 		return newKey.Seal(plain)
 	})
 	if err != nil {
@@ -256,6 +257,7 @@ func storedSalt(dbPath string) (string, error) {
 func (s *Server) SetRotateCrashForTesting(f func() error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	s.rotateCrash = f
 }
 

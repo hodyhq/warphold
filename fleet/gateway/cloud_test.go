@@ -6,6 +6,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -36,7 +37,7 @@ type fakeS3 struct {
 	times map[string]time.Time
 
 	// ignorePrecondition makes the server accept a second conditional PUT, the
-	// way a store that takes the header and does not honour it would.
+	// way a store that takes the header and does not honor it would.
 	ignorePrecondition bool
 
 	// condPutUnsupported is Backblaze B2's S3 endpoint: a PUT that carries
@@ -78,9 +79,7 @@ func (f *fakeS3) stored() map[string][]byte {
 	defer f.mu.Unlock()
 
 	out := make(map[string][]byte, len(f.objs))
-	for k, v := range f.objs {
-		out[k] = v
-	}
+	maps.Copy(out, f.objs)
 
 	return out
 }
@@ -153,7 +152,7 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (f *fakeS3) put(w http.ResponseWriter, r *http.Request, key string) {
 	f.putPaths = append(f.putPaths, key)
 
-	if r.Header.Get("Content-Md5") == "" {
+	if r.Header.Get("Content-MD5") == "" {
 		f.putsWithoutMD5++
 
 		if f.locked {

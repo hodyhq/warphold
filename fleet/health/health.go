@@ -31,6 +31,7 @@ func Status(in Input, now time.Time) string {
 	case in.LastOK == nil:
 		return Unknown
 	}
+
 	age := now.Sub(*in.LastOK)
 	switch {
 	case age < 0:

@@ -20,20 +20,25 @@ const agentCols = `id,name,hostname,os,arch,version,scope,group_id,bearer_hash,s
 func (s *Store) CreateAgent(ctx context.Context, a *Agent) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO agents(`+agentCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		a.ID, a.Name, a.Hostname, a.OS, a.Arch, a.Version, a.Scope, a.GroupID, a.BearerHash, a.SealedBundle, a.PolicyETag, ts(a.EnrolledAt), tsp(a.LastSeenAt), tsp(a.RevokedAt), tsp(a.RetiredAt))
+
 	return err
 }
 
 func scanAgent(row interface{ Scan(...any) error }) (*Agent, error) {
-	var a Agent
-	var enrolled string
-	var seen, revoked, retired sql.NullString
+	var (
+		a                      Agent
+		enrolled               string
+		seen, revoked, retired sql.NullString
+	)
 	if err := row.Scan(&a.ID, &a.Name, &a.Hostname, &a.OS, &a.Arch, &a.Version, &a.Scope, &a.GroupID, &a.BearerHash, &a.SealedBundle, &a.PolicyETag, &enrolled, &seen, &revoked, &retired); err != nil {
 		return nil, notFound(err)
 	}
+
 	a.EnrolledAt = parseTS(enrolled)
 	a.LastSeenAt = parseTSP(seen)
 	a.RevokedAt = parseTSP(revoked)
 	a.RetiredAt = parseTSP(retired)
+
 	return &a, nil
 }
 
@@ -51,14 +56,17 @@ func (s *Store) Agents(ctx context.Context) ([]Agent, error) {
 		return nil, err
 	}
 	defer rows.Close()
+
 	var out []Agent
 	for rows.Next() {
 		a, err := scanAgent(rows)
 		if err != nil {
 			return nil, err
 		}
+
 		out = append(out, *a)
 	}
+
 	return out, rows.Err()
 }
 
@@ -82,13 +90,16 @@ func (s *Store) SetAgentBundle(ctx context.Context, id string, sealed []byte) er
 	if err != nil {
 		return err
 	}
+
 	n, err := res.RowsAffected()
 	if err != nil {
 		return err
 	}
+
 	if n == 0 {
 		return ErrNotFound
 	}
+
 	return nil
 }
 
@@ -106,9 +117,11 @@ func (s *Store) DeleteAgent(ctx context.Context, id string) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM device_keys WHERE agent_id=?`, id); err != nil {
 		return err
 	}
+
 	if _, err := tx.ExecContext(ctx, `DELETE FROM agents WHERE id=?`, id); err != nil {
 		return err
 	}
+
 	return tx.Commit()
 }
 

@@ -75,10 +75,12 @@ func (s *Server) currentSettings(ctx context.Context) (settingsOut, error) {
 	if err != nil {
 		return settingsOut{}, err
 	}
+
 	pub, err := s.store().Setting(ctx, publicURLSetting)
 	if err != nil {
 		return settingsOut{}, err
 	}
+
 	proxies, err := s.store().Setting(ctx, trustedProxiesSetting)
 	if err != nil {
 		return settingsOut{}, err
@@ -133,6 +135,7 @@ func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 		adminFailed(w, "read settings", err)
 		return
 	}
+
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -153,8 +156,10 @@ func (s *Server) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "verify must be true or false")
 			return
 		}
+
 		delete(in, "verify")
 	}
+
 	writes := make(map[string]string, len(in))
 	for key, raw := range in {
 		switch key {
@@ -164,22 +169,26 @@ func (s *Server) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 				writeErr(w, http.StatusBadRequest, "public_url must be a string")
 				return
 			}
+
 			u, err := parsePublicURL(raw2)
 			if err != nil {
 				writeErr(w, http.StatusBadRequest, err.Error())
 				return
 			}
+
 			if verify {
 				if err := s.verifyPublicURL(r.Context(), u); err != nil {
-					var pe *proxyError
-					if errors.As(err, &pe) {
+					if pe, ok := errors.AsType[*proxyError](err); ok {
 						writeJSON(w, http.StatusBadRequest, map[string]any{"error": pe.Error(), "proxy_requirements": proxyRequirements})
 						return
 					}
+
 					adminFailed(w, "verify public_url", err)
+
 					return
 				}
 			}
+
 			writes[key] = u.String()
 		case fleetNameSetting:
 			var name string
@@ -187,11 +196,13 @@ func (s *Server) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 				writeErr(w, http.StatusBadRequest, "fleet_name must be a string")
 				return
 			}
+
 			name = strings.TrimSpace(name)
 			if utf8.RuneCountInString(name) > maxFleetNameLen {
 				writeErr(w, http.StatusBadRequest, "fleet_name must be at most "+strconv.Itoa(maxFleetNameLen)+" characters")
 				return
 			}
+
 			writes[key] = name
 		case pollIntervalSetting:
 			var secs int
@@ -199,10 +210,12 @@ func (s *Server) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 				writeErr(w, http.StatusBadRequest, "poll_interval must be a whole number of seconds")
 				return
 			}
+
 			if secs < minPollSeconds || secs > maxPollSeconds {
 				writeErr(w, http.StatusBadRequest, "poll_interval must be between "+strconv.Itoa(minPollSeconds)+" and "+strconv.Itoa(maxPollSeconds)+" seconds")
 				return
 			}
+
 			writes[key] = strconv.Itoa(secs)
 		case jobs.RevokedRetentionSetting:
 			var days int
@@ -210,10 +223,12 @@ func (s *Server) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 				writeErr(w, http.StatusBadRequest, "revoked_retention_days must be a whole number of days")
 				return
 			}
+
 			if days < jobs.MinRetentionDays || days > jobs.MaxRetentionDays {
 				writeErr(w, http.StatusBadRequest, "revoked_retention_days must be between "+strconv.Itoa(jobs.MinRetentionDays)+" and "+strconv.Itoa(jobs.MaxRetentionDays))
 				return
 			}
+
 			writes[key] = strconv.Itoa(days)
 		case trustedProxiesSetting:
 			var list string
@@ -229,6 +244,7 @@ func (s *Server) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 					// the shape must be, which is what an admin needs.
 					writeErr(w, http.StatusBadRequest,
 						"trusted_proxies must be a comma-separated list of CIDRs or addresses, like \"10.0.0.0/8, 192.168.1.7\"")
+
 					return
 				}
 			}
@@ -240,13 +256,15 @@ func (s *Server) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 				writeErr(w, http.StatusBadRequest, "smtp_host must be a string")
 				return
 			}
+
 			host = strings.TrimSpace(host)
 			// A host, not a URL: anything with a scheme, a path, a port or
-			// whitespace in it would be dialled verbatim and fail obscurely.
+			// whitespace in it would be dialed verbatim and fail obscurely.
 			if len(host) > maxSMTPFieldLen || strings.ContainsAny(host, " \t\r\n/:@") {
 				writeErr(w, http.StatusBadRequest, "smtp_host must be a hostname, with no scheme, port or path")
 				return
 			}
+
 			writes[key] = host
 		case mail.PortKey:
 			var port int
@@ -254,10 +272,12 @@ func (s *Server) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 				writeErr(w, http.StatusBadRequest, "smtp_port must be a number")
 				return
 			}
+
 			if !slices.Contains(mail.AllowedPorts, port) {
 				writeErr(w, http.StatusBadRequest, "smtp_port must be one of 2525, 587 or 465")
 				return
 			}
+
 			writes[key] = strconv.Itoa(port)
 		case mail.UsernameKey:
 			var user string
@@ -265,11 +285,13 @@ func (s *Server) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 				writeErr(w, http.StatusBadRequest, "smtp_username must be a string")
 				return
 			}
+
 			user = strings.TrimSpace(user)
 			if len(user) > maxSMTPFieldLen || strings.ContainsAny(user, "\r\n") {
 				writeErr(w, http.StatusBadRequest, "smtp_username must be a single line of at most "+strconv.Itoa(maxSMTPFieldLen)+" characters")
 				return
 			}
+
 			writes[key] = user
 		case mail.FromKey:
 			var from string
@@ -277,6 +299,7 @@ func (s *Server) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 				writeErr(w, http.StatusBadRequest, "smtp_from must be a string")
 				return
 			}
+
 			from = strings.TrimSpace(from)
 			if from != "" {
 				if _, err := netmail.ParseAddress(from); err != nil || strings.ContainsAny(from, "\r\n") {
@@ -284,6 +307,7 @@ func (s *Server) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			}
+
 			writes[key] = from
 		case mail.TLSKey:
 			var on bool
@@ -291,6 +315,7 @@ func (s *Server) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 				writeErr(w, http.StatusBadRequest, "smtp_tls must be true or false")
 				return
 			}
+
 			writes[key] = strconv.FormatBool(on)
 		case smtpPasswordField:
 			// null clears the password; "" means "leave what is stored
@@ -302,17 +327,22 @@ func (s *Server) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 					writeErr(w, http.StatusBadRequest, "smtp_password must be a string or null")
 					return
 				}
+
 				if pw == "" {
 					continue
 				}
+
 				sealed, err := mail.SealPassword(s.sealKey(), pw)
 				if err != nil {
 					adminFailed(w, "seal smtp password", err)
 					return
 				}
+
 				writes[mail.PasswordKey] = sealed
+
 				continue
 			}
+
 			writes[mail.PasswordKey] = ""
 		default:
 			if iv, isInterval := jobs.IntervalSettings()[key]; isInterval {
@@ -328,6 +358,7 @@ func (s *Server) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 				if secs < iv.MinSeconds || secs > iv.MaxSeconds {
 					writeErr(w, http.StatusBadRequest,
 						key+" must be between "+strconv.Itoa(iv.MinSeconds)+" and "+strconv.Itoa(iv.MaxSeconds)+" seconds")
+
 					return
 				}
 
@@ -356,6 +387,7 @@ func (s *Server) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 			writes[key] = strconv.Itoa(n)
 		}
 	}
+
 	if err := s.store().SetSettings(r.Context(), writes); err != nil {
 		adminFailed(w, "write settings", err)
 		return
@@ -366,10 +398,12 @@ func (s *Server) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 	if _, ok := writes[trustedProxiesSetting]; ok {
 		s.invalidateTrustedProxies()
 	}
+
 	out, err := s.currentSettings(r.Context())
 	if err != nil {
 		adminFailed(w, "read settings", err)
 		return
 	}
+
 	writeJSON(w, http.StatusOK, out)
 }

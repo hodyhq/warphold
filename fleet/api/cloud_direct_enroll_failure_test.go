@@ -65,6 +65,7 @@ func TestCloudDirectEnrollFailureLeavesNothingBehind(t *testing.T) {
 
 	resp, err := fleetSrv.Client().Do(req)
 	require.NoError(t, err)
+
 	defer resp.Body.Close() //nolint:errcheck // test cleanup
 
 	var out map[string]any

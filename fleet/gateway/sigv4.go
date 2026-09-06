@@ -92,7 +92,7 @@ const decoySecret = "0000000000000000000000000000000000000000"
 // and prefix confinement off the decoded r.URL.Path and r.URL.Query() and
 // never off r.RequestURI or r.URL.RawPath. Normalising the key is the
 // caller's job (Task 2's NormalizeKey): Verify authenticates a request, it
-// does not authorise a key.
+// does not authorize a key.
 //
 // Replaying a byte-identical signed request inside the skew window is accepted
 // by design — the store is append-only, so a replay is a no-op or a 409.
@@ -171,7 +171,7 @@ func parseAuthorization(v string) (akid, scope string, signedHeaders []string, s
 
 	var credential string
 
-	for _, part := range strings.Split(rest, ",") {
+	for part := range strings.SplitSeq(rest, ",") {
 		k, val, ok := strings.Cut(strings.TrimSpace(part), "=")
 		if !ok {
 			return "", "", nil, "", fmt.Errorf("%w: bad component %q", ErrMalformedAuthorization, k)

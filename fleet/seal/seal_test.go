@@ -3,6 +3,7 @@ package seal_test
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -17,6 +18,7 @@ func TestDeriveIsDeterministicAndSaltSensitive(t *testing.T) {
 	k1 := seal.Derive("correct horse", salt)
 	k2 := seal.Derive("correct horse", salt)
 	require.Equal(t, k1, k2)
+
 	salt2, _ := seal.NewSalt()
 	require.NotEqual(t, k1, seal.Derive("correct horse", salt2))
 }
@@ -29,6 +31,7 @@ func TestSealOpenRoundTripAndTamper(t *testing.T) {
 	plain, err := k.Open(sealed)
 	require.NoError(t, err)
 	require.Equal(t, "repo-password-32-bytes", string(plain))
+
 	sealed[len(sealed)-1] ^= 0xff
 	_, err = k.Open(sealed)
 	require.ErrorIs(t, err, seal.ErrTampered)
@@ -42,6 +45,10 @@ func TestSealOpenRoundTripAndTamper(t *testing.T) {
 }
 
 func TestKeyFileIs0600(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("linux-only: POSIX permission bits (Windows has no 0600/0700 equivalent)")
+	}
+
 	tmpDir := t.TempDir()
 	subDir := filepath.Join(tmpDir, "sub")
 	// Pre-create dir with looser permissions to test enforcement
@@ -68,6 +75,10 @@ func TestKeyFileIs0600(t *testing.T) {
 // keeps the mode of a file that already exists: a key file left at 0644 by an
 // older build (or by a careless restore) must come back as 0600.
 func TestKeyFileReplacesPermissiveExistingFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("linux-only: POSIX permission bits (Windows has no 0600 equivalent)")
+	}
+
 	dir := t.TempDir()
 	p := filepath.Join(dir, "seal.key")
 	require.NoError(t, os.WriteFile(p, []byte("stale\n"), 0o644))

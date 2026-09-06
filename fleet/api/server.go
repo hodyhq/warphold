@@ -176,6 +176,7 @@ func newServer(stateDir string, noScheduler bool) *Server {
 	if err := s.load(); err != nil && !errors.Is(err, os.ErrNotExist) {
 		log.Printf("warphold fleet: cannot load state from %s: %v", stateDir, err)
 	}
+
 	if !s.Activated() {
 		// Without the setup token POST /activate cannot be authorized, so a
 		// failure here is the difference between "not activated yet" and "can
@@ -188,6 +189,7 @@ func newServer(stateDir string, noScheduler bool) *Server {
 			s.mu.Unlock()
 		}
 	}
+
 	return s
 }
 
@@ -203,17 +205,21 @@ func ensureSetupToken(dir string) (path, token string, err error) {
 			return path, tok, nil
 		}
 	}
+
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return path, "", err
 	}
+
 	raw := make([]byte, 32)
 	if _, err := io.ReadFull(rand.Reader, raw); err != nil {
 		return path, "", err
 	}
+
 	token = hex.EncodeToString(raw)
 	if err := os.WriteFile(path, []byte(token+"\n"), 0o600); err != nil {
 		return path, "", err
 	}
+
 	return path, token, nil
 }
 
@@ -233,15 +239,18 @@ func (s *Server) load() error {
 	if err != nil {
 		return err
 	}
+
 	st, err := store.Open(s.paths.DB)
 	if err != nil {
 		return err
 	}
+
 	s.invalidateTrustedProxies()
 	s.mu.Lock()
 	s.key, s.st, s.closed, s.stateErr = key, st, false, nil
 	s.mu.Unlock()
 	s.startJobs()
+
 	return nil
 }
 
@@ -257,9 +266,11 @@ func (s *Server) load() error {
 func (s *Server) startJobs() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	if s.st == nil || s.closed || s.noScheduler {
 		return
 	}
+
 	old := s.sched
 	// Both arguments are method values on s, never captured state: s.unseal
 	// reads the CURRENT sealing key on every call, and s.cloudStoreForJob
@@ -271,6 +282,7 @@ func (s *Server) startJobs() {
 	// nothing wider, so neither can hold it across a job.
 	s.sched = jobs.NewScheduler(s.st, jobs.Runners(s.st, s.unseal, s.cloudStoreForJob), jobs.DefaultTick)
 	s.sched.Start(context.Background())
+
 	if old != nil {
 		// In a goroutine: Stop waits for the running job, which must not
 		// freeze every handler waiting on s.mu.
@@ -291,6 +303,7 @@ func (s *Server) now() time.Time {
 func (s *Server) SetNowForTesting(f func() time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	s.nowFn = f
 }
 
@@ -310,6 +323,7 @@ func (s *Server) StateError() error {
 func (s *Server) Activated() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+
 	return s.st != nil && !s.closed
 }
 
@@ -326,13 +340,16 @@ func (s *Server) Close() error {
 		s.mu.Unlock()
 		return nil
 	}
+
 	s.closed = true
 	st, sched := s.st, s.sched
 	s.sched = nil
 	s.mu.Unlock()
+
 	if sched != nil {
 		sched.Stop()
 	}
+
 	return st.Close()
 }
 
@@ -342,6 +359,7 @@ func (s *Server) Close() error {
 func (s *Server) store() *store.Store {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+
 	return s.st
 }
 
@@ -368,6 +386,7 @@ func (s *Server) unseal(sealed []byte) ([]byte, error) {
 func (s *Server) sealKey() seal.Key {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+
 	return s.key
 }
 
@@ -390,6 +409,7 @@ func (s *Server) Activate(ctx context.Context, passphrase, email, password, publ
 			return errors.New("fleet state exists but could not be loaded; refusing to overwrite seal.key - fix or remove " + s.paths.StateDir + " first")
 		}
 	}
+
 	email = normalizeEmail(email)
 	if len(passphrase) < 8 || len(password) < 8 || !strings.Contains(email, "@") {
 		return ErrInvalidActivation
@@ -401,12 +421,15 @@ func (s *Server) Activate(ctx context.Context, passphrase, email, password, publ
 		if err != nil {
 			return err
 		}
+
 		publicURL = u.String()
 	}
+
 	salt, err := seal.NewSalt()
 	if err != nil {
 		return err
 	}
+
 	if err := s.writeActivation(ctx, salt, passphrase, email, password, publicURL); err != nil {
 		// Activation is not atomic, so a partial run must not leave a seal.key
 		// or a half-built DB behind: the guard above keys on exactly those two
@@ -415,7 +438,9 @@ func (s *Server) Activate(ctx context.Context, passphrase, email, password, publ
 		s.removePartialState()
 		return err
 	}
+
 	s.clearSetupToken()
+
 	return nil
 }
 
@@ -432,6 +457,7 @@ func (s *Server) writeActivation(ctx context.Context, salt []byte, passphrase, e
 			st.Close()
 		}
 	}()
+
 	pwHash, err := HashPassword(password)
 	if err != nil {
 		return err
@@ -452,21 +478,26 @@ func (s *Server) writeActivation(ctx context.Context, salt []byte, passphrase, e
 	if err != nil {
 		return err
 	}
+
 	settings[instanceIDSetting] = id
 	if publicURL != "" {
 		settings[publicURLSetting] = publicURL
 	}
+
 	if err := st.SetSettings(ctx, settings); err != nil {
 		return err
 	}
+
 	if err := st.Close(); err != nil {
 		return err
 	}
+
 	st = nil
 	// seal.key goes last, once the DB and the admin row exist.
 	if err := seal.WriteKeyFile(s.paths.KeyFile, seal.Derive(passphrase, salt)); err != nil {
 		return err
 	}
+
 	return s.load()
 }
 
@@ -495,6 +526,7 @@ func (s *Server) reloadIfActivated() {
 					log.Printf("warphold fleet: activation callback panicked: %v", r)
 				}
 			}()
+
 			f()
 		}(f)
 	}
@@ -527,6 +559,7 @@ func (s *Server) reload() []func() {
 			s.reloadErrLogged = true
 			log.Printf("warphold fleet: state appeared in %s but cannot be loaded (further attempts stay quiet): %v", s.paths.StateDir, err)
 		}
+
 		return nil
 	}
 
@@ -547,6 +580,7 @@ func (s *Server) reload() []func() {
 func (s *Server) OnActivated(f func()) {
 	s.activateMu.Lock()
 	defer s.activateMu.Unlock()
+
 	s.onActivated = append(s.onActivated, f)
 }
 
@@ -556,6 +590,7 @@ func (s *Server) clearSetupToken() {
 	path := s.setupTokenPath
 	s.setupTokenPath, s.setupToken = "", ""
 	s.mu.Unlock()
+
 	if path != "" {
 		_ = os.Remove(path)
 	}
@@ -596,6 +631,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			out["instance_id"] = id
 		}
 	}
+
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -608,9 +644,11 @@ func (s *Server) setupAllowed(r *http.Request) bool {
 	s.mu.RLock()
 	tok := s.setupToken
 	s.mu.RUnlock()
+
 	if tok == "" {
 		return false
 	}
+
 	return subtle.ConstantTimeCompare([]byte(r.Header.Get(setupTokenHeader)), []byte(tok)) == 1
 }
 
@@ -619,6 +657,7 @@ func (s *Server) handleActivate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, "activation requires the "+setupTokenHeader+" header")
 		return
 	}
+
 	var in struct {
 		Passphrase, Email, Password string
 		// PublicURL is optional here so the setup wizard can set it in the
@@ -639,6 +678,7 @@ func (s *Server) handleActivate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+
 	if err := s.Activate(r.Context(), in.Passphrase, in.Email, in.Password, in.PublicURL); err != nil {
 		switch {
 		case errors.Is(err, ErrAlreadyActivated):
@@ -649,6 +689,7 @@ func (s *Server) handleActivate(w http.ResponseWriter, r *http.Request) {
 			log.Printf("warphold fleet: activation failed: %v", err)
 			writeErr(w, http.StatusInternalServerError, "activation failed")
 		}
+
 		return
 	}
 	// Activate already stored the canonical public_url (as part of the same
@@ -660,8 +701,10 @@ func (s *Server) handleActivate(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("warphold fleet: activated but admin lookup failed: %v", err)
 		writeErr(w, http.StatusInternalServerError, "activation failed")
+
 		return
 	}
+
 	writeJSON(w, http.StatusCreated, map[string]any{"admin_id": a.ID})
 }
 
@@ -670,6 +713,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, "fleet is not activated")
 		return
 	}
+
 	if pu, _ := s.PublicURL(r.Context()); pu != nil {
 		if !originAllowed(r, pu) {
 			writeErr(w, http.StatusForbidden, "request origin does not match the configured public URL")
@@ -684,21 +728,26 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+
 	if !s.login.allow(s.clientIP(r)) {
 		writeErr(w, http.StatusTooManyRequests, "too many attempts, wait a minute")
 		return
 	}
+
 	var in struct{ Email, Password string }
 	if err := decode(r, &in); err != nil {
 		writeErr(w, http.StatusBadRequest, "malformed body")
 		return
 	}
+
 	st := s.store()
 	if st == nil {
 		writeErr(w, http.StatusConflict, "fleet is not activated")
 		return
 	}
+
 	a, err := st.AdminByEmail(r.Context(), normalizeEmail(in.Email))
+
 	hash := dummyPWHash()
 	if err == nil {
 		hash = a.PWHash
@@ -711,10 +760,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "wrong email or password")
 		return
 	}
+
 	if err := s.startSession(r.Context(), w, r, a.ID); err != nil {
 		adminFailed(w, "create session", err)
 		return
 	}
+
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -730,15 +781,18 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusForbidden, "request origin does not match the configured public URL")
 			return
 		}
+
 		if !csrfOK(r) {
 			writeErr(w, http.StatusForbidden, "missing or invalid "+csrfHeader+" header")
 			return
 		}
+
 		if err := s.store().RevokeSession(r.Context(), sess.ID, s.now()); err != nil {
 			adminFailed(w, "revoke session", err)
 			return
 		}
 	}
+
 	s.clearAuthCookies(w, r)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -748,6 +802,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 func (s *Server) SetupTokenPathForTesting() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+
 	return s.setupTokenPath
 }
 
@@ -774,6 +829,7 @@ func (s *Server) AdminsForTesting(ctx context.Context) ([]store.Admin, error) {
 	if st == nil {
 		return nil, errors.New("fleet is not activated")
 	}
+
 	return st.Admins(ctx)
 }
 
@@ -787,7 +843,8 @@ func (s *Server) SeedGroupForTesting(ctx context.Context, path string, sources [
 	targetID, _ = st.CreateTarget(ctx, &store.Target{Name: "local", Kind: "filesystem", Path: path, CreatedAt: now})
 	templateID, _ = st.CreateTemplate(ctx, &store.Template{Name: "test", Sources: sources, PolicyJSON: json.RawMessage(policyJSON), CreatedAt: now})
 	groupID, _ = st.CreateGroup(ctx, &store.Group{Name: "Test", TargetID: targetID, TemplateID: templateID, CreatedAt: now})
-	return
+
+	return targetID, templateID, groupID
 }
 
 // IssueTokenForTesting issues a default token for a group.
@@ -802,6 +859,7 @@ func (s *Server) PendingReapsForTesting(ctx context.Context, agentID string) []t
 	if err != nil {
 		return nil
 	}
+
 	return at
 }
 
@@ -811,6 +869,7 @@ func (s *Server) AgentForTesting(ctx context.Context, id string) *store.Agent {
 	if err != nil {
 		return nil
 	}
+
 	return a
 }
 
@@ -841,6 +900,7 @@ func (s *Server) requireActivated(next http.HandlerFunc) http.HandlerFunc {
 			writeErr(w, http.StatusConflict, "fleet is not activated")
 			return
 		}
+
 		next(w, r)
 	}
 }

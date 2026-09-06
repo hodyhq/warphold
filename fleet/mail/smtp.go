@@ -21,6 +21,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kopia/kopia/internal/clock"
 )
 
 // Config is one SMTP account. It is what the settings screen edits and what
@@ -65,15 +67,17 @@ func Defaults() Config {
 // certificate, and it never hands the password to a server it has not
 // negotiated TLS with, whatever the settings say.
 func Send(ctx context.Context, c Config, to []string, subject, textBody, htmlBody string) error {
-	// The message is built (and so validated) before anything is dialled, so
+	// The message is built (and so validated) before anything is dialed, so
 	// a rejected header never reaches a server.
 	msg, from, rcpt, err := buildMessage(c, to, subject, textBody, htmlBody)
 	if err != nil {
 		return err
 	}
+
 	if c.Host == "" {
 		return errors.New("smtp_host is not set")
 	}
+
 	if c.Port == implicitTLSPort && !c.TLS {
 		return errors.New("port 465 is implicit TLS and cannot be used with TLS off")
 	}
@@ -82,9 +86,10 @@ func Send(ctx context.Context, c Config, to []string, subject, textBody, htmlBod
 	if err != nil {
 		return err
 	}
-	// A cancelled context has to reach a blocked read, which only closing the
+	// A canceled context has to reach a blocked read, which only closing the
 	// connection can do; net/smtp has no context-aware API.
 	done := make(chan struct{})
+
 	defer close(done)
 	go func() {
 		select {
@@ -95,6 +100,7 @@ func Send(ctx context.Context, c Config, to []string, subject, textBody, htmlBod
 	}()
 
 	var netConn net.Conn = &deadlineConn{Conn: conn}
+
 	secure := false
 	if c.Port == implicitTLSPort {
 		tc := tls.Client(netConn, tlsConfig(c.Host))
@@ -102,6 +108,7 @@ func Send(ctx context.Context, c Config, to []string, subject, textBody, htmlBod
 			conn.Close() //nolint:errcheck
 			return err
 		}
+
 		netConn, secure = tc, true
 	}
 
@@ -116,37 +123,47 @@ func Send(ctx context.Context, c Config, to []string, subject, textBody, htmlBod
 		if ok, _ := cl.Extension("STARTTLS"); !ok {
 			return errors.New("the server does not offer STARTTLS; turn smtp_tls off only if you trust the network")
 		}
+
 		if err := cl.StartTLS(tlsConfig(c.Host)); err != nil {
 			return err
 		}
+
 		secure = true
 	}
+
 	if c.Username != "" {
 		if !secure {
 			return errors.New("refusing to send the SMTP password over an unencrypted connection")
 		}
+
 		if err := cl.Auth(smtp.PlainAuth("", c.Username, c.Password, c.Host)); err != nil {
 			return err
 		}
 	}
+
 	if err := cl.Mail(from); err != nil {
 		return err
 	}
+
 	for _, a := range rcpt {
 		if err := cl.Rcpt(a); err != nil {
 			return err
 		}
 	}
+
 	w, err := cl.Data()
 	if err != nil {
 		return err
 	}
+
 	if _, err := w.Write(msg); err != nil {
 		return err
 	}
+
 	if err := w.Close(); err != nil {
 		return err
 	}
+
 	return cl.Quit()
 }
 
@@ -159,12 +176,12 @@ func tlsConfig(host string) *tls.Config {
 type deadlineConn struct{ net.Conn }
 
 func (c *deadlineConn) Read(b []byte) (int, error) {
-	_ = c.Conn.SetDeadline(time.Now().Add(timeout))
+	_ = c.SetDeadline(clock.Now().Add(timeout))
 	return c.Conn.Read(b)
 }
 
 func (c *deadlineConn) Write(b []byte) (int, error) {
-	_ = c.Conn.SetDeadline(time.Now().Add(timeout))
+	_ = c.SetDeadline(clock.Now().Add(timeout))
 	return c.Conn.Write(b)
 }
 
@@ -174,10 +191,12 @@ func parseAddress(field, v string) (*netmail.Address, error) {
 	if strings.ContainsAny(v, "\r\n") {
 		return nil, fmt.Errorf("%s must not contain a line break", field)
 	}
+
 	a, err := netmail.ParseAddress(strings.TrimSpace(v))
 	if err != nil {
 		return nil, fmt.Errorf("%s is not a valid email address", field)
 	}
+
 	return a, nil
 }
 
@@ -185,14 +204,17 @@ func parseAddresses(to []string) ([]*netmail.Address, error) {
 	if len(to) == 0 {
 		return nil, errors.New("no recipients")
 	}
+
 	out := make([]*netmail.Address, 0, len(to))
 	for _, v := range to {
 		a, err := parseAddress("recipient", v)
 		if err != nil {
 			return nil, err
 		}
+
 		out = append(out, a)
 	}
+
 	return out, nil
 }
 
@@ -204,18 +226,23 @@ func buildMessage(c Config, to []string, subject, textBody, htmlBody string) (ms
 	if strings.ContainsAny(subject, "\r\n") {
 		return nil, "", nil, errors.New("subject must not contain a line break")
 	}
+
 	if textBody == "" && htmlBody == "" {
 		return nil, "", nil, errors.New("message has no body")
 	}
+
 	from, err := parseAddress("smtp_from", c.From)
 	if err != nil {
 		return nil, "", nil, err
 	}
+
 	rcpt, err := parseAddresses(to)
 	if err != nil {
 		return nil, "", nil, err
 	}
+
 	list := make([]string, 0, len(rcpt))
+
 	envRcpt = make([]string, 0, len(rcpt))
 	for _, a := range rcpt {
 		list = append(list, formatAddress(a))
@@ -223,30 +250,38 @@ func buildMessage(c Config, to []string, subject, textBody, htmlBody string) (ms
 	}
 
 	var body strings.Builder
+
 	mp := multipart.NewWriter(&body)
+
 	add := func(contentType, content string) error {
 		if content == "" {
 			return nil
 		}
+
 		h := textproto.MIMEHeader{}
 		h.Set("Content-Type", contentType+`; charset="utf-8"`)
 		h.Set("Content-Transfer-Encoding", "quoted-printable")
+
 		p, err := mp.CreatePart(h)
 		if err != nil {
 			return err
 		}
+
 		qp := quotedprintable.NewWriter(p)
 		if _, err := io.WriteString(qp, content); err != nil {
 			return err
 		}
+
 		return qp.Close()
 	}
 	if err := add("text/plain", textBody); err != nil {
 		return nil, "", nil, err
 	}
+
 	if err := add("text/html", htmlBody); err != nil {
 		return nil, "", nil, err
 	}
+
 	if err := mp.Close(); err != nil {
 		return nil, "", nil, err
 	}
@@ -255,10 +290,12 @@ func buildMessage(c Config, to []string, subject, textBody, htmlBody string) (ms
 	if host == "" {
 		host = "localhost"
 	}
+
 	id, err := messageID(host)
 	if err != nil {
 		return nil, "", nil, err
 	}
+
 	var out strings.Builder
 	for _, h := range [][2]string{
 		{"Date", time.Now().Format(time.RFC1123Z)},
@@ -271,8 +308,10 @@ func buildMessage(c Config, to []string, subject, textBody, htmlBody string) (ms
 	} {
 		out.WriteString(h[0] + ": " + h[1] + "\r\n")
 	}
+
 	out.WriteString("\r\n")
 	out.WriteString(body.String())
+
 	return []byte(out.String()), from.Address, envRcpt, nil
 }
 
@@ -282,6 +321,7 @@ func formatAddress(a *netmail.Address) string {
 	if a.Name == "" {
 		return a.Address
 	}
+
 	return a.String()
 }
 
@@ -290,8 +330,10 @@ func messageID(host string) (string, error) {
 	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}
+
 	if strings.ContainsAny(host, "\r\n <>@") {
 		host = "localhost"
 	}
+
 	return "<" + hex.EncodeToString(b) + "@" + host + ">", nil
 }

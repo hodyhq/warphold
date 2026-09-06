@@ -214,7 +214,7 @@ func TestServerServesSPAWithoutUIAuth(t *testing.T) {
 	get := func(t *testing.T, path string, withCredentials bool) (*http.Response, string) {
 		t.Helper()
 
-		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, sp.BaseURL+path, nil)
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, sp.BaseURL+path, http.NoBody)
 		require.NoError(t, err)
 
 		if withCredentials {
@@ -588,6 +588,13 @@ func TestFleetActivateDataDirIsAbsoluteAndNotASymlink(t *testing.T) {
 	t.Run("relative is stored absolute", func(t *testing.T) {
 		runner := testenv.NewInProcRunner(t)
 		e := testenv.NewCLITest(t, nil, runner)
+
+		// Chdir into a scratch directory before computing wd: on the
+		// windows-latest GitHub runner the checkout lives on D: while
+		// t.TempDir() lands on C:, and filepath.Rel refuses to cross
+		// drives. Both temp dirs come from the same OS temp root, so this
+		// sidesteps the split without changing what the test exercises.
+		t.Chdir(t.TempDir())
 
 		wd, err := os.Getwd()
 		require.NoError(t, err)

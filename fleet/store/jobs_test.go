@@ -19,6 +19,7 @@ import (
 // repo_stats foreign keys require.
 func seedAgents(t *testing.T, s *store.Store, ids ...string) {
 	t.Helper()
+
 	ctx := context.Background()
 	now := clock.Now().UTC().Truncate(time.Second)
 	tid, err := s.CreateTarget(ctx, &store.Target{Name: "disk", Kind: "hosted", Path: "/srv/warphold/hosted", CreatedAt: now})
@@ -27,6 +28,7 @@ func seedAgents(t *testing.T, s *store.Store, ids ...string) {
 	require.NoError(t, err)
 	gid, err := s.CreateGroup(ctx, &store.Group{Name: "Laptops", TargetID: tid, TemplateID: tpl, CreatedAt: now})
 	require.NoError(t, err)
+
 	for _, id := range ids {
 		require.NoError(t, s.CreateAgent(ctx, &store.Agent{
 			ID: id, Name: id, Hostname: id, OS: "linux", Arch: "amd64", Scope: "user", GroupID: gid,
@@ -39,6 +41,7 @@ func TestJobsRoundTrip(t *testing.T) {
 	s := openTemp(t)
 	ctx := context.Background()
 	now := clock.Now().UTC().Truncate(time.Second)
+
 	seedAgents(t, s, "ag_1", "ag_2")
 
 	j := store.Job{Kind: "verify", AgentID: "ag_1", ScheduledFor: now}
@@ -131,10 +134,7 @@ func TestClaimDueJobHasExactlyOneWinner(t *testing.T) {
 		start := make(chan struct{})
 
 		for range 2 {
-			wg.Add(1)
-
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				<-start
 
 				j, err := s.ClaimDueJob(ctx, now)
@@ -150,7 +150,7 @@ func TestClaimDueJobHasExactlyOneWinner(t *testing.T) {
 				default:
 					t.Errorf("claim: %v", err)
 				}
-			}()
+			})
 		}
 
 		close(start)
@@ -252,6 +252,7 @@ func TestRepoStatsMirrorProgress(t *testing.T) {
 	s := openTemp(t)
 	ctx := context.Background()
 	now := clock.Now().UTC().Truncate(time.Second)
+
 	seedAgents(t, s, "ag_1")
 
 	_, err := s.RepoStat(ctx, "ag_1")
@@ -281,6 +282,7 @@ func TestSetStatsDoesNotClobberMirrorProgress(t *testing.T) {
 	s := openTemp(t)
 	ctx := context.Background()
 	now := clock.Now().UTC().Truncate(time.Second)
+
 	seedAgents(t, s, "ag_1")
 
 	require.NoError(t, s.SetMirrored(ctx, "ag_1", now, 4096))
@@ -310,6 +312,7 @@ func TestRepoStatsListsEveryAgent(t *testing.T) {
 	s := openTemp(t)
 	ctx := context.Background()
 	now := clock.Now().UTC().Truncate(time.Second)
+
 	seedAgents(t, s, "ag_1", "ag_2")
 
 	require.NoError(t, s.SetStats(ctx, "ag_1", now, 100, 50, 1))

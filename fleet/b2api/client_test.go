@@ -15,25 +15,32 @@ import (
 
 func fakeB2(t *testing.T) (*httptest.Server, *[]map[string]any) {
 	t.Helper()
-	var calls []map[string]any
-	var srv *httptest.Server
+
+	var (
+		calls []map[string]any
+		srv   *httptest.Server
+	)
+
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/b2api/v3/b2_authorize_account":
 			u, p, ok := r.BasicAuth()
 			if !ok || u != "adminKeyId" || p != "adminKey" {
-				w.WriteHeader(401)
+				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
+
 			json.NewEncoder(w).Encode(map[string]any{"accountId": "acct1", "authorizationToken": "tok1", "apiInfo": map[string]any{"storageApi": map[string]any{"apiUrl": srv.URL}}})
 		case "/b2api/v3/b2_list_buckets", "/b2api/v3/b2_create_key", "/b2api/v3/b2_delete_key":
 			if r.Header.Get("Authorization") != "tok1" {
-				w.WriteHeader(401)
+				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
+
 			var body map[string]any
 			json.NewDecoder(r.Body).Decode(&body)
 			body["_path"] = r.URL.Path
+
 			calls = append(calls, body)
 			switch r.URL.Path {
 			case "/b2api/v3/b2_list_buckets":
@@ -44,10 +51,11 @@ func fakeB2(t *testing.T) (*httptest.Server, *[]map[string]any) {
 				json.NewEncoder(w).Encode(map[string]any{})
 			}
 		default:
-			w.WriteHeader(404)
+			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
 	t.Cleanup(srv.Close)
+
 	return srv, &calls
 }
 
@@ -60,6 +68,7 @@ func TestErrorBodyIsTruncated(t *testing.T) {
 			json.NewEncoder(w).Encode(map[string]any{"accountId": "acct1", "authorizationToken": "tok1", "apiInfo": map[string]any{"storageApi": map[string]any{"apiUrl": "http://" + r.Host}}}) //nolint:errcheck,errchkjson
 			return
 		}
+
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte(huge)) //nolint:errcheck
 	}))
@@ -87,6 +96,7 @@ func TestBucketInfoCreateDeleteKey(t *testing.T) {
 	k, err := c.CreateKey(ctx, "adminKeyId", "adminKey", b2api.KeyRequest{Name: "warphold-ag1-writer", BucketID: "bkt1", NamePrefix: "agents/ag1/", Capabilities: b2api.WriterCaps})
 	require.NoError(t, err)
 	require.Equal(t, b2api.CreatedKey{KeyID: "newKeyId", Key: "newKey"}, k)
+
 	created := (*calls)[1]
 	require.Equal(t, "/b2api/v3/b2_create_key", created["_path"])
 	require.Equal(t, "agents/ag1/", created["namePrefix"])
@@ -105,8 +115,10 @@ func TestBucketInfoCreateDeleteKey(t *testing.T) {
 func TestBucketInfoReportsAnUnreadableLockConfiguration(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/b2api/v3/b2_authorize_account" {
-			json.NewEncoder(w).Encode(map[string]any{"accountId": "acc", "authorizationToken": "tok",
-				"apiInfo": map[string]any{"storageApi": map[string]any{"apiUrl": "http://" + r.Host}}})
+			json.NewEncoder(w).Encode(map[string]any{
+				"accountId": "acc", "authorizationToken": "tok",
+				"apiInfo": map[string]any{"storageApi": map[string]any{"apiUrl": "http://" + r.Host}},
+			})
 
 			return
 		}

@@ -142,6 +142,7 @@ func (c *commandAgentEnroll) callEnroll(ctx context.Context) (*enrollResponse, e
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot build enrollment request")
 	}
+
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := (&http.Client{Timeout: enrollHTTPTimeout}).Do(req)

@@ -3,6 +3,7 @@ package api_test
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -18,7 +19,7 @@ func TestSetupDefaultsLeavesAFleetThatCanEnroll(t *testing.T) {
 	h := newHarness(t)
 	h.activateAndLogin()
 
-	hostedRoot := filepath.Join(t.TempDir(), "hosted")
+	hostedRoot := filepath.Join(h.hostedDir(t), "hosted")
 
 	oneLiner, token, err := h.s.SetupDefaults(t.Context(), h.srv.URL, "disk", hostedRoot)
 	require.NoError(t, err)
@@ -28,7 +29,12 @@ func TestSetupDefaultsLeavesAFleetThatCanEnroll(t *testing.T) {
 
 	fi, err := os.Stat(hostedRoot)
 	require.NoError(t, err)
-	require.Equal(t, os.FileMode(0o750), fi.Mode().Perm(), "the hosted root is not world-readable")
+
+	if runtime.GOOS != "windows" {
+		// Windows has no POSIX permission bits, so this only holds where
+		// warphold actually ships: Linux and macOS.
+		require.Equal(t, os.FileMode(0o750), fi.Mode().Perm(), "the hosted root is not world-readable")
+	}
 
 	resp, targets := h.doList("GET", "/api/v1/fleet/targets")
 	require.Equal(t, 200, resp.StatusCode)
@@ -91,7 +97,7 @@ func TestSetupDefaultsRepairsAPartialRun(t *testing.T) {
 	resp, _ := h.do("POST", "/api/v1/fleet/targets", map[string]any{"name": "Fleet disk", "kind": "filesystem", "path": t.TempDir()})
 	require.Equal(t, 201, resp.StatusCode)
 
-	oneLiner, token, err := h.s.SetupDefaults(t.Context(), "", "disk", filepath.Join(t.TempDir(), "hosted"))
+	oneLiner, token, err := h.s.SetupDefaults(t.Context(), "", "disk", filepath.Join(h.hostedDir(t), "hosted"))
 	require.NoError(t, err)
 	require.True(t, strings.HasPrefix(token, "wh_"), "the missing group was created and can enroll")
 	require.Contains(t, oneLiner, "/enroll.sh")

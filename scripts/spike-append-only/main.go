@@ -16,8 +16,10 @@
 package main
 
 import (
+	"crypto/md5"
 	"encoding/hex"
 	"encoding/xml"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -30,10 +32,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"crypto/md5" //nolint:gosec // ETag is defined as MD5 by S3; not a security use.
-
-	"errors"
 )
 
 // streamingPayload is the x-amz-content-sha256 value minio-go sends over plain HTTP.
@@ -101,7 +99,7 @@ func (s *store) objects() ([]listEntry, error) {
 			return nil, err
 		}
 
-		sum := md5.Sum(body) //nolint:gosec
+		sum := md5.Sum(body)
 
 		out = append(out, listEntry{
 			Key:          strings.ReplaceAll(e.Name(), "%2F", "/"),
@@ -251,6 +249,7 @@ func (s *store) put(w http.ResponseWriter, r *http.Request, key, sha string) {
 	if err == nil && sha == streamingPayload {
 		body, err = decodeAWSChunked(body)
 	}
+
 	if err != nil {
 		s.record("PUT", key, existed, http.StatusBadRequest, sha, 0)
 		writeXML(w, http.StatusBadRequest, s3Error{Code: "IncompleteBody", Message: err.Error(), Key: key})
@@ -265,7 +264,7 @@ func (s *store) put(w http.ResponseWriter, r *http.Request, key, sha string) {
 		return
 	}
 
-	sum := md5.Sum(body) //nolint:gosec
+	sum := md5.Sum(body)
 	w.Header().Set("ETag", `"`+hex.EncodeToString(sum[:])+`"`)
 	s.record("PUT", key, existed, http.StatusOK, sha, int64(len(body)))
 	w.WriteHeader(http.StatusOK)
@@ -293,7 +292,7 @@ func (s *store) get(w http.ResponseWriter, r *http.Request, key, sha string) {
 		return
 	}
 
-	sum := md5.Sum(body) //nolint:gosec
+	sum := md5.Sum(body)
 	w.Header().Set("ETag", `"`+hex.EncodeToString(sum[:])+`"`)
 	w.Header().Set("Last-Modified", fi.ModTime().UTC().Format(http.TimeFormat))
 	w.Header().Set("Content-Type", "application/x-kopia")
@@ -357,6 +356,7 @@ func main() {
 	dir := flag.String("dir", "", "store directory (required)")
 	certFile := flag.String("tls-cert", "", "optional TLS certificate; serves HTTPS when set (with -tls-key)")
 	keyFile := flag.String("tls-key", "", "optional TLS key")
+
 	flag.Parse()
 
 	if *dir == "" {

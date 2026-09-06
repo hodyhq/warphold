@@ -14,16 +14,19 @@ import (
 // a test can play "a proxy that is not this Fleet".
 func statusStub(t *testing.T, code int, body string) *httptest.Server {
 	t.Helper()
+
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/fleet/status" {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
+
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(code)
 		_, _ = w.Write([]byte(body))
 	}))
 	t.Cleanup(ts.Close)
+
 	return ts
 }
 
@@ -101,7 +104,7 @@ func TestStatusCarriesAStableInstanceID(t *testing.T) {
 }
 
 // Enrollment cannot start until the operator has said where devices should
-// reach this Fleet - a token issued now would enrol against the wrong origin.
+// reach this Fleet - a token issued now would enroll against the wrong origin.
 func TestTokensAndEnrollShAreGatedOnPublicURL(t *testing.T) {
 	h := newHarness(t)
 	h.activateAndLogin()
@@ -120,6 +123,7 @@ func TestTokensAndEnrollShAreGatedOnPublicURL(t *testing.T) {
 
 	resp, _ = h.do("POST", "/api/v1/fleet/tokens", map[string]any{"group_id": gid})
 	require.Equal(t, 201, resp.StatusCode)
+
 	res, err = http.Get(h.srv.URL + "/enroll.sh")
 	require.NoError(t, err)
 	res.Body.Close()
@@ -135,15 +139,18 @@ func TestEnrollShUsesPublicURLNotTheHostHeader(t *testing.T) {
 	_, body := h.do("PUT", "/api/v1/fleet/settings", map[string]any{"public_url": "https://fleet.example.com"})
 	require.Equal(t, "https://fleet.example.com", body["public_url"])
 
-	req, err := http.NewRequest(http.MethodGet, h.srv.URL+"/enroll.sh", nil)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, h.srv.URL+"/enroll.sh", http.NoBody)
 	require.NoError(t, err)
 	res, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
+
 	defer res.Body.Close()
+
 	require.Equal(t, 200, res.StatusCode)
 
 	raw, err := io.ReadAll(res.Body)
 	require.NoError(t, err)
+
 	script := string(raw)
 	require.Contains(t, script, `SERVER="https://fleet.example.com"`)
 	require.Contains(t, script, `https://fleet.example.com/dl/warphold-linux-$ARCH`, "the binary download follows the same origin")
@@ -159,6 +166,7 @@ func TestSessionCookieSecureFollowsPublicURL(t *testing.T) {
 
 	secure := func() (login, logout bool) {
 		t.Helper()
+
 		cs := h.login("hody@hody.dev", "pw12345678")
 		require.Len(t, cs, 2)
 		require.Equal(t, cs[0].Secure, cs[1].Secure, "both cookies agree")
@@ -168,12 +176,14 @@ func TestSessionCookieSecureFollowsPublicURL(t *testing.T) {
 		cleared := resp.Cookies()
 		require.Len(t, cleared, 2)
 		require.Equal(t, cleared[0].Secure, cleared[1].Secure)
+
 		return cs[0].Secure, cleared[0].Secure
 	}
 
 	h.jar = h.login("hody@hody.dev", "pw12345678")
 	_, body := h.do("PUT", "/api/v1/fleet/settings", map[string]any{"public_url": "https://fleet.example.com"})
 	require.Equal(t, "https://fleet.example.com", body["public_url"])
+
 	set, cleared := secure()
 	require.True(t, set, "an https public URL means Secure")
 	// A clearing cookie whose attributes differ from the live one is a
@@ -182,6 +192,7 @@ func TestSessionCookieSecureFollowsPublicURL(t *testing.T) {
 
 	h.jar = h.login("hody@hody.dev", "pw12345678")
 	h.setPublicURL() // http, on loopback
+
 	set, cleared = secure()
 	require.False(t, set, "plain http must not set Secure")
 	require.False(t, cleared)
@@ -194,18 +205,25 @@ func TestHostValidation(t *testing.T) {
 	h.activateAndLogin()
 
 	var lastBody map[string]any
+
 	get := func(host string) int {
 		t.Helper()
-		req, err := http.NewRequest(http.MethodGet, h.srv.URL+"/api/v1/fleet/status", nil)
+
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, h.srv.URL+"/api/v1/fleet/status", http.NoBody)
 		require.NoError(t, err)
+
 		if host != "" {
 			req.Host = host
 		}
+
 		res, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
+
 		defer res.Body.Close()
+
 		lastBody = nil
 		_ = json.NewDecoder(res.Body).Decode(&lastBody)
+
 		return res.StatusCode
 	}
 
@@ -231,14 +249,16 @@ func TestHostValidation(t *testing.T) {
 func TestActivateAcceptsPublicURL(t *testing.T) {
 	activate := func(h *harness, pub string) *http.Response {
 		t.Helper()
-		req, err := http.NewRequest("POST", h.srv.URL+"/api/v1/fleet/activate",
+
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, h.srv.URL+"/api/v1/fleet/activate",
 			jsonBody(map[string]string{"passphrase": "seal-me!", "email": "hody@hody.dev", "password": "pw12345678", "public_url": pub}))
 		require.NoError(t, err)
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-WarpHold-Setup-Token", h.setupToken())
+		req.Header.Set("X-Warphold-Setup-Token", h.setupToken())
 		res, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
 		t.Cleanup(func() { res.Body.Close() })
+
 		return res
 	}
 
@@ -265,16 +285,23 @@ func TestCSRFOriginCheckIsWired(t *testing.T) {
 
 	put := func(origin string) (int, map[string]any) {
 		t.Helper()
+
 		req := h.newRequest("PUT", "/api/v1/fleet/settings", jsonBody(map[string]any{"fleet_name": "Moinzadeh"}))
 		req.Header.Set("Content-Type", "application/json")
+
 		if origin != "" {
 			req.Header.Set("Origin", origin)
 		}
+
 		res, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
+
 		defer res.Body.Close()
+
 		var out map[string]any
+
 		_ = json.NewDecoder(res.Body).Decode(&out)
+
 		return res.StatusCode, out
 	}
 
@@ -297,18 +324,23 @@ func TestCSRFOriginCheckPrecedesTheToken(t *testing.T) {
 	h.activateAndLogin()
 	h.do("PUT", "/api/v1/fleet/settings", map[string]any{"public_url": "https://fleet.example.com"})
 
-	req, err := http.NewRequest("PUT", h.srv.URL+"/api/v1/fleet/settings", jsonBody(map[string]any{"fleet_name": "x"}))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, h.srv.URL+"/api/v1/fleet/settings", jsonBody(map[string]any{"fleet_name": "x"}))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
+
 	for _, c := range h.jar {
 		req.AddCookie(c)
 	}
+
 	req.Header.Set(csrfHeaderName, "not-the-token") // would fail the token check too
 	req.Header.Set("Origin", "https://evil.example.com")
 	res, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
+
 	defer res.Body.Close()
+
 	var out map[string]any
+
 	_ = json.NewDecoder(res.Body).Decode(&out)
 	require.Equal(t, 403, res.StatusCode)
 	require.Contains(t, out["error"], "origin", "the origin decides, so the token result never leaks")
@@ -323,13 +355,16 @@ func TestLogoutChecksOrigin(t *testing.T) {
 
 	logout := func(origin string) int {
 		t.Helper()
+
 		req := h.newRequest("DELETE", "/api/v1/fleet/session", nil)
 		if origin != "" {
 			req.Header.Set("Origin", origin)
 		}
+
 		res, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
 		res.Body.Close()
+
 		return res.StatusCode
 	}
 
@@ -348,22 +383,30 @@ func TestLoginChecksOriginAndScheme(t *testing.T) {
 
 	login := func(headers map[string]string) (int, map[string]any) {
 		t.Helper()
-		req, err := http.NewRequest("POST", h.srv.URL+"/api/v1/fleet/session",
+
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, h.srv.URL+"/api/v1/fleet/session",
 			jsonBody(map[string]string{"email": "hody@hody.dev", "password": "pw12345678"}))
 		require.NoError(t, err)
 		req.Header.Set("Content-Type", "application/json")
+
 		for k, v := range headers {
 			if k == "Host" {
 				req.Host = v
 				continue
 			}
+
 			req.Header.Set(k, v)
 		}
+
 		res, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
+
 		defer res.Body.Close()
+
 		var out map[string]any
+
 		_ = json.NewDecoder(res.Body).Decode(&out)
+
 		return res.StatusCode, out
 	}
 

@@ -51,7 +51,7 @@ var digestHTMLSrc string
 var digestHTMLTmpl = template.Must(template.New("digest").Parse(digestHTMLSrc))
 
 // Digest returns the runner for the "digest" job: one weekly email to every
-// admin summarising fleet health, so nobody has to open the dashboard to
+// admin summarizing fleet health, so nobody has to open the dashboard to
 // notice a device has gone quiet (spec §7.4). A fleet with no SMTP configured
 // - the default state - is not a failure: the run is recorded 'skipped', with
 // a detail saying why, rather than 'error'.

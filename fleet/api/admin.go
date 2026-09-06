@@ -64,13 +64,16 @@ func (s *Server) targetCreds(_ context.Context, t *store.Target) (string, string
 	if len(t.SealedAdminKey) == 0 {
 		return "", "", nil
 	}
+
 	b, err := s.sealKey().Open(t.SealedAdminKey)
 	if err != nil {
 		return "", "", err
 	}
+
 	var c targetCreds
 	if err := json.Unmarshal(b, &c); err != nil {
 		return "", "", err
 	}
+
 	return c.KeyID, c.Key, nil
 }

@@ -2,9 +2,11 @@ package api_test
 
 import (
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -23,12 +25,14 @@ func verifiedFakes(h *harness) *fakeCloud {
 func TestHostedTargetDiskMode(t *testing.T) {
 	h := newHarness(t)
 	h.activateAndLogin()
-	root := t.TempDir()
+
+	root := h.hostedDir(t)
 
 	resp, body := h.do("POST", "/api/v1/fleet/targets", map[string]any{
 		"name": "hosted", "kind": "hosted", "storage_mode": "disk", "path": root,
 	})
 	require.Equal(t, 201, resp.StatusCode)
+
 	tid := body["id"].(float64)
 
 	resp, list := h.doList("GET", "/api/v1/fleet/targets")
@@ -51,7 +55,7 @@ func TestHostedTargetMirrorIsSealedAndVerified(t *testing.T) {
 	c := verifiedFakes(h)
 
 	resp, _ := h.do("POST", "/api/v1/fleet/targets", map[string]any{
-		"name": "hosted", "kind": "hosted", "storage_mode": "disk", "path": t.TempDir(),
+		"name": "hosted", "kind": "hosted", "storage_mode": "disk", "path": h.hostedDir(t),
 		"mirror_kind": "b2", "mirror_bucket": "hody-offsite", "mirror_region": "us-west-004",
 		"mirror_key_id": "k", "mirror_key": "s",
 	})
@@ -63,6 +67,7 @@ func TestHostedTargetMirrorIsSealedAndVerified(t *testing.T) {
 	require.Equal(t, "us-west-004", list[0]["mirror_region"])
 	require.NotEmpty(t, list[0]["mirror_lock_verified_at"])
 	require.Equal(t, true, list[0]["mirror_conditional_put"])
+
 	for _, k := range []string{"mirror_key", "mirror_key_id", "sealed_mirror_key", "sealed_admin_key", "key", "key_id"} {
 		_, has := list[0][k]
 		require.False(t, has, "%s must never leave the server", k)
@@ -85,12 +90,18 @@ func TestHostedTargetMirrorRequiresLockAndConditionalWrites(t *testing.T) {
 		lock, cond bool
 		want       string
 	}{
-		{"b2 without object lock", "b2", false, true,
-			`bucket "hody-offsite" does not have Object Lock enabled`},
-		{"s3 without object lock", "s3", false, true,
-			`bucket "hody-offsite" does not have Object Lock enabled`},
-		{"provider ignores if-none-match", "s3", true, false,
-			`bucket "hody-offsite" does not enforce conditional writes, so it cannot be append-only; use Fleet disk storage with a mirror instead`},
+		{
+			"b2 without object lock", "b2", false, true,
+			`bucket "hody-offsite" does not have Object Lock enabled`,
+		},
+		{
+			"s3 without object lock", "s3", false, true,
+			`bucket "hody-offsite" does not have Object Lock enabled`,
+		},
+		{
+			"provider ignores if-none-match", "s3", true, false,
+			`bucket "hody-offsite" does not enforce conditional writes, so it cannot be append-only; use Fleet disk storage with a mirror instead`,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
@@ -99,7 +110,7 @@ func TestHostedTargetMirrorRequiresLockAndConditionalWrites(t *testing.T) {
 			h.s.SetCloudForTesting(&fakeCloud{lock: tc.lock, cond: tc.cond})
 
 			resp, body := h.do("POST", "/api/v1/fleet/targets", map[string]any{
-				"name": "hosted", "kind": "hosted", "storage_mode": "disk", "path": t.TempDir(),
+				"name": "hosted", "kind": "hosted", "storage_mode": "disk", "path": h.hostedDir(t),
 				"mirror_kind": tc.kind, "mirror_bucket": "hody-offsite", "mirror_region": "us-west-004",
 				"mirror_key_id": "k", "mirror_key": "s",
 			})
@@ -123,7 +134,7 @@ func TestHostedTargetMirrorReportsAnUnverifiableB2Key(t *testing.T) {
 	h.s.SetCloudForTesting(&fakeCloud{lock: true, cond: true})
 
 	resp, body := h.do("POST", "/api/v1/fleet/targets", map[string]any{
-		"name": "hosted", "kind": "hosted", "storage_mode": "disk", "path": t.TempDir(),
+		"name": "hosted", "kind": "hosted", "storage_mode": "disk", "path": h.hostedDir(t),
 		"mirror_kind": "b2", "mirror_bucket": "hody-offsite", "mirror_region": "us-west-004",
 		"mirror_key_id": "k", "mirror_key": "s",
 	})
@@ -143,7 +154,7 @@ func TestHostedTargetS3MirrorIsVerifiedOverS3(t *testing.T) {
 	c := verifiedFakes(h)
 
 	resp, _ := h.do("POST", "/api/v1/fleet/targets", map[string]any{
-		"name": "hosted", "kind": "hosted", "storage_mode": "disk", "path": t.TempDir(),
+		"name": "hosted", "kind": "hosted", "storage_mode": "disk", "path": h.hostedDir(t),
 		"mirror_kind": "s3", "mirror_bucket": "hody-offsite", "mirror_region": "us-east-1",
 		"mirror_key_id": "k", "mirror_key": "s",
 	})
@@ -174,7 +185,7 @@ func TestHostedTargetB2MirrorVerifiedWithoutConditionalPut(t *testing.T) {
 	h.s.SetCloudForTesting(&fakeCloud{lock: true, condUnsupported: true})
 
 	resp, body := h.do("POST", "/api/v1/fleet/targets", map[string]any{
-		"name": "hosted", "kind": "hosted", "storage_mode": "disk", "path": t.TempDir(),
+		"name": "hosted", "kind": "hosted", "storage_mode": "disk", "path": h.hostedDir(t),
 		"mirror_kind": "b2", "mirror_bucket": "hody-offsite", "mirror_region": "us-west-004",
 		"mirror_key_id": "k", "mirror_key": "s",
 	})
@@ -229,6 +240,7 @@ func TestHostedTargetCloudDirect(t *testing.T) {
 	// stored, so a reconnect uses the host the bucket was verified against.
 	require.Equal(t, "s3.us-west-004.backblazeb2.com", list[0]["endpoint"])
 	require.NotEmpty(t, list[0]["object_lock_verified_at"])
+
 	for _, k := range []string{"key", "key_id", "sealed_admin_key"} {
 		_, has := list[0][k]
 		require.False(t, has, "%s must never leave the server", k)
@@ -270,8 +282,10 @@ func TestHostedTargetCloudDirectRequiresLockAndConditionalWrites(t *testing.T) {
 		want       string
 	}{
 		{"no object lock", false, true, `bucket "hody-hosted" does not have Object Lock enabled`},
-		{"no conditional writes", true, false,
-			`bucket "hody-hosted" does not enforce conditional writes, so it cannot be append-only; use Fleet disk storage with a mirror instead`},
+		{
+			"no conditional writes", true, false,
+			`bucket "hody-hosted" does not enforce conditional writes, so it cannot be append-only; use Fleet disk storage with a mirror instead`,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
@@ -302,7 +316,7 @@ func TestTargetMirrorAttachAndReplace(t *testing.T) {
 	h.s.SetCloudForTesting(c)
 
 	resp, body := h.do("POST", "/api/v1/fleet/targets", map[string]any{
-		"name": "hosted", "kind": "hosted", "storage_mode": "disk", "path": t.TempDir(),
+		"name": "hosted", "kind": "hosted", "storage_mode": "disk", "path": h.hostedDir(t),
 	})
 	require.Equal(t, 201, resp.StatusCode)
 
@@ -318,6 +332,7 @@ func TestTargetMirrorAttachAndReplace(t *testing.T) {
 	require.NotEmpty(t, body["mirror_lock_verified_at"])
 	require.Equal(t, false, body["mirror_conditional_put"], "B2 answers 501, and that is recorded")
 	require.Equal(t, "first-key", c.lastKeyID())
+
 	for _, k := range []string{"mirror_key", "mirror_key_id", "sealed_mirror_key"} {
 		_, has := body[k]
 		require.False(t, has, "%s must never leave the server", k)
@@ -352,12 +367,14 @@ func TestTargetMirrorRefusals(t *testing.T) {
 		"bucket": "hody-hosted", "region": "us-west-004", "key_id": "k", "key": "s",
 	})
 	require.Equal(t, 201, resp.StatusCode)
+
 	cloudID := int64(body["id"].(float64))
 
 	resp, body = h.do("POST", "/api/v1/fleet/targets", map[string]any{
-		"name": "hosted", "kind": "hosted", "storage_mode": "disk", "path": t.TempDir(),
+		"name": "hosted", "kind": "hosted", "storage_mode": "disk", "path": h.hostedDir(t),
 	})
 	require.Equal(t, 201, resp.StatusCode)
+
 	diskID := int64(body["id"].(float64))
 
 	mirror := map[string]any{
@@ -426,6 +443,7 @@ func TestHostedTargetRejectsBadInput(t *testing.T) {
 	h := newHarness(t)
 	h.activateAndLogin()
 	verifiedFakes(h)
+
 	missing := filepath.Join(t.TempDir(), "nope")
 	notDir := filepath.Join(t.TempDir(), "file")
 	require.NoError(t, os.WriteFile(notDir, nil, 0o600))
@@ -434,42 +452,75 @@ func TestHostedTargetRejectsBadInput(t *testing.T) {
 		name, want string
 		in         map[string]any
 	}{
-		{"no storage_mode", "storage_mode must be disk or cloud for hosted targets",
-			map[string]any{"storage_mode": ""}},
-		{"bogus storage_mode", "storage_mode must be disk or cloud for hosted targets",
-			map[string]any{"storage_mode": "tape"}},
-		{"relative path", "path must be absolute",
-			map[string]any{"storage_mode": "disk", "path": "srv/warphold/hosted"}},
-		{"missing path", "path does not exist: " + missing,
-			map[string]any{"storage_mode": "disk", "path": missing}},
-		{"path is a file", "path is not a directory: " + notDir,
-			map[string]any{"storage_mode": "disk", "path": notDir}},
-		{"bad mirror kind", "mirror_kind must be b2 or s3",
-			map[string]any{"storage_mode": "disk", "path": os.TempDir(), "mirror_kind": "glacier"}},
-		{"mirror without credentials", "mirror_bucket, mirror_region, mirror_key_id and mirror_key are required for a mirror",
-			map[string]any{"storage_mode": "disk", "path": os.TempDir(), "mirror_kind": "b2", "mirror_bucket": "b"}},
-		{"mirror with a bogus region", `region "us west" is not a valid region name`,
-			map[string]any{"storage_mode": "disk", "path": os.TempDir(), "mirror_kind": "b2",
-				"mirror_bucket": "b", "mirror_region": "us west", "mirror_key_id": "k", "mirror_key": "s"}},
-		{"cloud without credentials", "bucket, region, key_id and key are required for cloud-direct hosted targets",
-			map[string]any{"storage_mode": "cloud", "bucket": "b", "key_id": "k"}},
-		{"cloud with a bogus region", `region "us west" is not a valid region name`,
-			map[string]any{"storage_mode": "cloud", "bucket": "b", "region": "us west", "key_id": "k", "key": "s"}},
-		{"cloud endpoint with a scheme", `endpoint "https://s3.example.com" must be a bare host, without a scheme`,
-			map[string]any{"storage_mode": "cloud", "bucket": "b", "region": "us-east-1", "key_id": "k", "key": "s",
-				"endpoint": "https://s3.example.com"}},
-		{"cloud endpoint with a path", `endpoint "s3.example.com/bucket" must be a bare host[:port], without a path`,
-			map[string]any{"storage_mode": "cloud", "bucket": "b", "region": "us-east-1", "key_id": "k", "key": "s",
-				"endpoint": "s3.example.com/bucket"}},
-		{"cloud with a mirror", "a cloud-direct target is already offsite; a mirror is only for storage_mode disk",
-			map[string]any{"storage_mode": "cloud", "bucket": "b", "region": "us-west-004", "key_id": "k", "key": "s",
-				"mirror_kind": "b2"}},
+		{
+			"no storage_mode", "storage_mode must be disk or cloud for hosted targets",
+			map[string]any{"storage_mode": ""},
+		},
+		{
+			"bogus storage_mode", "storage_mode must be disk or cloud for hosted targets",
+			map[string]any{"storage_mode": "tape"},
+		},
+		{
+			"relative path", "path must be absolute",
+			map[string]any{"storage_mode": "disk", "path": "srv/warphold/hosted"},
+		},
+		{
+			"missing path", "path does not exist: " + missing,
+			map[string]any{"storage_mode": "disk", "path": missing},
+		},
+		{
+			"path is a file", "path is not a directory: " + notDir,
+			map[string]any{"storage_mode": "disk", "path": notDir},
+		},
+		{
+			"bad mirror kind", "mirror_kind must be b2 or s3",
+			map[string]any{"storage_mode": "disk", "path": os.TempDir(), "mirror_kind": "glacier"},
+		},
+		{
+			"mirror without credentials", "mirror_bucket, mirror_region, mirror_key_id and mirror_key are required for a mirror",
+			map[string]any{"storage_mode": "disk", "path": os.TempDir(), "mirror_kind": "b2", "mirror_bucket": "b"},
+		},
+		{
+			"mirror with a bogus region", `region "us west" is not a valid region name`,
+			map[string]any{
+				"storage_mode": "disk", "path": os.TempDir(), "mirror_kind": "b2",
+				"mirror_bucket": "b", "mirror_region": "us west", "mirror_key_id": "k", "mirror_key": "s",
+			},
+		},
+		{
+			"cloud without credentials", "bucket, region, key_id and key are required for cloud-direct hosted targets",
+			map[string]any{"storage_mode": "cloud", "bucket": "b", "key_id": "k"},
+		},
+		{
+			"cloud with a bogus region", `region "us west" is not a valid region name`,
+			map[string]any{"storage_mode": "cloud", "bucket": "b", "region": "us west", "key_id": "k", "key": "s"},
+		},
+		{
+			"cloud endpoint with a scheme", `endpoint "https://s3.example.com" must be a bare host, without a scheme`,
+			map[string]any{
+				"storage_mode": "cloud", "bucket": "b", "region": "us-east-1", "key_id": "k", "key": "s",
+				"endpoint": "https://s3.example.com",
+			},
+		},
+		{
+			"cloud endpoint with a path", `endpoint "s3.example.com/bucket" must be a bare host[:port], without a path`,
+			map[string]any{
+				"storage_mode": "cloud", "bucket": "b", "region": "us-east-1", "key_id": "k", "key": "s",
+				"endpoint": "s3.example.com/bucket",
+			},
+		},
+		{
+			"cloud with a mirror", "a cloud-direct target is already offsite; a mirror is only for storage_mode disk",
+			map[string]any{
+				"storage_mode": "cloud", "bucket": "b", "region": "us-west-004", "key_id": "k", "key": "s",
+				"mirror_kind": "b2",
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			in := map[string]any{"name": "hosted", "kind": "hosted"}
-			for k, v := range tc.in {
-				in[k] = v
-			}
+			maps.Copy(in, tc.in)
+
 			resp, body := h.do("POST", "/api/v1/fleet/targets", in)
 			require.Equal(t, 400, resp.StatusCode)
 			require.Equal(t, tc.want, body["error"])
@@ -481,8 +532,14 @@ func TestHostedTargetRejectsNonWritablePath(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root writes anywhere")
 	}
+
+	if runtime.GOOS == "windows" {
+		t.Skip("linux-only: POSIX permission bits; a 0o500 dir is still writable on Windows")
+	}
+
 	h := newHarness(t)
 	h.activateAndLogin()
+
 	root := filepath.Join(t.TempDir(), "ro")
 	require.NoError(t, os.Mkdir(root, 0o500))
 	t.Cleanup(func() { os.Chmod(root, 0o700) })

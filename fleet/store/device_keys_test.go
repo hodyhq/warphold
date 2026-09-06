@@ -15,6 +15,7 @@ import (
 // seedAgent creates the target/template/group/agent chain a device key needs.
 func seedAgent(t *testing.T, s *store.Store, id string) time.Time {
 	t.Helper()
+
 	ctx := context.Background()
 	now := clock.Now().UTC().Truncate(time.Second)
 	tid, err := s.CreateTarget(ctx, &store.Target{Name: "hosted", Kind: "hosted", StorageMode: "disk", Path: "/srv/warphold/hosted", CreatedAt: now})
@@ -27,6 +28,7 @@ func seedAgent(t *testing.T, s *store.Store, id string) time.Time {
 		ID: id, Name: id, Hostname: id, OS: "linux", Arch: "amd64", Scope: "user", GroupID: gid,
 		BearerHash: []byte("hash-" + id), SealedBundle: []byte("sealed"), EnrolledAt: now,
 	}))
+
 	return now
 }
 

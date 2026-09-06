@@ -105,6 +105,7 @@ func resealBlobs(ctx context.Context, tx *sql.Tx, counts map[string]int, name, s
 			rows.Close()
 			return err
 		}
+
 		found = append(found, r)
 	}
 
@@ -118,13 +119,16 @@ func resealBlobs(ctx context.Context, tx *sql.Tx, counts map[string]int, name, s
 		if len(r.sealed) == 0 {
 			continue
 		}
+
 		next, err := reseal(r.sealed)
 		if err != nil {
 			return fmt.Errorf("%s %s: %w", name, r.id, err)
 		}
+
 		if _, err := tx.ExecContext(ctx, updateQ, next, r.id); err != nil {
 			return err
 		}
+
 		counts[name]++
 	}
 
@@ -150,6 +154,7 @@ func resealTargets(ctx context.Context, tx *sql.Tx, counts map[string]int, resea
 			rows.Close()
 			return err
 		}
+
 		found = append(found, t)
 	}
 
@@ -164,20 +169,24 @@ func resealTargets(ctx context.Context, tx *sql.Tx, counts map[string]int, resea
 		if len(admin) == 0 && len(mirror) == 0 {
 			continue
 		}
+
 		if len(admin) > 0 {
 			if admin, err = reseal(admin); err != nil {
 				return fmt.Errorf("target %d admin key: %w", t.id, err)
 			}
 		}
+
 		if len(mirror) > 0 {
 			if mirror, err = reseal(mirror); err != nil {
 				return fmt.Errorf("target %d mirror key: %w", t.id, err)
 			}
 		}
+
 		if _, err := tx.ExecContext(ctx, `UPDATE targets SET sealed_admin_key=?, sealed_mirror_key=? WHERE id=?`,
 			nullBlob(admin), nullBlob(mirror), t.id); err != nil {
 			return err
 		}
+
 		counts["targets"]++
 	}
 
@@ -189,6 +198,7 @@ func nullBlob(b []byte) any {
 	if len(b) == 0 {
 		return nil
 	}
+
 	return b
 }
 
@@ -209,11 +219,13 @@ func resealSettings(ctx context.Context, tx *sql.Tx, counts map[string]int, rese
 			rows.Close()
 			return err
 		}
+
 		raw, err := hex.DecodeString(value)
 		if err != nil {
 			rows.Close()
 			return fmt.Errorf("%w: setting %s: %w", ErrSealedNotHex, key, err)
 		}
+
 		found = append(found, sealedRow{id: key, sealed: raw})
 	}
 
@@ -227,13 +239,16 @@ func resealSettings(ctx context.Context, tx *sql.Tx, counts map[string]int, rese
 		if len(r.sealed) == 0 {
 			continue
 		}
+
 		next, err := reseal(r.sealed)
 		if err != nil {
 			return fmt.Errorf("setting %s: %w", r.id, err)
 		}
+
 		if _, err := tx.ExecContext(ctx, `UPDATE settings SET value=? WHERE key=?`, hex.EncodeToString(next), r.id); err != nil {
 			return err
 		}
+
 		counts["settings"]++
 	}
 

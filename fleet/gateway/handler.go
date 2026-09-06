@@ -3,7 +3,7 @@ package gateway
 import (
 	"bytes"
 	"context"
-	"crypto/md5" //nolint:gosec // Content-MD5 is S3's integrity check, not a security control.
+	"crypto/md5"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -296,7 +296,7 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request, e *LogEntry) {
 		// here -- once, where it enters the request -- rather than trusted
 		// because a provisioning path is believed to have written it well.
 		// "p == a+\"/\"" is three conditions at once: non-empty, ends in a
-		// slash (so no HasPrefix test downstream can match a neighbouring
+		// slash (so no HasPrefix test downstream can match a neighboring
 		// device), and names this agent and no other. checkKey on a synthetic
 		// key under it then runs the agent id through the same boundary every
 		// real key crosses -- UTF-8, control bytes, backslash, relative
@@ -308,6 +308,7 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request, e *LogEntry) {
 			// not the place to find out.
 			log.Printf("warphold gateway: device key with malformed prefix, refusing: agent=%q key=%q prefix_len=%d ends_in_slash=%t",
 				a, accessKeyID, len(p), strings.HasSuffix(p, "/"))
+
 			return "", false
 		}
 
@@ -468,6 +469,7 @@ func (g *Gateway) serveBucket(w http.ResponseWriter, r *http.Request, query url.
 		// RECONCILE §5.2: Kopia's IsVersioned has no caller, and no backend the
 		// gateway serves is versioned.
 		e.Class = "versioning"
+
 		writeNotImplemented(w, r, "bucket versioning is not supported")
 
 		return
@@ -476,6 +478,7 @@ func (g *Gateway) serveBucket(w http.ResponseWriter, r *http.Request, query url.
 	if _, ok := query["location"]; ok {
 		// Sent whenever the client was configured without --region.
 		e.Class = "location"
+
 		writeXML(w, http.StatusOK, locationConstraint{Value: g.region})
 
 		return
@@ -485,6 +488,7 @@ func (g *Gateway) serveBucket(w http.ResponseWriter, r *http.Request, query url.
 		// HeadBucket: the bucket name is a constant and the caller is already
 		// authenticated, so this leaks nothing.
 		e.Class = "bucket"
+
 		w.WriteHeader(http.StatusOK)
 
 		return
@@ -529,13 +533,13 @@ func (g *Gateway) put(w http.ResponseWriter, r *http.Request, st ObjectStore, ke
 	// is the only end-to-end integrity check on the body. minio-go always sends
 	// it (SendContentMd5: true), so requiring it costs nothing and closes the
 	// gap.
-	want, err := base64.StdEncoding.DecodeString(r.Header.Get("Content-Md5"))
+	want, err := base64.StdEncoding.DecodeString(r.Header.Get("Content-MD5"))
 	if err != nil || len(want) != md5.Size {
 		writeError(w, r, http.StatusBadRequest, codeMissingContentMD5, "a valid base64 Content-MD5 header is required")
 		return
 	}
 
-	body := &md5Check{r: r.Body, h: md5.New(), want: want} //nolint:gosec // integrity check, see above
+	body := &md5Check{r: r.Body, h: md5.New(), want: want}
 
 	info, err := st.Put(r.Context(), key, body, r.ContentLength, deviceOverwrite)
 
@@ -614,6 +618,7 @@ func (g *Gateway) get(w http.ResponseWriter, r *http.Request, st ObjectStore, ke
 	// is malformed), so it is answered as a plain empty 200.
 	if ranged && served > 0 {
 		h.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", offset, offset+served-1, info.Size))
+
 		status = http.StatusPartialContent
 	}
 
@@ -874,7 +879,7 @@ func (rec *recorder) Write(p []byte) (int, error) {
 
 // list serves ListObjectsV2, confined to the device's prefix.
 //
-// Prefix confinement is the defence-in-depth pair of spec §4.1.5: a prefix
+// Prefix confinement is the defense-in-depth pair of spec §4.1.5: a prefix
 // parameter that does not start with the device's prefix is *replaced* by it
 // rather than erroring, and every key returned is under that prefix because
 // that is the only prefix the store is ever asked for.

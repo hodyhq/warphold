@@ -28,27 +28,32 @@ func (s *Server) mountDownload(m *mux.Router) {
 // /enroll.sh.
 func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	name := mux.Vars(r)["name"]
+
 	mm := dlName.FindStringSubmatch(name)
 	if mm == nil {
 		writeErr(w, http.StatusNotFound, "unknown binary name")
 		return
 	}
+
 	path := ""
 	if mm[1] == runtime.GOOS && mm[2] == runtime.GOARCH {
 		if self, err := os.Executable(); err == nil {
 			path = self
 		}
 	}
+
 	if path == "" {
 		cand := filepath.Join(s.paths.StateDir, "binaries", name)
 		if st, err := os.Stat(cand); err == nil && st.Mode().IsRegular() {
 			path = cand
 		}
 	}
+
 	if path == "" {
 		writeErr(w, http.StatusNotFound, "no binary for "+mm[1]+"-"+mm[2]+"; place one at <state dir>/binaries/")
 		return
 	}
+
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", `attachment; filename="warphold"`)
 	http.ServeFile(w, r, path)

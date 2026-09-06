@@ -118,6 +118,7 @@ func (s *Server) handleTargetCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "name and kind are required")
 		return
 	}
+
 	t := &store.Target{Name: in.Name, Kind: in.Kind, Bucket: in.Bucket, Region: in.Region, Path: in.Path, CreatedAt: s.now()}
 	switch in.Kind {
 	case "filesystem":
@@ -125,6 +126,7 @@ func (s *Server) handleTargetCreate(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "path is required for filesystem targets")
 			return
 		}
+
 		if err := os.MkdirAll(in.Path, 0o700); err != nil {
 			writeErr(w, http.StatusBadRequest, "cannot create path: "+err.Error())
 			return
@@ -134,11 +136,13 @@ func (s *Server) handleTargetCreate(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "bucket, key_id and key are required for b2 targets")
 			return
 		}
+
 		sealed, err := s.sealCreds(targetCreds{KeyID: in.KeyID, Key: in.Key})
 		if err != nil {
 			adminFailed(w, "seal target credentials", err)
 			return
 		}
+
 		t.SealedAdminKey = sealed
 		if s.b2 != nil {
 			info, err := s.b2.BucketInfo(r.Context(), in.KeyID, in.Key, in.Bucket) // Task 8
@@ -146,6 +150,7 @@ func (s *Server) handleTargetCreate(w http.ResponseWriter, r *http.Request) {
 				writeErr(w, http.StatusBadRequest, "b2: "+err.Error())
 				return
 			}
+
 			if info.ObjectLockEnabled {
 				now := s.now()
 				t.ObjectLockVerifiedAt = &now
@@ -159,15 +164,18 @@ func (s *Server) handleTargetCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "kind must be b2, filesystem or hosted")
 		return
 	}
+
 	id, err := s.store().CreateTarget(r.Context(), t)
 	if err != nil {
 		adminFailed(w, "create target", err)
 		return
 	}
+
 	out := map[string]any{"id": id, "object_lock_verified": t.ObjectLockVerifiedAt != nil}
 	if t.MirrorConditionalPut != nil {
 		out["mirror_conditional_put"] = *t.MirrorConditionalPut
 	}
+
 	writeJSON(w, http.StatusCreated, out)
 }
 
@@ -190,15 +198,18 @@ func (s *Server) applyHostedDisk(ctx context.Context, w http.ResponseWriter, in 
 	if t.Path == "" {
 		t.Path = defaultHostedRoot
 	}
+
 	if err := checkHostedRoot(t.Path); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return false
 	}
+
 	t.StorageMode = "disk"
 
 	if in.MirrorKind == "" {
 		return true
 	}
+
 	return s.applyMirror(ctx, w, in, t)
 }
 
@@ -215,6 +226,7 @@ func (s *Server) applyMirror(ctx context.Context, w http.ResponseWriter, in *tar
 		writeErr(w, http.StatusBadRequest, "mirror_kind must be b2 or s3")
 		return false
 	}
+
 	if in.MirrorBucket == "" || in.MirrorRegion == "" || in.MirrorKeyID == "" || in.MirrorKey == "" {
 		writeErr(w, http.StatusBadRequest, "mirror_bucket, mirror_region, mirror_key_id and mirror_key are required for a mirror")
 		return false
@@ -227,19 +239,23 @@ func (s *Server) applyMirror(ctx context.Context, w http.ResponseWriter, in *tar
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return false
 	}
+
 	condPut, err := s.verifyBucket(ctx, in.MirrorKind, in.MirrorBucket, in.MirrorRegion, endpoint, in.MirrorKeyID, in.MirrorKey, true)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return false
 	}
+
 	sealed, err := s.sealCreds(targetCreds{KeyID: in.MirrorKeyID, Key: in.MirrorKey})
 	if err != nil {
 		adminFailed(w, "seal mirror credentials", err)
 		return false
 	}
+
 	now := s.now()
 	t.MirrorKind, t.MirrorBucket, t.MirrorRegion, t.SealedMirrorKey = in.MirrorKind, in.MirrorBucket, in.MirrorRegion, sealed
 	t.MirrorLockVerifiedAt, t.MirrorConditionalPut = &now, &condPut
+
 	return true
 }
 
@@ -262,11 +278,13 @@ func (s *Server) handleTargetMirrorSet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad id")
 		return
 	}
+
 	var in targetInput
 	if err := decode(r, &in); err != nil {
 		writeErr(w, http.StatusBadRequest, "malformed body")
 		return
 	}
+
 	t, err := s.store().Target(r.Context(), id)
 	if err != nil {
 		// A store that failed is not a target that is absent: answering 404
@@ -275,9 +293,12 @@ func (s *Server) handleTargetMirrorSet(w http.ResponseWriter, r *http.Request) {
 			adminFailed(w, "read target", err)
 			return
 		}
+
 		writeErr(w, http.StatusNotFound, "target not found")
+
 		return
 	}
+
 	switch {
 	case t.Kind == "hosted" && t.StorageMode == "cloud":
 		writeErr(w, http.StatusConflict, "a cloud-direct target has no mirror: it already writes to the customer's own bucket")
@@ -289,13 +310,16 @@ func (s *Server) handleTargetMirrorSet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "mirror_kind is required; a mirror cannot be removed through this route")
 		return
 	}
+
 	if !s.applyMirror(r.Context(), w, &in, t) {
 		return
 	}
+
 	if err := s.store().SetTargetMirror(r.Context(), t); err != nil {
 		adminFailed(w, "update target mirror", err)
 		return
 	}
+
 	writeJSON(w, http.StatusOK, toTargetOut(*t))
 }
 
@@ -313,6 +337,7 @@ func (s *Server) applyHostedCloud(ctx context.Context, w http.ResponseWriter, in
 		writeErr(w, http.StatusBadRequest, "bucket, region, key_id and key are required for cloud-direct hosted targets")
 		return false
 	}
+
 	if in.MirrorKind != "" {
 		writeErr(w, http.StatusBadRequest, "a cloud-direct target is already offsite; a mirror is only for storage_mode disk")
 		return false
@@ -325,6 +350,7 @@ func (s *Server) applyHostedCloud(ctx context.Context, w http.ResponseWriter, in
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return false
 		}
+
 		kind, endpoint = "b2", e
 	} else if err := checkEndpoint(endpoint); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
@@ -346,6 +372,7 @@ func (s *Server) applyHostedCloud(ctx context.Context, w http.ResponseWriter, in
 	t.SealedAdminKey = sealed
 	t.StorageMode, t.Endpoint, t.Path = "cloud", endpoint, ""
 	t.ObjectLockVerifiedAt = &now
+
 	return true
 }
 
@@ -384,12 +411,14 @@ func (s *Server) verifyBucket(ctx context.Context, kind, bucket, region, endpoin
 		if err != nil {
 			return false, fmt.Errorf("b2: %w", err)
 		}
+
 		if !info.LockReadable {
 			// B2 hides fileLockConfiguration from a key that may not read it,
 			// and the flag then decodes as false. That is "cannot verify", not
 			// "unlocked", and the fix is a different key.
 			return false, fmt.Errorf("bucket %q: cannot verify Object Lock: the application key lacks readBucketRetentions/read capability - use a key that can read the bucket's lock configuration", bucket)
 		}
+
 		if !info.ObjectLockEnabled {
 			return false, fmt.Errorf("bucket %q does not have Object Lock enabled", bucket)
 		}
@@ -397,6 +426,7 @@ func (s *Server) verifyBucket(ctx context.Context, kind, bucket, region, endpoin
 		if errors.Is(err, gateway.ErrNoObjectLock) {
 			return false, fmt.Errorf("bucket %q does not have Object Lock enabled", bucket)
 		}
+
 		return false, fmt.Errorf("bucket %q: %w", bucket, err)
 	}
 
@@ -424,6 +454,7 @@ func s3Endpoint(kind, region string) (string, error) {
 	if !regionRE.MatchString(region) {
 		return "", fmt.Errorf("region %q is not a valid region name", region)
 	}
+
 	switch kind {
 	case "b2":
 		return "s3." + region + ".backblazeb2.com", nil
@@ -447,6 +478,7 @@ func checkEndpoint(e string) error {
 	if strings.Contains(e, "://") {
 		return fmt.Errorf("endpoint %q must be a bare host, without a scheme", e)
 	}
+
 	if strings.ContainsAny(e, "/ \\\t") || e != strings.TrimSpace(e) {
 		return fmt.Errorf("endpoint %q must be a bare host[:port], without a path", e)
 	}
@@ -469,7 +501,7 @@ func s3ConnInfo(bucket, region, endpoint, keyID, key string) blob.ConnectionInfo
 // cloudStoreForJob is cloudStoreFor with the rotation read lock held. It is the
 // seam the job scheduler is handed, for the same reason s.unseal exists: a job
 // runs with no lock of its own, so unsealing the target's admin credentials
-// would otherwise race a passphrase rotation with nothing serialising it.
+// would otherwise race a passphrase rotation with nothing serializing it.
 //
 // The lock is taken HERE rather than inside cloudStoreFor because enrollment
 // reaches that function from inside sealHeld (handleEnroll -> newProvisioner ->
@@ -493,6 +525,7 @@ func (s *Server) cloudStoreFor(ctx context.Context, t *store.Target) (gateway.Ob
 	if err != nil {
 		return nil, fmt.Errorf("unsealing the credentials of target %q: %w", t.Name, err)
 	}
+
 	if keyID == "" || key == "" {
 		return nil, fmt.Errorf("cloud-direct target %q has no stored credentials", t.Name)
 	}
@@ -512,19 +545,24 @@ func checkHostedRoot(p string) error {
 	if !filepath.IsAbs(p) {
 		return errors.New("path must be absolute")
 	}
+
 	fi, err := os.Stat(p)
 	if err != nil {
 		return errors.New("path does not exist: " + p)
 	}
+
 	if !fi.IsDir() {
 		return errors.New("path is not a directory: " + p)
 	}
+
 	f, err := os.CreateTemp(p, ".warphold-write-")
 	if err != nil {
 		return errors.New("path is not writable by the fleet service user: " + p)
 	}
+
 	f.Close()
 	os.Remove(f.Name())
+
 	return nil
 }
 
@@ -534,6 +572,7 @@ func (s *Server) handleTargetList(w http.ResponseWriter, r *http.Request) {
 		adminFailed(w, "list targets", err)
 		return
 	}
+
 	newest, stale, err := s.targetMirrorState(r.Context(), ts)
 	if err != nil {
 		// A store failure here would otherwise render every mirrored target

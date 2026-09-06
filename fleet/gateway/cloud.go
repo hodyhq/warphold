@@ -25,7 +25,7 @@ import (
 const (
 	// spoolAbove is where a PUT stops being buffered in RAM and starts being
 	// spooled to a 0600 temp file. A conditional PUT may have to be replayed and
-	// its length is needed up front, so the body is always materialised - the
+	// its length is needed up front, so the body is always materialized - the
 	// only question is where.
 	spoolAbove = 8 << 20
 
@@ -377,7 +377,7 @@ func (c *cloud) Put(ctx context.Context, key string, r io.Reader, size int64, ov
 	return ObjectInfo{Key: key, Size: n, ETag: unquote(ui.ETag), LastModified: mt}, nil
 }
 
-// spool materialises r, because a PUT needs its length up front and a
+// spool materializes r, because a PUT needs its length up front and a
 // conditional PUT may have to be replayed. Small bodies stay in memory; a big
 // or unknown-length one goes to a 0600 temp file that is removed on every path.
 // A body that does not match its declared length - or an unknown-length one
@@ -534,7 +534,7 @@ func (c *cloud) List(ctx context.Context, prefix, after string, max int) ([]Obje
 	}
 
 	// minio's ListObjects returns a channel fed by a goroutine, and its own doc
-	// says an undrained channel leaks it - so the context is cancelled on return
+	// says an undrained channel leaks it - so the context is canceled on return
 	// for the case where the page fills before the listing ends.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

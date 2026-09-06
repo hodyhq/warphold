@@ -45,6 +45,7 @@ func testKeys(t *testing.T) (*store.Store, seal.Key) {
 	require.NoError(t, s.CreateDeviceKey(ctx, &store.DeviceKey{
 		AccessKeyID: testKeyID, AgentID: testAgent, SealedSecret: sealed, Prefix: testAgent + "/", CreatedAt: now,
 	}))
+
 	return s, k
 }
 
@@ -65,6 +66,7 @@ func TestKeysLookupAndCache(t *testing.T) {
 	n, err := s.DisableDeviceKeysForAgent(ctx, testAgent, clock.Now())
 	require.NoError(t, err)
 	require.EqualValues(t, 1, n)
+
 	_, _, secret, _, ok = keys.Lookup(ctx, testKeyID)
 	require.True(t, ok, "should still be served from cache")
 	require.Equal(t, testSecret, secret)

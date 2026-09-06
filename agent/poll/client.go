@@ -70,23 +70,29 @@ func (c *Client) http() *http.Client {
 	if c.HTTP != nil {
 		return c.HTTP
 	}
+
 	return &http.Client{Timeout: 60 * time.Second}
 }
 
 func (c *Client) post(ctx context.Context, path string, body any) (*http.Response, []byte, error) {
 	b, _ := json.Marshal(body)
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(c.Server, "/")+path, bytes.NewReader(b))
 	if err != nil {
 		return nil, nil, err
 	}
+
 	req.Header.Set("Authorization", "Bearer "+c.Bearer)
 	req.Header.Set("Content-Type", "application/json")
+
 	resp, err := c.http().Do(req)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer resp.Body.Close()
+
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+
 	return resp, raw, nil
 }
 
@@ -96,6 +102,7 @@ func (c *Client) Poll(ctx context.Context, hb Heartbeat, etag string) (*PolicyDo
 	if err != nil {
 		return nil, err
 	}
+
 	switch resp.StatusCode {
 	case http.StatusNotModified:
 		return nil, nil
@@ -106,6 +113,7 @@ func (c *Client) Poll(ctx context.Context, hb Heartbeat, etag string) (*PolicyDo
 		if err := json.Unmarshal(raw, &doc); err != nil {
 			return nil, fmt.Errorf("malformed policy document: %w", err)
 		}
+
 		return &doc, nil
 	default:
 		return nil, fmt.Errorf("fleet returned %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
@@ -118,12 +126,15 @@ func (c *Client) Report(ctx context.Context, r Report) error {
 	if err != nil {
 		return err
 	}
+
 	if resp.StatusCode == http.StatusUnauthorized {
 		return ErrRevoked
 	}
+
 	if resp.StatusCode/100 != 2 {
 		return fmt.Errorf("fleet returned %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
+
 	return nil
 }
 
@@ -133,5 +144,6 @@ func Jitter(base time.Duration) time.Duration {
 	if d < 30*time.Second {
 		return 30 * time.Second
 	}
+
 	return d
 }

@@ -25,10 +25,13 @@ func (in *templateIn) validate() error {
 	if in.Name == "" || len(in.Sources) == 0 {
 		return errMsg("name and at least one source are required")
 	}
+
 	var p policy.Policy
+
 	if len(in.Policy) == 0 {
 		in.Policy = json.RawMessage(`{}`)
 	}
+
 	return json.Unmarshal(in.Policy, &p) // must be a Kopia policy object
 }
 
@@ -42,15 +45,18 @@ func (s *Server) handleTemplateCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "malformed body")
 		return
 	}
+
 	if err := in.validate(); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+
 	id, err := s.store().CreateTemplate(r.Context(), &store.Template{Name: in.Name, Sources: in.Sources, PolicyJSON: in.Policy, CreatedAt: s.now()})
 	if err != nil {
 		adminFailed(w, "create template", err)
 		return
 	}
+
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
 }
 
@@ -60,23 +66,28 @@ func (s *Server) handleTemplateUpdate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad id")
 		return
 	}
+
 	var in templateIn
 	if err := decode(r, &in); err != nil {
 		writeErr(w, http.StatusBadRequest, "malformed body")
 		return
 	}
+
 	if err := in.validate(); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+
 	if _, err := s.store().Template(r.Context(), id); err != nil {
 		writeErr(w, http.StatusNotFound, "template not found")
 		return
 	}
+
 	if err := s.store().UpdateTemplate(r.Context(), &store.Template{ID: id, Name: in.Name, Sources: in.Sources, PolicyJSON: in.Policy}); err != nil {
 		adminFailed(w, "update template", err)
 		return
 	}
+
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -86,9 +97,11 @@ func (s *Server) handleTemplateList(w http.ResponseWriter, r *http.Request) {
 		adminFailed(w, "list templates", err)
 		return
 	}
+
 	out := make([]templateOut, 0, len(ts))
 	for _, t := range ts {
 		out = append(out, templateOut{ID: t.ID, Name: t.Name, Sources: t.Sources, Policy: t.PolicyJSON})
 	}
+
 	writeJSON(w, http.StatusOK, out)
 }

@@ -126,6 +126,7 @@ func TestProvisionHostedCreatesReadableRepositoryAndDeviceKey(t *testing.T) {
 
 	ents, err := os.ReadDir(filepath.Join(root, "ag_h1"))
 	require.NoError(t, err)
+
 	for _, e := range ents {
 		require.False(t, e.IsDir(), "the hosted layout is flat; %q is a directory", e.Name())
 	}
@@ -135,6 +136,7 @@ func TestProvisionHostedCreatesReadableRepositoryAndDeviceKey(t *testing.T) {
 		Type: gateway.HostedStorageType, Config: &gateway.HostedOptions{Root: root, Prefix: "ag_h1/"},
 	}, false)
 	require.NoError(t, err)
+
 	defer adminSt.Close(ctx) //nolint:errcheck
 
 	cfg := filepath.Join(t.TempDir(), "repository.config")
@@ -142,6 +144,7 @@ func TestProvisionHostedCreatesReadableRepositoryAndDeviceKey(t *testing.T) {
 
 	r, err := repo.Open(ctx, cfg, b.Password, nil)
 	require.NoError(t, err)
+
 	defer r.Close(ctx) //nolint:errcheck
 
 	params, err := maintenance.GetParams(ctx, r)

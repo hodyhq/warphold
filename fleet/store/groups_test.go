@@ -16,14 +16,18 @@ import (
 // repoint attempt at a different target.
 func seedGroup(t *testing.T, s *store.Store, now time.Time) (gid, tid, tpl int64) {
 	t.Helper()
+
 	ctx := context.Background()
+
 	var err error
+
 	tid, err = s.CreateTarget(ctx, &store.Target{Name: "t", Kind: "filesystem", Path: t.TempDir(), CreatedAt: now})
 	require.NoError(t, err)
 	tpl, err = s.CreateTemplate(ctx, &store.Template{Name: "tpl", Sources: []string{"~"}, PolicyJSON: []byte(`{}`), CreatedAt: now})
 	require.NoError(t, err)
 	gid, err = s.CreateGroup(ctx, &store.Group{Name: "g", TargetID: tid, TemplateID: tpl, CreatedAt: now})
 	require.NoError(t, err)
+
 	return gid, tid, tpl
 }
 
@@ -89,6 +93,7 @@ func TestUpdateGroupRefusesRepointWithAgents(t *testing.T) {
 	t.Run("a template-only change is never blocked by agents", func(t *testing.T) {
 		gid, _, _ := seedGroup(t, s, now)
 		mkAgent(gid, "a4")
+
 		tpl2, err := s.CreateTemplate(ctx, &store.Template{Name: "tpl2", Sources: []string{"~"}, PolicyJSON: []byte(`{}`), CreatedAt: now})
 		require.NoError(t, err)
 		require.NoError(t, s.UpdateGroup(ctx, gid, nil, nil, &tpl2))

@@ -68,6 +68,7 @@ func TestMaintenanceTakesOverAnOtherwiseOwnedRepository(t *testing.T) {
 		func(ctx context.Context, w repo.DirectRepositoryWriter) error {
 			p, err := maintenance.GetParams(ctx, w)
 			require.NoError(t, err)
+
 			p.Owner = "someone@elsewhere"
 
 			return maintenance.SetParams(ctx, w, p)

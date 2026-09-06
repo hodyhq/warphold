@@ -19,7 +19,7 @@ func TestGatewayIsHostValidatedAndMounted(t *testing.T) {
 	get := func(host string) *http.Response {
 		t.Helper()
 
-		req, err := http.NewRequest(http.MethodGet, h.srv.URL+"/"+gateway.BucketName+"/some-device/some-blob", nil) //nolint:noctx
+		req, err := http.NewRequest(http.MethodGet, h.srv.URL+"/"+gateway.BucketName+"/some-device/some-blob", http.NoBody) //nolint:noctx
 		require.NoError(t, err)
 
 		if host != "" {
@@ -43,8 +43,9 @@ func TestGatewayIsHostValidatedAndMounted(t *testing.T) {
 	require.Equal(t, http.StatusMisdirectedRequest, get("evil.example.com").StatusCode)
 
 	// The bucket path with no key is the ListObjectsV2 route and is validated too.
-	req, err := http.NewRequest(http.MethodGet, h.srv.URL+"/"+gateway.BucketName, nil) //nolint:noctx
+	req, err := http.NewRequest(http.MethodGet, h.srv.URL+"/"+gateway.BucketName, http.NoBody) //nolint:noctx
 	require.NoError(t, err)
+
 	req.Host = "evil.example.com"
 	res, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
