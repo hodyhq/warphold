@@ -60,7 +60,13 @@ func randomHex(n int) string {
 // UI API, plus the WarpHold UI itself, on 127.0.0.1:0. scope selects the state directory (see state.Dir),
 // which holds the UI preferences and the engine.json written once the engine
 // is listening; Stop removes that file.
-func StartHeadless(ctx context.Context, configFile, repoPassword, scope string) (_ *Headless, retErr error) {
+//
+// persist is where the server's own connect/create endpoints store the
+// repository password. The agent passes passwordpersist.None() - its password
+// comes from enrollment and nothing here may touch it; the app passes the
+// CLI's configured strategy, because its repository is created by the UI's
+// setup wizard and that password has nowhere else to go.
+func StartHeadless(ctx context.Context, configFile, repoPassword, scope string, persist passwordpersist.Strategy) (_ *Headless, retErr error) {
 	h := &Headless{User: headlessUser, Password: randomHex(32), LocalToken: randomHex(32), scope: scope}
 	srv, err := server.New(ctx, &server.Options{
 		ConfigFile:        configFile,
@@ -68,7 +74,7 @@ func StartHeadless(ctx context.Context, configFile, repoPassword, scope string) 
 		RefreshInterval:   4 * time.Hour,
 		Authenticator:     auth.AuthenticateSingleUser(h.User, h.Password),
 		Authorizer:        auth.DefaultAuthorizer(),
-		PasswordPersist:   passwordpersist.None(),
+		PasswordPersist:   persist,
 		UIUser:            h.User,
 		ServerControlUser: h.User,
 		UIPreferencesFile: filepath.Join(state.Dir(scope), "ui-preferences.json"),
@@ -94,6 +100,20 @@ func StartHeadless(ctx context.Context, configFile, repoPassword, scope string) 
 	}
 	h.srv = srv
 	open := func(ctx context.Context) (repo.Repository, error) {
+		// The standalone app's first run has no repository at all: the UI's
+		// setup wizard is what creates one, so a nil repository here means
+		// "not configured" and the server comes up unconnected, exactly as
+		// upstream's "server start" does (cli/config.go openRepository).
+		//
+		// The agent scope deliberately does not get this: it is enrolled, its
+		// repository was connected at enrollment, and a missing config file
+		// there means something went wrong and must be reported - not an
+		// engine that quietly backs nothing up. An os.Stat error other than
+		// IsNotExist is left to repo.Open to report.
+		if _, err := os.Stat(configFile); os.IsNotExist(err) && scope == state.ScopeApp {
+			return nil, nil
+		}
+
 		return repo.Open(ctx, configFile, repoPassword, &repo.Options{})
 	}
 	if _, err := srv.InitRepositoryAsync(ctx, "Open", open, true); err != nil {

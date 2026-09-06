@@ -1,8 +1,8 @@
 module github.com/kopia/kopia
 
-go 1.25.8
+go 1.26.0
 
-toolchain go1.25.14
+toolchain go1.26.8
 
 require (
 	cloud.google.com/go/storage v1.65.0
@@ -57,7 +57,7 @@ require (
 	go.opentelemetry.io/otel/sdk v1.46.0
 	go.opentelemetry.io/otel/trace v1.46.0
 	go.uber.org/zap v1.28.0
-	golang.org/x/crypto v0.55.0
+	golang.org/x/crypto v0.56.0
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f
 	golang.org/x/mod v0.40.0
 	golang.org/x/net v0.58.0

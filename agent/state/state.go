@@ -21,6 +21,15 @@ type Config struct {
 	ETag         string `json:"policy_etag"`
 }
 
+// The scopes an agent state directory can have. ScopeApp is the standalone
+// single-machine app: it is not enrolled anywhere, so its repository and
+// engine live beside - not on top of - a Fleet agent's on the same machine.
+const (
+	ScopeUser   = "user"
+	ScopeSystem = "system"
+	ScopeApp    = "app"
+)
+
 func home() string {
 	h, err := os.UserHomeDir()
 	if err != nil {
@@ -31,13 +40,18 @@ func home() string {
 }
 
 // Dir is where agent.json and repository.config live. $WARPHOLD_STATE_DIR
-// overrides both scopes, for tests.
+// overrides every scope, for tests.
 func Dir(scope string) string {
+	return appSuffix(scope, baseDir(scope))
+}
+
+// baseDir is the scope's directory before the app suffix.
+func baseDir(scope string) string {
 	if d := os.Getenv("WARPHOLD_STATE_DIR"); d != "" {
 		return d
 	}
 
-	if scope == "system" {
+	if scope == ScopeSystem {
 		return "/etc/warphold"
 	}
 
@@ -48,21 +62,33 @@ func Dir(scope string) string {
 	return filepath.Join(home(), ".config", "warphold")
 }
 
+// appSuffix keeps the standalone app one level below whichever directory the
+// scope resolved to - including an explicit WARPHOLD_STATE_DIR, so pointing
+// both an agent and an app at one directory still gives them separate
+// repositories rather than one they would fight over.
+func appSuffix(scope, dir string) string {
+	if scope == ScopeApp {
+		return filepath.Join(dir, "app")
+	}
+
+	return dir
+}
+
 // CacheDir is the Kopia content cache directory for the agent's repository.
 func CacheDir(scope string) string {
 	if d := os.Getenv("WARPHOLD_STATE_DIR"); d != "" {
-		return filepath.Join(d, "cache")
+		return filepath.Join(appSuffix(scope, d), "cache")
 	}
 
-	if scope == "system" {
+	if scope == ScopeSystem {
 		return "/var/cache/warphold"
 	}
 
 	if x := os.Getenv("XDG_CACHE_HOME"); x != "" {
-		return filepath.Join(x, "warphold")
+		return appSuffix(scope, filepath.Join(x, "warphold"))
 	}
 
-	return filepath.Join(home(), ".cache", "warphold")
+	return appSuffix(scope, filepath.Join(home(), ".cache", "warphold"))
 }
 
 // RepoConfigPath is the Kopia repository config file for the agent's scope.

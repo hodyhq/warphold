@@ -15,6 +15,7 @@ func (s *Server) mountAdminEnrollment(m *mux.Router, adm func(http.HandlerFunc) 
 	m.HandleFunc("/api/v1/fleet/groups/{id}/tokens", adm(s.handleTokenList)).Methods(http.MethodGet)
 	m.HandleFunc("/api/v1/fleet/tokens/{id}/revoke", adm(s.handleTokenRevoke)).Methods(http.MethodPost)
 	s.mountAdminAgents(m, adm) // Task 11
+	s.mountAdminKit(m, adm)    // Task 24
 }
 
 func (s *Server) tokens() *enroll.Tokens {

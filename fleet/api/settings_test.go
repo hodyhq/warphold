@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/kopia/kopia/fleet/jobs"
 )
 
 func TestSettingsRequiresAdminAndRoundTrips(t *testing.T) {
@@ -81,7 +83,59 @@ func TestSettingsRejectsUnknownKeysAndBadValues(t *testing.T) {
 	require.ElementsMatch(t,
 		[]string{"fleet_name", "poll_interval", "public_url", "revoked_retention_days",
 			"trusted_proxies", "gateway_ip_rate", "gateway_ip_burst", "gateway_device_rate",
-			"gateway_device_burst"},
+			"gateway_device_burst",
+			"smtp_host", "smtp_port", "smtp_username", "smtp_from", "smtp_tls", "smtp_password_set",
+			"job_intervals"},
 		slices.Collect(maps.Keys(body)), "only the whitelisted keys are exposed")
 	require.NotContains(t, body, "seal_salt")
+}
+
+// The Settings screen's Background-jobs card writes the scheduler's own
+// cadence settings. They used to fall through to "unknown setting" and 400,
+// so the card could show a cadence it could never change. Table-driven off
+// jobs.IntervalSettings(), so a job kind added to the scheduler is covered
+// here the day it is added rather than the day someone remembers.
+func TestJobIntervalSettingsRoundTrip(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+
+	_, body := h.do("GET", "/api/v1/fleet/settings", nil)
+	shown, ok := body["job_intervals"].(map[string]any)
+	require.True(t, ok, "job_intervals is an object")
+
+	specs := jobs.IntervalSettings()
+	require.NotEmpty(t, specs)
+	require.Len(t, shown, len(specs), "every scheduled kind's cadence is exposed")
+
+	for key, spec := range specs {
+		t.Run(key, func(t *testing.T) {
+			require.Equal(t, float64(spec.DefaultSeconds), shown[key], "unset reads as the default")
+
+			// The floor is accepted, and read back as written.
+			resp, body := h.do("PUT", "/api/v1/fleet/settings", map[string]any{key: spec.MinSeconds})
+			require.Equal(t, 200, resp.StatusCode, body["error"])
+			require.Equal(t, float64(spec.MinSeconds),
+				body["job_intervals"].(map[string]any)[key], "the PUT response reflects it")
+
+			_, body = h.do("GET", "/api/v1/fleet/settings", nil)
+			require.Equal(t, float64(spec.MinSeconds),
+				body["job_intervals"].(map[string]any)[key], "and so does a fresh GET")
+
+			// Below the scheduler's floor is refused rather than silently
+			// clamped: the number the screen shows must be the number that runs.
+			resp, body = h.do("PUT", "/api/v1/fleet/settings", map[string]any{key: spec.MinSeconds - 1})
+			require.Equal(t, 400, resp.StatusCode)
+			require.Contains(t, body["error"], key)
+
+			resp, _ = h.do("PUT", "/api/v1/fleet/settings", map[string]any{key: spec.MaxSeconds + 1})
+			require.Equal(t, 400, resp.StatusCode, "an absurd cadence would overflow the scheduler's Duration")
+
+			resp, _ = h.do("PUT", "/api/v1/fleet/settings", map[string]any{key: "hourly"})
+			require.Equal(t, 400, resp.StatusCode, "not a number")
+
+			// The refusals changed nothing.
+			_, body = h.do("GET", "/api/v1/fleet/settings", nil)
+			require.Equal(t, float64(spec.MinSeconds), body["job_intervals"].(map[string]any)[key])
+		})
+	}
 }

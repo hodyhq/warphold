@@ -15,9 +15,12 @@ func (s *Server) mountAdmin(m *mux.Router) {
 	adm := func(h http.HandlerFunc) http.HandlerFunc {
 		return s.requireHost(s.requireActivated(s.requireAdmin(h)))
 	}
-	m.HandleFunc("/api/v1/fleet/targets", adm(s.handleTargetCreate)).Methods(http.MethodPost)
+	m.HandleFunc("/api/v1/fleet/targets", adm(s.sealHeld(s.handleTargetCreate))).Methods(http.MethodPost)
 	m.HandleFunc("/api/v1/fleet/targets", adm(s.handleTargetList)).Methods(http.MethodGet)
-	m.HandleFunc("/api/v1/fleet/targets/{id}/mirror", adm(s.handleTargetMirrorSet)).Methods(http.MethodPut)
+	// sealHeld like handleTargetCreate: attaching a mirror seals the mirror
+	// credentials (sealCreds), and a rotation must not swap the key between
+	// the seal and the write.
+	m.HandleFunc("/api/v1/fleet/targets/{id}/mirror", adm(s.sealHeld(s.handleTargetMirrorSet))).Methods(http.MethodPut)
 	m.HandleFunc("/api/v1/fleet/templates", adm(s.handleTemplateCreate)).Methods(http.MethodPost)
 	m.HandleFunc("/api/v1/fleet/templates/{id}", adm(s.handleTemplateUpdate)).Methods(http.MethodPut)
 	m.HandleFunc("/api/v1/fleet/templates", adm(s.handleTemplateList)).Methods(http.MethodGet)
@@ -31,8 +34,14 @@ func (s *Server) mountAdmin(m *mux.Router) {
 	m.HandleFunc("/api/v1/fleet/admins/{id}", adm(s.handleAdminDelete)).Methods(http.MethodDelete)
 	m.HandleFunc("/api/v1/fleet/overview", adm(s.handleOverview)).Methods(http.MethodGet)    // Task 12
 	m.HandleFunc("/api/v1/fleet/settings", adm(s.handleSettingsGet)).Methods(http.MethodGet) // Task 14
-	m.HandleFunc("/api/v1/fleet/settings", adm(s.handleSettingsUpdate)).Methods(http.MethodPut)
-	s.mountAdminEnrollment(m, adm) // Task 9/11: tokens + agents
+	m.HandleFunc("/api/v1/fleet/settings", adm(s.sealHeld(s.handleSettingsUpdate))).Methods(http.MethodPut)
+	m.HandleFunc("/api/v1/fleet/settings/passphrase", adm(s.handlePassphraseRotate)).Methods(http.MethodPost) // Plan 3, Task 26
+	// sealHeld: the test send unseals the stored SMTP password, so a rotation
+	// must not swap the key underneath it and turn a race into "the stored
+	// SMTP password could not be unsealed; re-enter it".
+	m.HandleFunc("/api/v1/fleet/settings/smtp/test", adm(s.sealHeld(s.handleSMTPTest))).Methods(http.MethodPost) // Task 30
+	s.mountAdminEnrollment(m, adm)                                                                               // Task 9/11: tokens + agents
+	s.mountAdminJobs(m, adm)                                                                                     // Task 28: scheduled jobs
 }
 
 func pathID(r *http.Request) (int64, bool) {

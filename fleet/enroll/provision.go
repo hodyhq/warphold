@@ -316,6 +316,18 @@ func (p *Provisioner) rollback(ctx context.Context, t TargetSpec, agentID string
 	}
 }
 
+// IsSafeAgentDir reports whether an agent id may be used as a single directory
+// name under a target's root. It is THE guard for that: every place that
+// unlinks or addresses a per-device directory -- RemoveHostedRepository here,
+// and the reap job's agentRepoDir in fleet/jobs -- goes through it, so there
+// is one answer to "is this id safe to join onto a path", not two that can
+// drift. The id is server-minted, but this decides whether a whole tree is
+// unlinked, so it is checked rather than trusted.
+func IsSafeAgentDir(agentID string) bool {
+	return agentID != "" && agentID != "." && agentID != ".." &&
+		!strings.ContainsAny(agentID, `/\`) && filepath.Clean(agentID) == agentID
+}
+
 // RemoveHostedRepository deletes one device's repository directory under a
 // hosted target's root. Enrollment calls it to unwind a failure of its own;
 // the reap job (M5) will call it for a revoked device once the retention
@@ -329,7 +341,7 @@ func RemoveHostedRepository(t TargetSpec, agentID string) error {
 		return nil
 	}
 
-	if agentID != filepath.Base(agentID) || agentID == "." || agentID == ".." || strings.ContainsAny(agentID, `/\`) {
+	if !IsSafeAgentDir(agentID) {
 		return errors.New("refusing to remove a repository for a malformed agent id")
 	}
 

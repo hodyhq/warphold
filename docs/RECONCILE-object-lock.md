@@ -248,7 +248,7 @@ curl -fsS -X POST "$FLEET/api/v1/fleet/targets" -H 'Content-Type: application/js
 
 **Recorded response (2026-09-03, Task 15):** the shape actually tried was a *hosted disk*
 target with a mirror attached (`storage_mode: "disk"`, plus `mirror_kind: "b2"` and the
-`mirror_*` fields) against the live Fleet server (`fleet.hody.sh`, build `fd111cf6`), because
+`mirror_*` fields) against the live Fleet server (`<FLEET_HOST>`, build `fd111cf6`), because
 `admin_targets.go` has no route to add a mirror to an already-created target — a mirror can
 only be set at target-create time (confirmed by reading `handleTargetCreate` /
 `applyHostedDisk` and the full route table in `fleet/api/admin.go`; there is no

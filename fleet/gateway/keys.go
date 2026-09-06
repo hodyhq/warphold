@@ -31,6 +31,14 @@ type Keys struct {
 	key seal.Key
 	now func() time.Time
 
+	// Guard, if set, is held for the duration of a lookup - and only that.
+	// Unsealing a device secret is the one moment a gateway request touches
+	// the fleet sealing key, so this is what a passphrase rotation waits for;
+	// holding it across the whole request would let one slow upload block
+	// every device in the fleet (Go queues the pending writer ahead of new
+	// readers).
+	Guard sync.Locker
+
 	mu    sync.Mutex
 	gen   uint64 // bumped by Invalidate; a lookup that raced it does not cache
 	cache map[string]keyEntry
@@ -47,6 +55,11 @@ func (k *Keys) SetNowForTesting(f func() time.Time) { k.now = f }
 // Lookup resolves an access key id. ok is false for an unknown, disabled or
 // unsealable key -- the caller must not distinguish the three.
 func (k *Keys) Lookup(ctx context.Context, accessKeyID string) (agentID, prefix, secret string, readOnly, ok bool) {
+	if k.Guard != nil {
+		k.Guard.Lock()
+		defer k.Guard.Unlock()
+	}
+
 	now := k.now()
 
 	k.mu.Lock()
@@ -101,6 +114,17 @@ func (k *Keys) Invalidate(agentID string) {
 			delete(k.cache, id)
 		}
 	}
+}
+
+// InvalidateAll drops every cached key. A passphrase rotation calls it: every
+// cached secret was unsealed with the old key, and every sealed secret has to
+// be read and unsealed again under the new one.
+func (k *Keys) InvalidateAll() {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
+	k.gen++
+	k.cache = map[string]keyEntry{}
 }
 
 func (k *Keys) forget(accessKeyID string) {

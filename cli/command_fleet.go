@@ -15,6 +15,8 @@ import (
 // commandFleet groups the Fleet control-plane commands.
 type commandFleet struct {
 	activate commandFleetActivate
+	rotate   commandFleetRotatePassphrase
+	jobs     commandFleetJobs
 }
 
 // registerFleetHandlersOnce guards RegisterServerHandlers: the in-process
@@ -26,11 +28,60 @@ var registerFleetHandlersOnce sync.Once
 func (c *commandFleet) setup(svc advancedAppServices, parent commandParent) {
 	cmd := parent.Command("fleet", "WarpHold Fleet: manage enrolled machines.")
 	c.activate.setup(svc, cmd)
+	c.rotate.setup(svc, cmd)
+	c.jobs.setup(svc, cmd)
 
 	registerFleetHandlersOnce.Do(func() {
-		RegisterServerHandlers(func(srv *server.Server, m *mux.Router, configFile string) {
-			fs := api.New(fleet.StateDirFor(configFile))
+		RegisterServerHandlers(func(ctx context.Context, srv *server.Server, m *mux.Router, configFile string) error {
+			stateDir := fleet.StateDirFor(configFile)
+
+			// The lock comes FIRST, before api.New touches the state
+			// directory at all. api.New opens the database, which runs the
+			// migrations and can start the scheduler, so taking the lock after
+			// it would let a second server migrate and begin claiming jobs in
+			// the moment before it discovered it was not allowed to run.
+			//
+			// Held for as long as this server serves. Failing to take it is
+			// fatal either way, and ErrLocked most of all: one Fleet process
+			// per state directory is a real invariant, not a nicety. Two
+			// servers on one state dir each run a scheduler, and both would
+			// maintain the same device repositories through their own scratch
+			// configs -- Kopia's .mlock is keyed to the config file, so it
+			// would not keep them apart (see fleet/jobs/repo.go). It is also
+			// what lets the offline `fleet rotate-passphrase` tell a running
+			// Fleet from a stopped one.
+			lock, lockErr := fleet.TryLock(stateDir)
+			if lockErr != nil {
+				if errors.Is(lockErr, fleet.ErrLocked) {
+					return errors.New("another WarpHold Fleet is already serving " + stateDir +
+						" (it holds " + fleet.PathsFor(stateDir).LockFile +
+						"); stop it before starting this one")
+				}
+
+				return errors.Join(errors.New("cannot hold "+fleet.PathsFor(stateDir).LockFile), lockErr)
+			}
+
+			fs := api.New(stateDir)
+
+			// State that cannot be used safely is fatal here, not a warning:
+			// serving Fleet on a key that may no longer open its own store
+			// would seal every new secret into a store nothing can read back.
+			if err := fs.StateError(); err != nil {
+				fs.Close()    //nolint:errcheck
+				lock.Unlock() //nolint:errcheck // refusing to start; nothing holds it after this
+
+				return errors.Join(errors.New("fleet state in "+stateDir+" cannot be used"), err)
+			}
+
 			fs.Mount(m)
+
+			// Setup gives the Fleet host a repository of its own; this opens
+			// it (and says so), rather than leaving a fresh Fleet server
+			// reporting "Repository not configured". The same work runs again
+			// if the installer activates this Fleet while the server is
+			// already up, which is the one-command install's normal order.
+			serveFleetRepo(ctx, srv, fs, configFile)
+			fs.OnActivated(func() { serveFleetRepo(ctx, srv, fs, configFile) })
 
 			// This hook is the one place that runs before setupHandlers
 			// registers the UI's "/" catch-all, so the SPA bundle is served
@@ -57,8 +108,18 @@ func (c *commandFleet) setup(svc advancedAppServices, parent commandParent) {
 					err = prev(ctx)
 				}
 
-				return errors.Join(err, fs.Close())
+				// fs.Close before lock.Unlock: the lock is what tells a
+				// second process (or an offline `fleet rotate-passphrase`)
+				// that this Fleet has stopped, so releasing it before the
+				// store and scheduler have actually stopped would let that
+				// second process start against still-live state.
+				closeErr := fs.Close()
+				unlockErr := lock.Unlock()
+
+				return errors.Join(err, closeErr, unlockErr)
 			}
+
+			return nil
 		})
 	})
 }

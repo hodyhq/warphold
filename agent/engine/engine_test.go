@@ -15,6 +15,7 @@ import (
 	"github.com/kopia/kopia/agent/engine"
 	"github.com/kopia/kopia/agent/poll"
 	"github.com/kopia/kopia/fleet/enroll"
+	"github.com/kopia/kopia/internal/passwordpersist"
 	"github.com/kopia/kopia/internal/uitask"
 	"github.com/kopia/kopia/repo"
 	"github.com/kopia/kopia/repo/blob"
@@ -23,8 +24,10 @@ import (
 	"github.com/kopia/kopia/snapshot/policy"
 )
 
-// provisionedRepo makes a filesystem repo the way Fleet does and connects a config to it.
-func provisionedRepo(t *testing.T) (configFile, password string) {
+// provisionedRepo makes a filesystem repo the way Fleet does and connects a
+// config to it. blobDir is where the repository's blobs land on disk, so a
+// test can damage one.
+func provisionedRepo(t *testing.T) (configFile, password, blobDir string) {
 	t.Helper()
 	ctx := context.Background()
 	p := &enroll.Provisioner{Owner: "fleet@test"}
@@ -37,14 +40,14 @@ func provisionedRepo(t *testing.T) (configFile, password string) {
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "repository.config")
 	require.NoError(t, repo.Connect(ctx, cfg, st, pw, &repo.ConnectOptions{CachingOptions: content.CachingOptions{CacheDirectory: filepath.Join(dir, "cache")}}))
-	return cfg, pw
+	return cfg, pw, b.Prefix
 }
 
 func TestApplySnapshotAndReport(t *testing.T) {
 	ctx := context.Background()
 	t.Setenv("WARPHOLD_STATE_DIR", t.TempDir())
-	cfg, pw := provisionedRepo(t)
-	h, err := engine.StartHeadless(ctx, cfg, pw, "user")
+	cfg, pw, _ := provisionedRepo(t)
+	h, err := engine.StartHeadless(ctx, cfg, pw, "user", passwordpersist.None())
 	require.NoError(t, err)
 	defer h.Stop(ctx)
 	api, err := h.Client()
@@ -110,8 +113,8 @@ func TestApplySnapshotAndReport(t *testing.T) {
 func TestStatus(t *testing.T) {
 	ctx := context.Background()
 	t.Setenv("WARPHOLD_STATE_DIR", t.TempDir())
-	cfg, pw := provisionedRepo(t)
-	h, err := engine.StartHeadless(ctx, cfg, pw, "user")
+	cfg, pw, _ := provisionedRepo(t)
+	h, err := engine.StartHeadless(ctx, cfg, pw, "user", passwordpersist.None())
 	require.NoError(t, err)
 	defer h.Stop(ctx)
 	api, err := h.Client()
@@ -143,8 +146,8 @@ func TestStatus(t *testing.T) {
 func TestHeadlessServesUI(t *testing.T) {
 	ctx := context.Background()
 	t.Setenv("WARPHOLD_STATE_DIR", t.TempDir())
-	cfg, pw := provisionedRepo(t)
-	h, err := engine.StartHeadless(ctx, cfg, pw, "user")
+	cfg, pw, _ := provisionedRepo(t)
+	h, err := engine.StartHeadless(ctx, cfg, pw, "user", passwordpersist.None())
 	require.NoError(t, err)
 
 	defer h.Stop(ctx) //nolint:errcheck

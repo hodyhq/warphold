@@ -22,6 +22,14 @@ type Local struct {
 	API  *apiclient.KopiaAPIClient
 	Host string
 	User string
+
+	// ConfigFile and RepoPassword let the few operations Kopia's server API
+	// does not expose - today only Verify - open their own read-only handle on
+	// the same repository the engine is serving. They are optional: callers
+	// that never verify (the tray) leave them empty and Verify then refuses
+	// rather than guessing at credentials.
+	ConfigFile   string
+	RepoPassword string
 }
 
 // NewLocal learns the local host/user identity from the server.

@@ -29,7 +29,8 @@ reviews:
         unit in a restart loop or report a backup as successful when it was not.
     - path: "cli/**"
       instructions: >-
-        Only files named command_fleet_*.go, command_agent_*.go and server_hooks.go are
-        WarpHold's; everything else is upstream Kopia and must not be refactored.
+        Only files named command_fleet_*.go, command_agent_*.go, command_app*.go and
+        server_hooks.go are WarpHold's; everything else is upstream Kopia and must not
+        be refactored.
 chat:
   auto_reply: true

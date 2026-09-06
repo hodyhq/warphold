@@ -40,7 +40,7 @@ func TestCloudDirectEnrollFailureLeavesNothingBehind(t *testing.T) {
 		return gateway.NewCloud(ctx, ci, prefix)
 	}
 
-	require.NoError(t, s.Activate(ctx, "seal-me!", "hody@hody.dev", "pw12345678"))
+	require.NoError(t, s.Activate(ctx, "seal-me!", "hody@hody.dev", "pw12345678", ""))
 
 	m := mux.NewRouter()
 	s.Mount(m)

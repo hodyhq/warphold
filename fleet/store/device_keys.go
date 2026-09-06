@@ -67,6 +67,17 @@ func (s *Store) DeviceKeysForAgent(ctx context.Context, agentID string) ([]Devic
 	return out, rows.Err()
 }
 
+// DeleteDeviceKeysForAgent removes an agent's gateway keys for good and
+// returns how many it removed. Revocation disables them; the reap job deletes
+// them once the retention window is over, so nothing is left to unseal.
+func (s *Store) DeleteDeviceKeysForAgent(ctx context.Context, agentID string) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM device_keys WHERE agent_id=?`, agentID)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // DisableDeviceKeysForAgent disables every still-active key of an agent and
 // returns how many it disabled.
 func (s *Store) DisableDeviceKeysForAgent(ctx context.Context, agentID string, at time.Time) (int64, error) {
@@ -75,4 +86,12 @@ func (s *Store) DisableDeviceKeysForAgent(ctx context.Context, agentID string, a
 		return 0, err
 	}
 	return res.RowsAffected()
+}
+
+// DisableDeviceKey disables one key by access key id, leaving the agent's
+// other keys alone. Regenerating a recovery kit's read-only key uses it; a
+// revoke, which must kill every credential, uses DisableDeviceKeysForAgent.
+func (s *Store) DisableDeviceKey(ctx context.Context, accessKeyID string, at time.Time) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE device_keys SET disabled_at=? WHERE access_key_id=? AND disabled_at IS NULL`, ts(at), accessKeyID)
+	return err
 }

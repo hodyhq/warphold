@@ -273,3 +273,56 @@ func TestRepoStatsMirrorProgress(t *testing.T) {
 	require.Equal(t, later, got.MirroredAt.UTC())
 	require.EqualValues(t, 8192, got.MirroredBytes)
 }
+
+// TestSetStatsDoesNotClobberMirrorProgress: the stats job and the mirror job
+// write different halves of the same row, on their own schedules, and each
+// must leave the other's half alone.
+func TestSetStatsDoesNotClobberMirrorProgress(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	now := clock.Now().UTC().Truncate(time.Second)
+	seedAgents(t, s, "ag_1")
+
+	require.NoError(t, s.SetMirrored(ctx, "ag_1", now, 4096))
+	require.NoError(t, s.SetStats(ctx, "ag_1", now, 20000, 10000, 7))
+
+	got, err := s.RepoStat(ctx, "ag_1")
+	require.NoError(t, err)
+	require.EqualValues(t, 20000, got.LogicalBytes)
+	require.EqualValues(t, 10000, got.StoredBytes)
+	require.EqualValues(t, 7, got.BlobCount)
+	require.NotNil(t, got.MirroredAt, "stats must not clobber the mirror job's half of the row")
+	require.EqualValues(t, 4096, got.MirroredBytes)
+
+	later := now.Add(time.Hour)
+	require.NoError(t, s.SetStats(ctx, "ag_1", later, 30000, 15000, 9))
+
+	got, err = s.RepoStat(ctx, "ag_1")
+	require.NoError(t, err)
+	require.EqualValues(t, 30000, got.LogicalBytes)
+	require.EqualValues(t, 15000, got.StoredBytes)
+	require.EqualValues(t, 9, got.BlobCount)
+	require.Equal(t, now, got.MirroredAt.UTC(), "mirror job has not run again")
+	require.EqualValues(t, 4096, got.MirroredBytes)
+}
+
+func TestRepoStatsListsEveryAgent(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	now := clock.Now().UTC().Truncate(time.Second)
+	seedAgents(t, s, "ag_1", "ag_2")
+
+	require.NoError(t, s.SetStats(ctx, "ag_1", now, 100, 50, 1))
+
+	all, err := s.RepoStats(ctx)
+	require.NoError(t, err)
+	require.Len(t, all, 1, "only agents with a row are returned")
+	require.EqualValues(t, 50, all["ag_1"].StoredBytes)
+
+	require.NoError(t, s.SetStats(ctx, "ag_2", now, 200, 100, 2))
+
+	all, err = s.RepoStats(ctx)
+	require.NoError(t, err)
+	require.Len(t, all, 2)
+	require.EqualValues(t, 100, all["ag_2"].StoredBytes)
+}

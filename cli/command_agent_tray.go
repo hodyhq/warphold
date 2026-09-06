@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 
+	"github.com/kopia/kopia/agent/state"
 	"github.com/kopia/kopia/agent/tray"
 )
 
@@ -16,7 +17,9 @@ type commandAgentTray struct {
 
 func (c *commandAgentTray) setup(svc advancedAppServices, parent commandParent) {
 	cmd := parent.Command("tray", "Show backup status in the system tray (Linux).")
-	cmd.Flag("scope", "user or system").Default("user").EnumVar(&c.scope, "user", "system")
+	// "app" is the standalone single-machine app's state directory: the same
+	// tray, watching that engine instead of an enrolled agent's.
+	cmd.Flag("scope", "user, system or app").Default(state.ScopeUser).EnumVar(&c.scope, state.ScopeUser, state.ScopeSystem, state.ScopeApp)
 	c.svc = svc
 	cmd.Action(svc.noRepositoryAction(c.run))
 }

@@ -12,27 +12,28 @@ type Agent struct {
 	BearerHash, SealedBundle                     []byte
 	PolicyETag                                   string
 	EnrolledAt                                   time.Time
-	LastSeenAt, RevokedAt                        *time.Time
+	LastSeenAt, RevokedAt, RetiredAt             *time.Time
 }
 
-const agentCols = `id,name,hostname,os,arch,version,scope,group_id,bearer_hash,sealed_bundle,policy_etag,enrolled_at,last_seen_at,revoked_at`
+const agentCols = `id,name,hostname,os,arch,version,scope,group_id,bearer_hash,sealed_bundle,policy_etag,enrolled_at,last_seen_at,revoked_at,retired_at`
 
 func (s *Store) CreateAgent(ctx context.Context, a *Agent) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO agents(`+agentCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		a.ID, a.Name, a.Hostname, a.OS, a.Arch, a.Version, a.Scope, a.GroupID, a.BearerHash, a.SealedBundle, a.PolicyETag, ts(a.EnrolledAt), tsp(a.LastSeenAt), tsp(a.RevokedAt))
+	_, err := s.db.ExecContext(ctx, `INSERT INTO agents(`+agentCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		a.ID, a.Name, a.Hostname, a.OS, a.Arch, a.Version, a.Scope, a.GroupID, a.BearerHash, a.SealedBundle, a.PolicyETag, ts(a.EnrolledAt), tsp(a.LastSeenAt), tsp(a.RevokedAt), tsp(a.RetiredAt))
 	return err
 }
 
 func scanAgent(row interface{ Scan(...any) error }) (*Agent, error) {
 	var a Agent
 	var enrolled string
-	var seen, revoked sql.NullString
-	if err := row.Scan(&a.ID, &a.Name, &a.Hostname, &a.OS, &a.Arch, &a.Version, &a.Scope, &a.GroupID, &a.BearerHash, &a.SealedBundle, &a.PolicyETag, &enrolled, &seen, &revoked); err != nil {
+	var seen, revoked, retired sql.NullString
+	if err := row.Scan(&a.ID, &a.Name, &a.Hostname, &a.OS, &a.Arch, &a.Version, &a.Scope, &a.GroupID, &a.BearerHash, &a.SealedBundle, &a.PolicyETag, &enrolled, &seen, &revoked, &retired); err != nil {
 		return nil, notFound(err)
 	}
 	a.EnrolledAt = parseTS(enrolled)
 	a.LastSeenAt = parseTSP(seen)
 	a.RevokedAt = parseTSP(revoked)
+	a.RetiredAt = parseTSP(retired)
 	return &a, nil
 }
 
@@ -109,4 +110,13 @@ func (s *Store) DeleteAgent(ctx context.Context, id string) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+// RetireAgent records that the reap job has removed a revoked agent's
+// repository. The row stays: it is the fleet's history, and repo_stats and
+// reports reference it. It only ever moves from unset to set, so a second reap
+// of the same agent cannot rewrite the date the data actually went.
+func (s *Store) RetireAgent(ctx context.Context, id string, at time.Time) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE agents SET retired_at=? WHERE id=? AND retired_at IS NULL`, ts(at), id)
+	return err
 }

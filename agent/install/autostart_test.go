@@ -11,7 +11,7 @@ import (
 )
 
 func TestAutostartEntry(t *testing.T) {
-	e, err := install.Autostart("/home/user/.local/bin/warphold")
+	e, err := install.Autostart("/home/user/.local/bin/warphold", "user")
 	require.NoError(t, err)
 	require.True(t, strings.HasPrefix(e, "[Desktop Entry]\n"))
 	require.Contains(t, e, "Type=Application")
@@ -32,7 +32,7 @@ func TestAutostartRejectsInjectableBinary(t *testing.T) {
 		"equals":       "/tmp/x=y/warphold",
 		"empty":        "",
 	} {
-		_, err := install.Autostart(bin)
+		_, err := install.Autostart(bin, "user")
 		require.Error(t, err, name)
 	}
 }
@@ -42,7 +42,7 @@ func TestAutostartRejectsInjectableBinary(t *testing.T) {
 // argument quoting rules - so a character the argument layer must see as
 // "\c" is written "\\c", and a literal backslash needs four.
 func TestAutostartEscapesExactBytes(t *testing.T) {
-	e, err := install.Autostart("/tmp/a b/w" + "`" + `ird$bin\x`)
+	e, err := install.Autostart("/tmp/a b/w"+"`"+`ird$bin\x`, "user")
 	require.NoError(t, err)
 
 	want := `Exec="/tmp/a b/w\\` + "`" + `ird\\$bin\\\\x" agent tray` + "\n"
@@ -76,7 +76,7 @@ func TestUserInstallWritesAutostart(t *testing.T) {
 // doubled: an un-escaped "%f" in Exec is a field code the desktop expands
 // into a file argument, not part of the path.
 func TestAutostartEscapesFieldCodes(t *testing.T) {
-	e, err := install.Autostart("/tmp/100%f/warphold")
+	e, err := install.Autostart("/tmp/100%f/warphold", "user")
 	require.NoError(t, err)
 	require.Contains(t, e, "Exec=\"/tmp/100%%f/warphold\" agent tray")
 }

@@ -107,6 +107,29 @@ func TestSchedulerRecordsAFailingRunner(t *testing.T) {
 	require.Equal(t, "partial work", jobsOf(t, st, "stats")[0].Detail)
 }
 
+func TestSchedulerRecordsASkippedRunner(t *testing.T) {
+	st := openTemp(t)
+	ctx := context.Background()
+
+	s := NewScheduler(st, map[string]Runner{"digest": func(context.Context, store.Job) (string, error) {
+		return "smtp not configured", ErrSkipped
+	}}, time.Millisecond)
+
+	_, err := st.EnqueueJob(ctx, &store.Job{Kind: "digest", ScheduledFor: time.Now()})
+	require.NoError(t, err)
+
+	s.Start(ctx)
+	defer s.Stop()
+
+	// "skipped", not "!= pending": the scheduler passes through "running", so
+	// waiting for anything-but-pending can release a state too early.
+	eventually(t, func() bool { return jobsOf(t, st, "digest")[0].Status == "skipped" })
+
+	j := jobsOf(t, st, "digest")[0]
+	require.Equal(t, "skipped", j.Status, "a deliberate no-op is not an error")
+	require.Equal(t, "smtp not configured", j.Detail)
+}
+
 func TestSchedulerRecordsAnUnknownKind(t *testing.T) {
 	st := openTemp(t)
 	ctx := context.Background()
@@ -425,4 +448,33 @@ func TestSchedulerTimeoutFallsBackToTheDefault(t *testing.T) {
 	s.Timeouts = map[string]time.Duration{"mirror": time.Minute}
 	require.Equal(t, time.Minute, s.timeout("mirror"))
 	require.Equal(t, DefaultTimeout, s.timeout("stats"))
+}
+
+// The spec's cadences (§3.3), and the house rule that an interval setting is a
+// whole number of seconds - the same shape as poll_interval and
+// mirror_interval, so the settings table never mixes units.
+func TestEveryJobKindRunsOnItsDocumentedCadence(t *testing.T) {
+	st := openTemp(t)
+	ctx := context.Background()
+	s := NewScheduler(st, nil, time.Millisecond)
+
+	for kind, want := range map[string]time.Duration{
+		"mirror":       time.Hour,
+		"verify":       7 * 24 * time.Hour,
+		"test-restore": 30 * 24 * time.Hour,
+		"maintenance":  24 * time.Hour,
+		"reap":         24 * time.Hour,
+	} {
+		iv, ok := intervals[kind]
+		require.True(t, ok, "%s has no interval", kind)
+		require.Equal(t, want, iv.def, kind)
+
+		require.NoError(t, st.SetSetting(ctx, iv.setting, strconv.Itoa(int((3*time.Hour).Seconds()))))
+		require.Equal(t, 3*time.Hour, intervalFor(ctx, s.st, iv), "%s reads its setting as seconds", kind)
+	}
+
+	// An interval whose kind has no runner would be enqueued and never run.
+	for kind := range intervals {
+		require.True(t, HasKind(kind), "%s is scheduled but has no runner", kind)
+	}
 }

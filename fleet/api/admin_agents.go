@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"time"
@@ -23,12 +24,16 @@ type mirrorOut struct {
 	Stale         bool       `json:"stale"`
 }
 
-// mirrorStale calls a copy stale once it is older than three mirror
-// intervals, so a fleet can miss two runs (one slow, one failed) before it
-// complains. A device that has never been mirrored is stale by definition:
-// its target has a mirror and the device is not in it.
-func mirrorStale(at *time.Time, now time.Time, every time.Duration) bool {
-	return at == nil || now.Sub(*at) > 3*every
+// targetForAgent resolves a device to the target its backups live on:
+// agent -> group -> target. Both hops fail loudly; a device whose group or
+// target has gone is a broken fleet, not an empty answer.
+func (s *Server) targetForAgent(ctx context.Context, a store.Agent) (*store.Target, error) {
+	g, err := s.store().Group(ctx, a.GroupID)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.store().Target(ctx, g.TargetID)
 }
 
 // mirrorFor resolves a device's offsite state through its group's target, or
@@ -61,7 +66,7 @@ func (s *Server) mirrorFor(ctx context.Context, a store.Agent) (*mirrorOut, erro
 		m.MirroredAt, m.MirroredBytes = rs.MirroredAt, rs.MirroredBytes
 	}
 
-	m.Stale = mirrorStale(m.MirroredAt, s.now(), jobs.MirrorInterval(ctx, st))
+	m.Stale = jobs.MirrorStale(m.MirroredAt, s.now(), jobs.MirrorInterval(ctx, st))
 
 	return &m, nil
 }
@@ -71,7 +76,7 @@ var allowedCommands = map[string]bool{"snapshot-now": true, "pause": true, "resu
 func (s *Server) mountAdminAgents(m *mux.Router, adm func(http.HandlerFunc) http.HandlerFunc) {
 	m.HandleFunc("/api/v1/fleet/agents", adm(s.handleAgentList)).Methods(http.MethodGet)
 	m.HandleFunc("/api/v1/fleet/agents/{id}", adm(s.handleAgentGet)).Methods(http.MethodGet)
-	m.HandleFunc("/api/v1/fleet/agents/{id}/revoke", adm(s.handleAgentRevoke)).Methods(http.MethodPost)
+	m.HandleFunc("/api/v1/fleet/agents/{id}/revoke", adm(s.sealHeld(s.handleAgentRevoke))).Methods(http.MethodPost)
 	m.HandleFunc("/api/v1/fleet/agents/{id}/commands", adm(s.handleAgentCommand)).Methods(http.MethodPost)
 }
 
@@ -88,10 +93,17 @@ type agentOut struct {
 	LastSeenAt *time.Time `json:"last_seen_at"`
 	RevokedAt  *time.Time `json:"revoked_at"`
 	Health     string     `json:"health"`
+	// KitAckedAt is when an admin acknowledged holding the printed recovery
+	// kit; nil is what the UI's un-acked banner and list marker key off.
+	KitAckedAt *time.Time `json:"kit_acked_at"`
+
+	// SizeBytes is repo_stats.stored_bytes, 0 until the stats job has
+	// measured this device's repository at least once.
+	SizeBytes int64 `json:"size_bytes"`
 }
 
-func (s *Server) agentOut(a store.Agent, latest *store.Report, lastOK *time.Time) agentOut {
-	return agentOut{ID: a.ID, Name: a.Name, Hostname: a.Hostname, OS: a.OS, Arch: a.Arch, Version: a.Version, Scope: a.Scope, GroupID: a.GroupID, EnrolledAt: a.EnrolledAt, LastSeenAt: a.LastSeenAt, RevokedAt: a.RevokedAt, Health: s.healthOf(a, latest, lastOK)}
+func (s *Server) agentOut(a store.Agent, latest *store.Report, lastOK, kitAcked *time.Time, sizeBytes int64) agentOut {
+	return agentOut{ID: a.ID, Name: a.Name, Hostname: a.Hostname, OS: a.OS, Arch: a.Arch, Version: a.Version, Scope: a.Scope, GroupID: a.GroupID, EnrolledAt: a.EnrolledAt, LastSeenAt: a.LastSeenAt, RevokedAt: a.RevokedAt, Health: s.healthOf(a, latest, lastOK), KitAckedAt: kitAcked, SizeBytes: sizeBytes}
 }
 
 // healthOf takes the last successful snapshot time rather than looking it up:
@@ -117,6 +129,19 @@ func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 	// One batch query, not one LastOKReport per agent: this endpoint renders
 	// the whole fleet and the per-row lookup made it O(agents) round trips.
 	lastOK, _ := s.store().LastOKReports(ctx)
+	// Same reason as lastOK: one query for the whole fleet, not one per row.
+	// A failed lookup degrades to "no acknowledgement", which shows the un-acked
+	// marker: the safe direction for a nag about a recovery kit nobody printed.
+	kitAcks, _ := s.store().KitAcks(ctx)
+	// Unlike lastOK/kitAcks above, a missing row is not an error here: RepoStats
+	// returns a map, and an agent nothing has measured yet is simply absent
+	// from it. Any error is therefore a real query failure, not "not measured
+	// yet", and must not report every device's size as a silent zero.
+	repoStats, err := s.store().RepoStats(ctx)
+	if err != nil {
+		adminFailed(w, "read repository stats", err)
+		return
+	}
 	out := make([]agentOut, 0, len(as))
 	for _, a := range as {
 		var lr *store.Report
@@ -127,7 +152,12 @@ func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 		if t, found := lastOK[a.ID]; found {
 			ok = &t
 		}
-		out = append(out, s.agentOut(a, lr, ok))
+		var acked *time.Time
+		if t, found := kitAcks[a.ID]; found {
+			acked = &t
+		}
+
+		out = append(out, s.agentOut(a, lr, ok, acked, repoStats[a.ID].StoredBytes))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -155,12 +185,24 @@ func (s *Server) handleAgentGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	kitAcked, _ := s.store().KitAck(ctx, a.ID)
+
+	var sizeBytes int64
+	if rs, err := s.store().RepoStat(ctx, a.ID); err == nil {
+		sizeBytes = rs.StoredBytes
+	} else if !errors.Is(err, store.ErrNotFound) {
+		// Unlike "never measured" (store.ErrNotFound, zero is correct), a real
+		// query failure must not be reported as a silent zero-byte repository.
+		adminFailed(w, "read repository stats", err)
+		return
+	}
+
 	// Flatten agentOut's fields alongside reports (spec: "same object + reports:[last 20]").
 	writeJSON(w, http.StatusOK, struct {
 		agentOut
 		Reports []store.Report `json:"reports"`
 		Mirror  *mirrorOut     `json:"mirror"`
-	}{s.agentOut(*a, lr, lastOK), reports, mirror})
+	}{s.agentOut(*a, lr, lastOK, kitAcked, sizeBytes), reports, mirror})
 }
 
 func (s *Server) handleAgentRevoke(w http.ResponseWriter, r *http.Request) {

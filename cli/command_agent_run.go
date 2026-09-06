@@ -10,6 +10,7 @@ import (
 	"github.com/kopia/kopia/agent/poll"
 	"github.com/kopia/kopia/agent/run"
 	"github.com/kopia/kopia/agent/state"
+	"github.com/kopia/kopia/internal/passwordpersist"
 )
 
 // commandAgentRun runs the agent's poll/snapshot loop: it loads the agent's
@@ -44,7 +45,9 @@ func (c *commandAgentRun) run(ctx context.Context) error {
 		return errors.Wrap(err, "repository password not found; re-enroll")
 	}
 
-	h, err := engine.StartHeadless(ctx, cfg, password, c.scope)
+	// None: the agent's password is persisted by enrollment, and the engine's
+	// own connect/disconnect endpoints must not rewrite it.
+	h, err := engine.StartHeadless(ctx, cfg, password, c.scope, passwordpersist.None())
 	if err != nil {
 		return err
 	}
@@ -59,6 +62,11 @@ func (c *commandAgentRun) run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+
+	// Verify has no server-API equivalent, so it opens its own handle on the
+	// repository the engine is already serving -- write-capable like the one
+	// `kopia snapshot verify` uses, but verify only ever reads through it.
+	local.ConfigFile, local.RepoPassword = cfg, password
 
 	loop := run.New(run.Deps{Fleet: &poll.Client{Server: st.Server, Bearer: st.Bearer}, Local: local, State: st, Log: log(ctx).Warnf})
 

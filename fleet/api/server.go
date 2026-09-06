@@ -24,6 +24,7 @@ import (
 	"github.com/kopia/kopia/fleet/b2api"
 	"github.com/kopia/kopia/fleet/gateway"
 	"github.com/kopia/kopia/fleet/jobs"
+	"github.com/kopia/kopia/fleet/mail"
 	"github.com/kopia/kopia/fleet/seal"
 	"github.com/kopia/kopia/fleet/store"
 	"github.com/kopia/kopia/repo/blob"
@@ -54,6 +55,13 @@ const (
 // Server holds Fleet state for the HTTP handlers.
 type Server struct {
 	mu sync.RWMutex
+	// sealMu guards the sealing key against a passphrase rotation. Every
+	// handler that seals or unseals holds it for reading across its whole
+	// seal-then-write span (see sealHeld), and RotatePassphrase takes it for
+	// writing, so no request can seal with the old key while the rotation is
+	// re-sealing - Go's RWMutex lets the pending writer block new readers, so
+	// the rotation waits for in-flight writers and then has the key to itself.
+	sealMu sync.RWMutex
 	// activateMu serializes Activate end to end (check-then-write), so
 	// concurrent activation attempts cannot race past the Activated() check:
 	// only the caller holding activateMu can see !Activated() and proceed.
@@ -63,6 +71,14 @@ type Server struct {
 	st    *store.Store
 	key   seal.Key
 	login *limiter
+	// noScheduler is set by NewOffline: an offline sealing operation (the
+	// rotate-passphrase CLI command) must not let jobs enqueue or run against
+	// the store while it holds the state-dir lock and re-seals it. It is set
+	// once, before load(), and only ever read after that, so it needs no lock
+	// of its own.
+	noScheduler bool
+	// smtpTest throttles the test-send endpoint, per admin.
+	smtpTest *limiter
 	// nowFn is the server clock, read through now() under mu so
 	// SetNowForTesting can move it between requests without racing handlers.
 	nowFn func() time.Time
@@ -94,11 +110,30 @@ type Server struct {
 	// csrfWarnOnce keeps the "public_url is unset, origin check disabled"
 	// warning to one line per server rather than one per request.
 	csrfWarnOnce sync.Once
+	// setupMu serializes the settings that setup writes lazily (the Fleet
+	// host's own repository password and path), so two concurrent callers
+	// cannot each generate one.
+	setupMu sync.Mutex
+
+	// onActivated runs once, after reloadIfActivated picks up state another
+	// process wrote. reloadErrLogged keeps a load that keeps failing to one
+	// log line instead of one per request. Both are written under activateMu.
+	onActivated     []func()
+	reloadErrLogged bool
 
 	// setupTokenPath and setupToken gate POST /activate before the Fleet is
 	// activated (see handleActivate); both are cleared once activation succeeds.
 	setupTokenPath string
 	setupToken     string
+
+	// rotateCrash is the crash seam RotatePassphrase runs between its commit
+	// and the key-file rename; nil outside tests.
+	rotateCrash func() error
+
+	// stateErr is set when the state on disk cannot be used safely - today, a
+	// pending sealing key that could not be resolved. It is not "not activated":
+	// the caller mounting Fleet must refuse to serve (see StateError).
+	stateErr error
 
 	// gwDeps carries the device-facing S3 gateway, built on first use because
 	// it needs the store and sealing key that activation creates.
@@ -113,7 +148,27 @@ type Server struct {
 
 // New creates a Server for stateDir; if Fleet was activated before, its state is loaded.
 func New(stateDir string) *Server {
-	s := &Server{paths: fleet.PathsFor(stateDir), login: newLimiter(loginMaxAttempts, loginWindow), nowFn: time.Now, b2: b2api.New(nil), cloud: gatewayCloud{}}
+	return newServer(stateDir, false)
+}
+
+// NewOffline is New, except it never starts the job scheduler. Only
+// command_fleet_rotate.go uses it: run under the Fleet server's own
+// state-dir lock (fleet.TryLock), an offline passphrase rotation - dry-run or
+// real - must not race a scheduler over the very rows it is re-sealing.
+func NewOffline(stateDir string) *Server {
+	return newServer(stateDir, true)
+}
+
+func newServer(stateDir string, noScheduler bool) *Server {
+	s := &Server{
+		paths:       fleet.PathsFor(stateDir),
+		login:       newLimiter(loginMaxAttempts, loginWindow),
+		smtpTest:    newLimiter(1, smtpTestWindow),
+		nowFn:       time.Now,
+		b2:          b2api.New(nil),
+		cloud:       gatewayCloud{},
+		noScheduler: noScheduler,
+	}
 	// A missing key file just means "never activated"; anything else (bad
 	// permissions, a corrupt DB) must be loud, because the server would
 	// otherwise report "not activated" and print the setup-token path while
@@ -163,6 +218,17 @@ func ensureSetupToken(dir string) (path, token string, err error) {
 }
 
 func (s *Server) load() error {
+	// A rotation may have crashed between its transaction and its rename, in
+	// which case the key that opens this store is still sitting in seal.key.new.
+	// An unresolved one is fatal, not a warning: see recoverPendingKey.
+	if err := s.recoverPendingKey(); err != nil {
+		s.mu.Lock()
+		s.stateErr = err
+		s.mu.Unlock()
+
+		return err
+	}
+
 	key, err := seal.ReadKeyFile(s.paths.KeyFile)
 	if err != nil {
 		return err
@@ -173,7 +239,7 @@ func (s *Server) load() error {
 	}
 	s.invalidateTrustedProxies()
 	s.mu.Lock()
-	s.key, s.st, s.closed = key, st, false
+	s.key, s.st, s.closed, s.stateErr = key, st, false, nil
 	s.mu.Unlock()
 	s.startJobs()
 	return nil
@@ -191,11 +257,19 @@ func (s *Server) load() error {
 func (s *Server) startJobs() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.st == nil || s.closed {
+	if s.st == nil || s.closed || s.noScheduler {
 		return
 	}
 	old := s.sched
-	s.sched = jobs.NewScheduler(s.st, map[string]jobs.Runner{"mirror": jobs.Mirror(s.st, s.key)}, jobs.DefaultTick)
+	// Both arguments are method values on s, never captured state: s.unseal
+	// reads the CURRENT sealing key on every call, and s.cloudStoreForJob
+	// opens a cloud-direct hosted repository the same way the gateway does.
+	// Handing jobs.Runners a seal.Key here instead would freeze a copy -- Key
+	// is [32]byte -- and a passphrase rotation would leave the scheduler
+	// unsealing with a retired key while every ciphertext in the store had
+	// moved on. Both take the rotation read lock around their unseal and
+	// nothing wider, so neither can hold it across a job.
+	s.sched = jobs.NewScheduler(s.st, jobs.Runners(s.st, s.unseal, s.cloudStoreForJob), jobs.DefaultTick)
 	s.sched.Start(context.Background())
 	if old != nil {
 		// In a goroutine: Stop waits for the running job, which must not
@@ -218,6 +292,18 @@ func (s *Server) SetNowForTesting(f func() time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.nowFn = f
+}
+
+// StateError reports state on disk that must stop this Fleet from serving,
+// rather than degrade it to "not activated": a rotation's pending sealing key
+// that could not be resolved may be the only key that opens the store, and
+// serving on the old one would seal new secrets it cannot be read back with.
+// `server start` refuses to come up while this is set.
+func (s *Server) StateError() error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.stateErr
 }
 
 // Activated reports whether the store and key are loaded.
@@ -259,6 +345,25 @@ func (s *Server) store() *store.Store {
 	return s.st
 }
 
+// unseal opens one sealed value under the sealing key as it is right now,
+// holding the rotation lock for that call and nothing more. It is the seam the
+// job scheduler reaches the key through: a job may run for minutes, and
+// holding the lock across one would block a rotation for that long, so the
+// lock covers the unseal only.
+//
+// The residual window is the same one the gateway documents: a job that read a
+// row before a rotation and unseals it after gets ErrTampered once, and the
+// next scheduled run of that job succeeds against the re-sealed row. HTTP
+// handlers do not use this - they are wrapped in sealHeld, which already holds
+// the read lock for their whole span, and taking it again here could deadlock
+// against a waiting rotation.
+func (s *Server) unseal(sealed []byte) ([]byte, error) {
+	s.sealMu.RLock()
+	defer s.sealMu.RUnlock()
+
+	return s.sealKey().Open(sealed)
+}
+
 // sealKey returns the sealing key; the zero Key before activation.
 func (s *Server) sealKey() seal.Key {
 	s.mu.RLock()
@@ -266,8 +371,11 @@ func (s *Server) sealKey() seal.Key {
 	return s.key
 }
 
-// Activate creates the DB, seals with a key derived from passphrase, and creates the first admin.
-func (s *Server) Activate(ctx context.Context, passphrase, email, password string) error {
+// Activate creates the DB, seals with a key derived from passphrase, creates
+// the first admin and, when publicURL is not empty, stores it. publicURL is
+// written inside the same activation flow as the admin and the salt - not
+// after it - so activation cannot half-succeed with the public URL missing.
+func (s *Server) Activate(ctx context.Context, passphrase, email, password, publicURL string) error {
 	s.activateMu.Lock()
 	defer s.activateMu.Unlock()
 
@@ -286,11 +394,20 @@ func (s *Server) Activate(ctx context.Context, passphrase, email, password strin
 	if len(passphrase) < 8 || len(password) < 8 || !strings.Contains(email, "@") {
 		return ErrInvalidActivation
 	}
+	// Checked before the first write: activation happens once, and a rejected
+	// URL must cost nothing.
+	if publicURL != "" {
+		u, err := parsePublicURL(publicURL)
+		if err != nil {
+			return err
+		}
+		publicURL = u.String()
+	}
 	salt, err := seal.NewSalt()
 	if err != nil {
 		return err
 	}
-	if err := s.writeActivation(ctx, salt, passphrase, email, password); err != nil {
+	if err := s.writeActivation(ctx, salt, passphrase, email, password, publicURL); err != nil {
 		// Activation is not atomic, so a partial run must not leave a seal.key
 		// or a half-built DB behind: the guard above keys on exactly those two
 		// files and would reject every retry with "state exists but could not
@@ -305,7 +422,7 @@ func (s *Server) Activate(ctx context.Context, passphrase, email, password strin
 // writeActivation performs the write half of Activate: the DB, the first
 // admin and the settings first, then - last - the seal.key that Activate's
 // overwrite guard keys on, then loads the result.
-func (s *Server) writeActivation(ctx context.Context, salt []byte, passphrase, email, password string) error {
+func (s *Server) writeActivation(ctx context.Context, salt []byte, passphrase, email, password, publicURL string) error {
 	st, err := store.Open(s.paths.DB)
 	if err != nil {
 		return err
@@ -325,7 +442,21 @@ func (s *Server) writeActivation(ctx context.Context, salt []byte, passphrase, e
 	if _, err := st.CreateAdmin(ctx, email, pwHash, s.now()); err != nil {
 		return err
 	}
-	if err := st.SetSetting(ctx, "seal_salt", hex.EncodeToString(salt)); err != nil {
+	// store.SealSaltSetting rather than the literal: rotation reads the same
+	// key back (fleet/store/reseal.go), so the two must not drift.
+	settings := map[string]string{store.SealSaltSetting: hex.EncodeToString(salt)}
+	// instance_id is generated here rather than lazily on the first status
+	// probe, so `fleet activate --verify-public-url` has something to compare
+	// against the moment activation returns.
+	id, err := randomHex(instanceIDBytes)
+	if err != nil {
+		return err
+	}
+	settings[instanceIDSetting] = id
+	if publicURL != "" {
+		settings[publicURLSetting] = publicURL
+	}
+	if err := st.SetSettings(ctx, settings); err != nil {
 		return err
 	}
 	if err := st.Close(); err != nil {
@@ -345,6 +476,78 @@ func (s *Server) removePartialState() {
 	for _, p := range []string{s.paths.KeyFile, s.paths.DB, s.paths.DB + "-wal", s.paths.DB + "-shm"} {
 		_ = os.Remove(p)
 	}
+}
+
+// reloadIfActivated loads state that another process wrote. `warphold fleet
+// activate` is a separate process and the installer runs it against a service
+// that is already up; without this the server would answer "not activated"
+// - and hand out the setup token - until someone restarted it. It only ever
+// moves from "no state" to "state", never the other way, and never resurrects
+// a server that Close() shut down.
+func (s *Server) reloadIfActivated() {
+	for _, f := range s.reload() {
+		// Off the request goroutine and out from under activateMu: a callback
+		// opens a repository, which has no business blocking a status probe.
+		// A panicking callback must not take the server down with it.
+		go func(f func()) {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("warphold fleet: activation callback panicked: %v", r)
+				}
+			}()
+			f()
+		}(f)
+	}
+}
+
+// reload is reloadIfActivated's locked half; it returns the callbacks to run.
+func (s *Server) reload() []func() {
+	if s.Activated() {
+		return nil
+	}
+
+	s.activateMu.Lock()
+	defer s.activateMu.Unlock()
+
+	s.mu.RLock()
+	haveStore := s.st != nil
+	s.mu.RUnlock()
+
+	if haveStore {
+		// Closed, not unactivated.
+		return nil
+	}
+
+	if _, err := os.Stat(s.paths.KeyFile); err != nil {
+		return nil
+	}
+
+	if err := s.load(); err != nil {
+		if !s.reloadErrLogged {
+			s.reloadErrLogged = true
+			log.Printf("warphold fleet: state appeared in %s but cannot be loaded (further attempts stay quiet): %v", s.paths.StateDir, err)
+		}
+		return nil
+	}
+
+	s.clearSetupToken()
+	log.Printf("warphold fleet: activated by another process; loaded state from %s", s.paths.StateDir)
+
+	cbs := s.onActivated
+	s.onActivated = nil
+
+	return cbs
+}
+
+// OnActivated registers f to run once, when state written by another process
+// is picked up (see reloadIfActivated) - `warphold fleet activate` runs as a
+// separate process against a service that is already up. It does not fire for
+// state that was already there when the server started; the caller does that
+// work itself at start.
+func (s *Server) OnActivated(f func()) {
+	s.activateMu.Lock()
+	defer s.activateMu.Unlock()
+	s.onActivated = append(s.onActivated, f)
 }
 
 // clearSetupToken deletes the one-time setup token file once activation succeeds.
@@ -436,7 +639,7 @@ func (s *Server) handleActivate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.Activate(r.Context(), in.Passphrase, in.Email, in.Password); err != nil {
+	if err := s.Activate(r.Context(), in.Passphrase, in.Email, in.Password, in.PublicURL); err != nil {
 		switch {
 		case errors.Is(err, ErrAlreadyActivated):
 			writeErr(w, http.StatusConflict, err.Error())
@@ -448,17 +651,11 @@ func (s *Server) handleActivate(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if in.PublicURL != "" {
-		if err := s.SetPublicURL(r.Context(), in.PublicURL); err != nil {
-			// The syntax was checked above, so this is a store failure, and
-			// the Fleet is now activated without a public URL. Say so rather
-			// than reporting a success the operator would have to discover
-			// was partial.
-			log.Printf("warphold fleet: activated but public_url could not be stored: %v", err)
-			writeErr(w, http.StatusInternalServerError, "fleet activated, but the public URL could not be stored; set it in Settings")
-			return
-		}
-	}
+	// Activate already stored the canonical public_url (as part of the same
+	// settings write as the salt and instance_id) if in.PublicURL was set; a
+	// second write here would be redundant, and one that failed after a
+	// successful activation would report a false 500 for a Fleet that is
+	// actually up.
 	a, err := s.store().AdminByEmail(r.Context(), normalizeEmail(in.Email))
 	if err != nil {
 		log.Printf("warphold fleet: activated but admin lookup failed: %v", err)
@@ -554,6 +751,12 @@ func (s *Server) SetupTokenPathForTesting() string {
 	return s.setupTokenPath
 }
 
+// MailConfigForTesting exposes the stored SMTP settings, password included,
+// so a test can prove the password round-trips through the seal.
+func (s *Server) MailConfigForTesting(ctx context.Context) (mail.Config, error) {
+	return mail.Load(ctx, s.store(), s.sealKey().Open)
+}
+
 // SetB2ForTesting swaps the B2 client.
 func (s *Server) SetB2ForTesting(b b2api.API) { s.b2 = b }
 
@@ -573,6 +776,10 @@ func (s *Server) AdminsForTesting(ctx context.Context) ([]store.Admin, error) {
 	}
 	return st.Admins(ctx)
 }
+
+// StoreForTesting exposes the state store so a test can seed rows the API does
+// not create on its own (a second gateway key, a sealed setting).
+func (s *Server) StoreForTesting() *store.Store { return s.store() }
 
 // SeedGroupForTesting creates a filesystem target, a template and a group.
 func (s *Server) SeedGroupForTesting(ctx context.Context, path string, sources []string, policyJSON string) (targetID, templateID, groupID int64) {
@@ -605,6 +812,26 @@ func (s *Server) AgentForTesting(ctx context.Context, id string) *store.Agent {
 		return nil
 	}
 	return a
+}
+
+// sealHeld wraps a handler that seals or unseals so it holds the sealing key
+// for the whole request. Rotation cannot start while one is in flight, and no
+// new one can start once rotation has the lock.
+func (s *Server) sealHeld(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		s.sealMu.RLock()
+		defer s.sealMu.RUnlock()
+
+		next(w, r)
+	}
+}
+
+// SetRepoStatsForTesting records one agent's repository size, as the "stats"
+// job would, without opening a real repository: overview and the agent
+// endpoints only read the row, and building one per test would only slow it
+// down.
+func (s *Server) SetRepoStatsForTesting(ctx context.Context, agentID string, logicalBytes, storedBytes, blobCount int64) error {
+	return s.store().SetStats(ctx, agentID, s.now(), logicalBytes, storedBytes, blobCount)
 }
 
 // requireActivated wraps admin handlers so they 409 before activation.

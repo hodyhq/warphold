@@ -198,6 +198,9 @@ func TestCSRFRequiredOnMutations(t *testing.T) {
 		}
 		if c.Name == "wh_session" {
 			require.True(t, c.HttpOnly)
+			// The recovery kit mints a key on GET; SameSite=Strict is what keeps a
+			// cross-site navigation from carrying this cookie to that GET.
+			require.Equal(t, http.SameSiteStrictMode, c.SameSite)
 		}
 	}
 }

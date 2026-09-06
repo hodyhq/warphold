@@ -218,7 +218,7 @@ func contents(t *testing.T, root string) map[string]string {
 func (f *mirrorFixture) run(t *testing.T) (string, error) {
 	t.Helper()
 
-	return Mirror(f.st, f.key)(context.Background(), store.Job{Kind: "mirror"})
+	return Mirror(f.st, f.key.Open)(context.Background(), store.Job{Kind: "mirror"})
 }
 
 func TestMirrorUploadsOnlyWhatIsMissing(t *testing.T) {
@@ -482,7 +482,7 @@ func TestMirrorRecordsFailureWhenCancelledBetweenTargets(t *testing.T) {
 		return old(c, tg, cr)
 	}
 
-	detail, err := Mirror(f.st, f.key)(cctx, store.Job{Kind: "mirror"})
+	detail, err := Mirror(f.st, f.key.Open)(cctx, store.Job{Kind: "mirror"})
 	require.Error(t, err)
 	require.Contains(t, detail, "mirror: context canceled",
 		"the loop's own break must record the cancellation, not just leave it to the target in flight")

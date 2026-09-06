@@ -43,6 +43,16 @@ func (s *Store) SetMirrored(ctx context.Context, agentID string, at time.Time, b
 	return err
 }
 
+// SetStats records an agent's repository size counters, leaving whatever the
+// mirror job wrote into mirrored_at/mirrored_bytes alone: the stats job and
+// the mirror job own different halves of the row.
+func (s *Store) SetStats(ctx context.Context, agentID string, at time.Time, logicalBytes, storedBytes, blobCount int64) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO repo_stats(agent_id,collected_at,logical_bytes,stored_bytes,blob_count) VALUES(?,?,?,?,?)
+		ON CONFLICT(agent_id) DO UPDATE SET collected_at=excluded.collected_at, logical_bytes=excluded.logical_bytes, stored_bytes=excluded.stored_bytes, blob_count=excluded.blob_count`,
+		agentID, ts(at), logicalBytes, storedBytes, blobCount)
+	return err
+}
+
 // RepoStats returns every agent's stats row keyed by agent id. The overview
 // folds the whole fleet in Go and may not issue a query per agent.
 func (s *Store) RepoStats(ctx context.Context) (map[string]RepoStat, error) {
