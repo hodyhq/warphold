@@ -23,8 +23,12 @@ WORK="$(mktemp -d)"
 SERVER_PID=""
 APP_PID=""
 cleanup() {
-  [ -n "$APP_PID" ] && kill "$APP_PID" 2>/dev/null || true
-  [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true
+  if [ -n "$APP_PID" ]; then
+    kill "$APP_PID" 2>/dev/null || true
+  fi
+  if [ -n "$SERVER_PID" ]; then
+    kill "$SERVER_PID" 2>/dev/null || true
+  fi
   rm -rf "$WORK"
 }
 trap cleanup EXIT

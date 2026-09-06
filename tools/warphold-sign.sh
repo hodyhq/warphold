@@ -28,7 +28,11 @@ done
 # containing a space would otherwise be checksummed as two missing files.
 (
   cd dist
-  cut -f 2- -d " " checksums.txt > .names
+  # "<hash><space><space-or-*><name>": drop the hash and the two-character
+  # separator only, so a name containing a space survives intact. cut -f 2-
+  # left a leading space or "*" on every name, which sha256sum then read as
+  # part of a nonexistent file.
+  sed -E 's/^[0-9a-fA-F]+ [ *]//' checksums.txt > .names
   : > checksums.new
   while IFS= read -r name; do
     [ -n "$name" ] || continue

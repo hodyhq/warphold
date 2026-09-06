@@ -108,9 +108,15 @@ func (c *commandFleet) setup(svc advancedAppServices, parent commandParent) {
 					err = prev(ctx)
 				}
 
-				err = errors.Join(err, lock.Unlock())
+				// fs.Close before lock.Unlock: the lock is what tells a
+				// second process (or an offline `fleet rotate-passphrase`)
+				// that this Fleet has stopped, so releasing it before the
+				// store and scheduler have actually stopped would let that
+				// second process start against still-live state.
+				closeErr := fs.Close()
+				unlockErr := lock.Unlock()
 
-				return errors.Join(err, fs.Close())
+				return errors.Join(err, closeErr, unlockErr)
 			}
 
 			return nil

@@ -14,6 +14,6 @@ Next steps:
   - Desktop / single machine: run `warphold app install` to set up the
     local app and start backing up this machine.
   - Fleet server: run
-      curl -fsSL https://get.warphold.com/fleet.sh | sh
+      curl -fsSL https://get.warphold.com/fleet.sh -o fleet.sh && sudo sh fleet.sh
     to install and configure the Fleet server on this machine.
 EOF

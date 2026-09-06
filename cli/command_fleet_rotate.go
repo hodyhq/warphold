@@ -77,7 +77,10 @@ func (c *commandFleetRotatePassphrase) run(ctx context.Context) error {
 
 	defer lock.Unlock() //nolint:errcheck
 
-	s := api.New(stateDir)
+	// NewOffline, not New: this runs under the state-dir lock that says the
+	// Fleet server is stopped, and a scheduler started here for the length of
+	// this command would race the rotation over the very rows it re-seals.
+	s := api.NewOffline(stateDir)
 	defer s.Close() //nolint:errcheck
 
 	counts, err := s.RotatePassphrase(ctx, c.current, c.next, c.dryRun)

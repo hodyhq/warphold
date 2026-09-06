@@ -161,6 +161,17 @@ func (s *Server) storeForAgent(ctx context.Context, agentID string) (gateway.Obj
 		return nil, fmt.Errorf("target %d: %w", g.TargetID, err)
 	}
 
+	// The lock goes here, not inside targetStore/cloudStoreFor: the gateway is
+	// deliberately not wrapped in sealHeld (see mountGateway), so a cache miss
+	// reaching cloudStoreFor's unsealing of the target's admin credentials
+	// would otherwise race a passphrase rotation with nothing serialising it
+	// - the same reason cloudStoreForJob takes it for the job scheduler.
+	// targetStore's other caller (enrollment, via newProvisioner) already runs
+	// inside sealHeld, so the lock cannot move into targetStore itself without
+	// taking sync.RWMutex.RLock a second time there and deadlocking.
+	s.sealMu.RLock()
+	defer s.sealMu.RUnlock()
+
 	return s.targetStore(ctx, *t)
 }
 

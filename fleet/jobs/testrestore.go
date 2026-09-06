@@ -50,8 +50,10 @@ func testRestoreRepo(ctx context.Context, rep repo.Repository, _ store.Agent) er
 
 	if man == nil {
 		// A device that has never finished a snapshot has nothing to prove
-		// yet; that is the health check's business, not this job's.
-		return nil
+		// yet; that is the health check's business, not this job's. It is
+		// still unverified, though, so it must not silently count as ok
+		// (perAgent/sweep records it as skipped, not restored).
+		return fmt.Errorf("no finished snapshot yet: %w", ErrSkipped)
 	}
 
 	root, err := snapshotfs.SnapshotRoot(rep, man)
@@ -70,7 +72,8 @@ func testRestoreRepo(ctx context.Context, rep repo.Repository, _ store.Agent) er
 	}
 
 	if file == nil {
-		return nil // nothing small enough to sample
+		// Same reasoning as the no-snapshot case above: nothing was verified.
+		return fmt.Errorf("nothing small enough to sample: %w", ErrSkipped)
 	}
 
 	want, size, err := hashObject(ctx, file)

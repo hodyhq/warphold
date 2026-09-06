@@ -171,12 +171,16 @@ func (c *commandFleetActivate) run(ctx context.Context) error {
 	// The first target, template and group, so the fresh server can enroll a
 	// device immediately. Like the repository above, a failure here is not
 	// fatal - the dashboard's wizard creates the same three things.
-	oneLiner, err := s.SetupDefaults(ctx, c.publicURL, c.storage, hostedRoot)
+	oneLiner, token, err := s.SetupDefaults(ctx, c.publicURL, c.storage, hostedRoot)
 	switch {
 	case err != nil:
 		fmt.Fprintf(c.out.stdout(), "Warning: the default target and group were not created: %v\n", err) //nolint:errcheck
 	case oneLiner != "":
 		fmt.Fprintf(c.out.stdout(), "Devices' backups land in: %s\nEnroll the first device with:\n  %s\n", hostedRoot, oneLiner) //nolint:errcheck
+		// stderr, not stdout: stdout is what an installer or a systemd
+		// journal is likeliest to capture and keep, and this token is a
+		// backup-store credential handed to the next thing that enrolls.
+		c.out.printStderr("Enrollment token (paste when prompted): %s\n", token)
 	default:
 		fmt.Fprintf(c.out.stdout(), "Devices' backups land in: %s\nSet the public URL, then issue an enrollment token in the dashboard.\n", hostedRoot) //nolint:errcheck
 	}

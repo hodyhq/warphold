@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"time"
@@ -132,7 +133,15 @@ func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 	// A failed lookup degrades to "no acknowledgement", which shows the un-acked
 	// marker: the safe direction for a nag about a recovery kit nobody printed.
 	kitAcks, _ := s.store().KitAcks(ctx)
-	repoStats, _ := s.store().RepoStats(ctx)
+	// Unlike lastOK/kitAcks above, a missing row is not an error here: RepoStats
+	// returns a map, and an agent nothing has measured yet is simply absent
+	// from it. Any error is therefore a real query failure, not "not measured
+	// yet", and must not report every device's size as a silent zero.
+	repoStats, err := s.store().RepoStats(ctx)
+	if err != nil {
+		adminFailed(w, "read repository stats", err)
+		return
+	}
 	out := make([]agentOut, 0, len(as))
 	for _, a := range as {
 		var lr *store.Report
@@ -181,6 +190,11 @@ func (s *Server) handleAgentGet(w http.ResponseWriter, r *http.Request) {
 	var sizeBytes int64
 	if rs, err := s.store().RepoStat(ctx, a.ID); err == nil {
 		sizeBytes = rs.StoredBytes
+	} else if !errors.Is(err, store.ErrNotFound) {
+		// Unlike "never measured" (store.ErrNotFound, zero is correct), a real
+		// query failure must not be reported as a silent zero-byte repository.
+		adminFailed(w, "read repository stats", err)
+		return
 	}
 
 	// Flatten agentOut's fields alongside reports (spec: "same object + reports:[last 20]").

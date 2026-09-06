@@ -20,9 +20,10 @@ func TestSetupDefaultsLeavesAFleetThatCanEnroll(t *testing.T) {
 
 	hostedRoot := filepath.Join(t.TempDir(), "hosted")
 
-	oneLiner, err := h.s.SetupDefaults(t.Context(), h.srv.URL, "disk", hostedRoot)
+	oneLiner, token, err := h.s.SetupDefaults(t.Context(), h.srv.URL, "disk", hostedRoot)
 	require.NoError(t, err)
-	require.Contains(t, oneLiner, "Enrollment token (paste when prompted): wh_", "the command carries a real token")
+	require.True(t, strings.HasPrefix(token, "wh_"), "a real token is returned")
+	require.NotContains(t, oneLiner, token, "the command itself never carries the token")
 	require.Contains(t, oneLiner, h.srv.URL+"/enroll.sh")
 
 	fi, err := os.Stat(hostedRoot)
@@ -55,9 +56,10 @@ func TestSetupDefaultsLeavesAFleetThatCanEnroll(t *testing.T) {
 	require.True(t, strings.HasPrefix(body["token"].(string), "wh_"))
 
 	// Second run: nothing is created twice.
-	again, err := h.s.SetupDefaults(t.Context(), h.srv.URL, "disk", hostedRoot)
+	again, againToken, err := h.s.SetupDefaults(t.Context(), h.srv.URL, "disk", hostedRoot)
 	require.NoError(t, err)
 	require.Empty(t, again, "a second run has nothing to enroll into")
+	require.Empty(t, againToken, "a second run issues no token")
 
 	_, targets = h.doList("GET", "/api/v1/fleet/targets")
 	require.Len(t, targets, 1, "no second Fleet disk")
@@ -67,10 +69,10 @@ func TestSetupDefaultsRefusesCloudAndBadStorage(t *testing.T) {
 	h := newHarness(t)
 	h.activateAndLogin()
 
-	_, err := h.s.SetupDefaults(t.Context(), "", "cloud", t.TempDir())
+	_, _, err := h.s.SetupDefaults(t.Context(), "", "cloud", t.TempDir())
 	require.ErrorIs(t, err, api.ErrCloudNeedsWizard)
 
-	_, err = h.s.SetupDefaults(t.Context(), "", "tape", t.TempDir())
+	_, _, err = h.s.SetupDefaults(t.Context(), "", "tape", t.TempDir())
 	require.ErrorContains(t, err, "storage must be disk or cloud")
 
 	_, targets := h.doList("GET", "/api/v1/fleet/targets")
@@ -89,9 +91,10 @@ func TestSetupDefaultsRepairsAPartialRun(t *testing.T) {
 	resp, _ := h.do("POST", "/api/v1/fleet/targets", map[string]any{"name": "Fleet disk", "kind": "filesystem", "path": t.TempDir()})
 	require.Equal(t, 201, resp.StatusCode)
 
-	oneLiner, err := h.s.SetupDefaults(t.Context(), "", "disk", filepath.Join(t.TempDir(), "hosted"))
+	oneLiner, token, err := h.s.SetupDefaults(t.Context(), "", "disk", filepath.Join(t.TempDir(), "hosted"))
 	require.NoError(t, err)
-	require.Contains(t, oneLiner, "Enrollment token (paste when prompted): wh_", "the missing group was created and can enroll")
+	require.True(t, strings.HasPrefix(token, "wh_"), "the missing group was created and can enroll")
+	require.Contains(t, oneLiner, "/enroll.sh")
 
 	_, targets := h.doList("GET", "/api/v1/fleet/targets")
 	require.Len(t, targets, 1, "the existing target was reused, not duplicated")
@@ -109,9 +112,10 @@ func TestSetupDefaultsLeavesAConfiguredFleetAlone(t *testing.T) {
 	resp, _ := h.do("POST", "/api/v1/fleet/targets", map[string]any{"name": "my nas", "kind": "filesystem", "path": t.TempDir()})
 	require.Equal(t, 201, resp.StatusCode)
 
-	oneLiner, err := h.s.SetupDefaults(t.Context(), "", "disk", filepath.Join(t.TempDir(), "hosted"))
+	oneLiner, token, err := h.s.SetupDefaults(t.Context(), "", "disk", filepath.Join(t.TempDir(), "hosted"))
 	require.NoError(t, err)
 	require.Empty(t, oneLiner)
+	require.Empty(t, token)
 
 	_, targets := h.doList("GET", "/api/v1/fleet/targets")
 	require.Len(t, targets, 1)
@@ -131,12 +135,12 @@ func TestSetupDefaultsRefusesABadHostedRoot(t *testing.T) {
 	require.NoError(t, os.Mkdir(filepath.Join(base, "real"), 0o750))
 	require.NoError(t, os.Symlink(filepath.Join(base, "real"), filepath.Join(base, "link")))
 
-	_, err := h.s.SetupDefaults(t.Context(), "", "disk", filepath.Join(base, "link"))
+	_, _, err := h.s.SetupDefaults(t.Context(), "", "disk", filepath.Join(base, "link"))
 	require.ErrorContains(t, err, "symlink")
 
 	file := filepath.Join(base, "file")
 	require.NoError(t, os.WriteFile(file, []byte("x"), 0o600))
-	_, err = h.s.SetupDefaults(t.Context(), "", "disk", file)
+	_, _, err = h.s.SetupDefaults(t.Context(), "", "disk", file)
 	require.ErrorContains(t, err, "not a directory")
 
 	_, targets := h.doList("GET", "/api/v1/fleet/targets")

@@ -267,35 +267,50 @@ func jobAgents(ctx context.Context, st *store.Store, j store.Job) ([]store.Agent
 // sweep accumulates one fleet-wide run: what it covered, and the first
 // failures in the shape the jobs UI renders (spec §7, "the real error").
 type sweep struct {
-	verb  string
-	total int
-	ok    int
-	extra string
-	errs  []string
+	verb    string
+	total   int
+	ok      int
+	skipped int
+	extra   string
+	errs    []string
+	skips   []string
 }
 
 func (s *sweep) fail(who string, err error) {
 	s.errs = append(s.errs, who+": "+err.Error())
 }
 
+// skip records a device the job deliberately did not verify - unlike fail,
+// this is not the device's fault (no snapshot yet, nothing small enough to
+// sample), but it must not count as ok: an unverified device looks identical
+// to a verified one in the digest otherwise.
+func (s *sweep) skip(who string, reason error) {
+	s.skipped++
+	s.skips = append(s.skips, who+": "+reason.Error())
+}
+
 // detail is the row's detail string: counts first, then the first failures.
 func (s *sweep) detail() string {
 	d := fmt.Sprintf("%s %d/%d ok; %d failed", s.verb, s.ok, s.total, len(s.errs))
+	if s.skipped > 0 {
+		d += fmt.Sprintf("; %d skipped", s.skipped)
+	}
+
 	if s.extra != "" {
 		d += ", " + s.extra
 	}
 
-	if len(s.errs) == 0 {
+	shown := append(append([]string(nil), s.errs...), s.skips...)
+	if len(shown) == 0 {
 		return d
 	}
 
-	shown := s.errs
 	if len(shown) > detailErrors {
 		shown = shown[:detailErrors]
 	}
 
 	d += ": " + strings.Join(shown, "; ")
-	if n := len(s.errs) - len(shown); n > 0 {
+	if n := len(s.errs) + len(s.skips) - len(shown); n > 0 {
 		d += fmt.Sprintf(" (+%d more)", n)
 	}
 
@@ -303,7 +318,7 @@ func (s *sweep) detail() string {
 }
 
 func (s *sweep) err() error {
-	if len(s.errs) == 0 {
+	if len(s.errs) == 0 && s.skipped == 0 {
 		return nil
 	}
 
@@ -353,13 +368,14 @@ func perAgent(st *store.Store, open seal.Opener, cloud CloudStoreFn, verb string
 			r.close(context.WithoutCancel(ctx))
 			cancel()
 
-			if err != nil {
+			switch {
+			case errors.Is(err, ErrSkipped):
+				s.skip(a.ID, err)
+			case err != nil:
 				s.fail(a.ID, err)
-
-				continue
+			default:
+				s.ok++
 			}
-
-			s.ok++
 		}
 
 		return s.detail(), s.err()

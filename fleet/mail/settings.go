@@ -89,7 +89,11 @@ func Settings(ctx context.Context, st *store.Store) (Config, error) {
 		c.Port = n
 	}
 	if tlsOn != "" {
-		c.TLS = tlsOn == "true"
+		v, err := strconv.ParseBool(tlsOn)
+		if err != nil {
+			return Config{}, errors.New("stored smtp_tls is not a boolean")
+		}
+		c.TLS = v
 	}
 	c.Username, c.From = user, from
 	if pub != "" {

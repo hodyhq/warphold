@@ -69,6 +69,10 @@ func TestRestoredBytesMismatchIsLoud(t *testing.T) {
 	require.NoError(t, checkRestored("notes.md", ok[:], 8, path))
 }
 
+// A never-snapshotted agent has nothing to restore and prove, so it must not
+// be indistinguishable from a device the job actually verified: it is
+// recorded as skipped, not ok, and the fleet result is non-ok so the digest
+// surfaces it rather than hiding it behind a clean "1/1 ok".
 func TestTestRestoreIsFineWithAnAgentThatHasNoSnapshots(t *testing.T) {
 	fx := newRepoFixture(t)
 	ctx := context.Background()
@@ -77,6 +81,7 @@ func TestTestRestoreIsFineWithAnAgentThatHasNoSnapshots(t *testing.T) {
 	fx.provision(t, "ag_new")
 
 	detail, err := TestRestore(fx.st, fx.key.Open, nil)(ctx, store.Job{Kind: "test-restore"})
-	require.NoError(t, err)
-	require.Equal(t, "restored 1/1 ok; 0 failed", detail)
+	require.Error(t, err)
+	require.Contains(t, detail, "restored 0/1 ok; 0 failed; 1 skipped")
+	require.Contains(t, detail, "ag_new: no finished snapshot yet")
 }

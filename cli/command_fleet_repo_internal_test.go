@@ -15,6 +15,9 @@ func TestResolveDataDir(t *testing.T) {
 	configFile := filepath.Join(t.TempDir(), "repository.config")
 
 	t.Run("default is next to the config file", func(t *testing.T) {
+		if fi, err := os.Stat(fleetDataRoot); err == nil && fi.IsDir() {
+			t.Skipf("%v exists on this host, so the default may be the data root", fleetDataRoot)
+		}
 		got, err := resolveDataDir("", configFile)
 		require.NoError(t, err)
 		require.Equal(t, filepath.Join(filepath.Dir(configFile), "data"), got)

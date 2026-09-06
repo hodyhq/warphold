@@ -633,7 +633,7 @@ func TestFleetActivateCreatesDefaultsAndPrintsTheOneLiner(t *testing.T) {
 	runner := testenv.NewInProcRunner(t)
 	e := testenv.NewCLITest(t, nil, runner)
 
-	stdout := e.RunAndExpectSuccess(t, "fleet", "activate",
+	stdout, stderr := e.RunAndExpectSuccessWithErrOut(t, "fleet", "activate",
 		"--email", "hody@hody.dev",
 		"--admin-password", "pw12345678",
 		"--passphrase", "seal-me-please",
@@ -642,8 +642,9 @@ func TestFleetActivateCreatesDefaultsAndPrintsTheOneLiner(t *testing.T) {
 	joined := strings.Join(stdout, "\n")
 	hostedRoot := filepath.Join(e.ConfigDir, "data", "hosted")
 	require.Contains(t, joined, hostedRoot)
-	require.Contains(t, joined, "Enrollment token (paste when prompted): wh_")
+	require.NotContains(t, joined, "wh_", "the enrollment token must never land in stdout")
 	require.Contains(t, joined, "https://fleet.example.com/enroll.sh")
+	require.Contains(t, strings.Join(stderr, "\n"), "Enrollment token (paste when prompted): wh_")
 	require.DirExists(t, hostedRoot)
 
 	st, err := store.Open(filepath.Join(fleet.StateDirFor(fleetConfigFile(e)), "fleet.db"))
@@ -880,11 +881,13 @@ func TestFleetActivateStillCreatesDefaultsWhenTheProbeFails(t *testing.T) {
 		"--public-url", notFleet.URL,
 		"--verify-public-url")
 
-	require.Contains(t, strings.Join(stderr, "\n"), "did not answer as an activated WarpHold Fleet",
+	joinedStderr := strings.Join(stderr, "\n")
+	require.Contains(t, joinedStderr, "did not answer as an activated WarpHold Fleet",
 		"the probe failure is still what fails the command")
 
 	// The one-liner is the proof that setup ran to the end.
-	require.Contains(t, strings.Join(stdout, "\n"), "Enrollment token (paste when prompted): wh_")
+	require.Contains(t, joinedStderr, "Enrollment token (paste when prompted): wh_")
+	require.NotContains(t, strings.Join(stdout, "\n"), "wh_", "the enrollment token must never land in stdout")
 
 	st, err := store.Open(filepath.Join(fleet.StateDirFor(fleetConfigFile(e)), "fleet.db"))
 	require.NoError(t, err)

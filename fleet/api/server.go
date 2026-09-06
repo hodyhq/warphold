@@ -71,6 +71,12 @@ type Server struct {
 	st    *store.Store
 	key   seal.Key
 	login *limiter
+	// noScheduler is set by NewOffline: an offline sealing operation (the
+	// rotate-passphrase CLI command) must not let jobs enqueue or run against
+	// the store while it holds the state-dir lock and re-seals it. It is set
+	// once, before load(), and only ever read after that, so it needs no lock
+	// of its own.
+	noScheduler bool
 	// smtpTest throttles the test-send endpoint, per admin.
 	smtpTest *limiter
 	// nowFn is the server clock, read through now() under mu so
@@ -142,13 +148,26 @@ type Server struct {
 
 // New creates a Server for stateDir; if Fleet was activated before, its state is loaded.
 func New(stateDir string) *Server {
+	return newServer(stateDir, false)
+}
+
+// NewOffline is New, except it never starts the job scheduler. Only
+// command_fleet_rotate.go uses it: run under the Fleet server's own
+// state-dir lock (fleet.TryLock), an offline passphrase rotation - dry-run or
+// real - must not race a scheduler over the very rows it is re-sealing.
+func NewOffline(stateDir string) *Server {
+	return newServer(stateDir, true)
+}
+
+func newServer(stateDir string, noScheduler bool) *Server {
 	s := &Server{
-		paths:    fleet.PathsFor(stateDir),
-		login:    newLimiter(loginMaxAttempts, loginWindow),
-		smtpTest: newLimiter(1, smtpTestWindow),
-		nowFn:    time.Now,
-		b2:       b2api.New(nil),
-		cloud:    gatewayCloud{},
+		paths:       fleet.PathsFor(stateDir),
+		login:       newLimiter(loginMaxAttempts, loginWindow),
+		smtpTest:    newLimiter(1, smtpTestWindow),
+		nowFn:       time.Now,
+		b2:          b2api.New(nil),
+		cloud:       gatewayCloud{},
+		noScheduler: noScheduler,
 	}
 	// A missing key file just means "never activated"; anything else (bad
 	// permissions, a corrupt DB) must be loud, because the server would
@@ -238,7 +257,7 @@ func (s *Server) load() error {
 func (s *Server) startJobs() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.st == nil || s.closed {
+	if s.st == nil || s.closed || s.noScheduler {
 		return
 	}
 	old := s.sched
@@ -632,17 +651,11 @@ func (s *Server) handleActivate(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if in.PublicURL != "" {
-		if err := s.SetPublicURL(r.Context(), in.PublicURL); err != nil {
-			// The syntax was checked above, so this is a store failure, and
-			// the Fleet is now activated without a public URL. Say so rather
-			// than reporting a success the operator would have to discover
-			// was partial.
-			log.Printf("warphold fleet: activated but public_url could not be stored: %v", err)
-			writeErr(w, http.StatusInternalServerError, "fleet activated, but the public URL could not be stored; set it in Settings")
-			return
-		}
-	}
+	// Activate already stored the canonical public_url (as part of the same
+	// settings write as the salt and instance_id) if in.PublicURL was set; a
+	// second write here would be redundant, and one that failed after a
+	// successful activation would report a false 500 for a Fleet that is
+	// actually up.
 	a, err := s.store().AdminByEmail(r.Context(), normalizeEmail(in.Email))
 	if err != nil {
 		log.Printf("warphold fleet: activated but admin lookup failed: %v", err)
