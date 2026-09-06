@@ -38,6 +38,24 @@ type mirrorCounters struct {
 	putErr     func(key string) error
 }
 
+// Close forwards to the wrapped store when it holds a handle worth releasing
+// (the local backend's directory handle, in particular). Without this,
+// closeStore's type assertion on *testMirror never sees it, since embedding
+// the ObjectStore interface only promotes methods the interface itself
+// declares -- and Close is deliberately not one of them (see object.go).
+// That leaves the local store's directory handle open past the test, which
+// unlike POSIX's advisory-only locking, Windows enforces: t.TempDir's
+// cleanup then fails to remove the still-open directory.
+func (m *testMirror) Close(ctx context.Context) error {
+	if c, ok := m.ObjectStore.(interface {
+		Close(ctx context.Context) error
+	}); ok {
+		return c.Close(ctx)
+	}
+
+	return nil
+}
+
 func (m *testMirror) Delete(ctx context.Context, key string) error {
 	m.c.mu.Lock()
 	m.c.deletes++
@@ -148,6 +166,7 @@ func newMirrorFixture(t *testing.T, tweak func(*store.Target)) *mirrorFixture {
 
 	id, err := st.CreateTarget(ctx, &tgt)
 	require.NoError(t, err)
+
 	tgt.ID = id
 
 	f := &mirrorFixture{st: st, key: key, dir: root, mirror: t.TempDir(), counters: &mirrorCounters{}, target: tgt}
@@ -263,7 +282,7 @@ func TestMirrorUsesPlainPutsWithoutConditionalWrites(t *testing.T) {
 		want bool
 	}{
 		"provider has no conditional write": {cond: new(bool), want: true},
-		"provider enforces it":              {cond: ptrTo(true), want: false},
+		"provider enforces it":              {cond: new(true), want: false},
 		"never probed":                      {cond: nil, want: false},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -280,11 +299,10 @@ func TestMirrorUsesPlainPutsWithoutConditionalWrites(t *testing.T) {
 	}
 }
 
-func ptrTo[T any](v T) *T { return &v }
-
 func TestMirrorRecordsPerDeviceProgress(t *testing.T) {
 	f := newMirrorFixture(t, nil)
 	seedAgents(t, f.st, "dev1", "dev2")
+
 	ctx := context.Background()
 
 	f.write(t, f.dir, "dev1/p001", "12345")
@@ -455,10 +473,10 @@ func TestMirrorRejectsAnUnsealableKey(t *testing.T) {
 
 // TestMirrorRecordsFailureWhenCancelledBetweenTargets covers the outer target
 // loop, not the per-device cancellation path TestMirrorContinuesAfterADevice-
-// Fails-adjacent tests already cover: once ctx is cancelled, the loop must
+// Fails-adjacent tests already cover: once ctx is canceled, the loop must
 // break AND say so, not just leave whatever the target in flight happened to
 // fail with as the only error. The fixture's one real target fails on its own
-// (its listing sees the same cancelled ctx) - the assertion is that the
+// (its listing sees the same canceled ctx) - the assertion is that the
 // loop's own break adds a second, distinct entry on top of that, which is
 // only true once the break itself records the cancellation.
 func TestMirrorRecordsFailureWhenCancelledBetweenTargets(t *testing.T) {
@@ -476,6 +494,7 @@ func TestMirrorRecordsFailureWhenCancelledBetweenTargets(t *testing.T) {
 	// real time.
 	old := openMirror
 	t.Cleanup(func() { openMirror = old })
+
 	openMirror = func(c context.Context, tg store.Target, cr mirrorCreds) (gateway.ObjectStore, error) {
 		cancel()
 
@@ -487,7 +506,7 @@ func TestMirrorRecordsFailureWhenCancelledBetweenTargets(t *testing.T) {
 	require.Contains(t, detail, "mirror: context canceled",
 		"the loop's own break must record the cancellation, not just leave it to the target in flight")
 
-	require.Empty(t, contents(t, f.mirror), "cancelled before any upload could start")
+	require.Empty(t, contents(t, f.mirror), "canceled before any upload could start")
 }
 
 func TestMirrorConnectionInfo(t *testing.T) {

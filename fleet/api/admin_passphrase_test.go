@@ -393,7 +393,7 @@ func TestRotatePassphraseKeepsTheGatewayWorking(t *testing.T) {
 	h := newHarness(t)
 	h.activateAndLogin()
 	h.setPublicURL()
-	gid := h.mkHostedGroup(t, t.TempDir())
+	gid := h.mkHostedGroup(t, h.hostedDir(t))
 	_, tok := h.do("POST", "/api/v1/fleet/tokens", map[string]any{"group_id": gid})
 
 	admin := h.jar

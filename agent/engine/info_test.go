@@ -3,6 +3,7 @@ package engine_test
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -33,7 +34,12 @@ func TestInfoWriteReadRemove(t *testing.T) {
 	// engine.json holds the engine's password and the local handoff token.
 	st, err := os.Stat(path)
 	require.NoError(t, err)
-	require.Equal(t, os.FileMode(0o600), st.Mode().Perm())
+
+	if runtime.GOOS != "windows" {
+		// Windows has no POSIX permission bits, so this only holds where
+		// warphold actually ships: Linux and macOS.
+		require.Equal(t, os.FileMode(0o600), st.Mode().Perm())
+	}
 
 	got, err := engine.ReadInfo("user")
 	require.NoError(t, err)
@@ -52,6 +58,10 @@ func TestInfoWriteReadRemove(t *testing.T) {
 // TestInfoRewriteTightensMode pins that a pre-existing world-readable
 // engine.json does not survive a rewrite with its old mode.
 func TestInfoRewriteTightensMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("linux-only: POSIX permission bits (Windows has no 0600 equivalent)")
+	}
+
 	dir := t.TempDir()
 	t.Setenv("WARPHOLD_STATE_DIR", dir)
 	path := filepath.Join(dir, "engine.json")

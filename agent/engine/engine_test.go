@@ -29,6 +29,7 @@ import (
 // test can damage one.
 func provisionedRepo(t *testing.T) (configFile, password, blobDir string) {
 	t.Helper()
+
 	ctx := context.Background()
 	p := &enroll.Provisioner{Owner: "fleet@test"}
 	b, err := p.Provision(ctx, enroll.TargetSpec{Kind: "filesystem", Path: t.TempDir()}, "ag_e")
@@ -40,16 +41,20 @@ func provisionedRepo(t *testing.T) (configFile, password, blobDir string) {
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "repository.config")
 	require.NoError(t, repo.Connect(ctx, cfg, st, pw, &repo.ConnectOptions{CachingOptions: content.CachingOptions{CacheDirectory: filepath.Join(dir, "cache")}}))
+
 	return cfg, pw, b.Prefix
 }
 
 func TestApplySnapshotAndReport(t *testing.T) {
 	ctx := context.Background()
+
 	t.Setenv("WARPHOLD_STATE_DIR", t.TempDir())
 	cfg, pw, _ := provisionedRepo(t)
 	h, err := engine.StartHeadless(ctx, cfg, pw, "user", passwordpersist.None())
 	require.NoError(t, err)
+
 	defer h.Stop(ctx)
+
 	api, err := h.Client()
 	require.NoError(t, err)
 	l, err := engine.NewLocal(context.Background(), api)
@@ -58,6 +63,7 @@ func TestApplySnapshotAndReport(t *testing.T) {
 
 	src := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(src, "a.txt"), []byte("hello"), 0o600))
+
 	pol, _ := json.Marshal(map[string]any{"retention": map[string]any{"keepLatest": 2}, "scheduling": map[string]any{"manual": true}})
 	require.NoError(t, l.Apply(ctx, []poll.Source{{Path: src, Policy: pol}}))
 
@@ -70,25 +76,29 @@ func TestApplySnapshotAndReport(t *testing.T) {
 	r.Close(ctx)
 
 	require.NoError(t, l.Snapshot(ctx, src))
+
 	var done []uitask.Info
 	require.Eventually(t, func() bool {
 		tasks, err := l.Tasks(ctx)
 		if err != nil {
 			return false
 		}
+
 		done = nil
 		for _, tk := range tasks {
 			if tk.EndTime != nil && tk.Kind == "Snapshot" {
 				done = append(done, tk)
 			}
 		}
+
 		return len(done) == 1
 	}, 60*time.Second, 200*time.Millisecond)
+
 	rep := engine.ToReport(done[0], src)
 	require.Equal(t, "ok", rep.Status)
 	require.Equal(t, "snapshot", rep.Kind)
 	require.Equal(t, src, rep.Source)
-	require.Greater(t, rep.Files, int64(0))
+	require.Positive(t, rep.Files)
 
 	// the manifest written by that task is findable from the task's start time
 	id, err := l.LatestSnapshotID(ctx, src, done[0].StartTime, *done[0].EndTime)
@@ -107,16 +117,24 @@ func TestApplySnapshotAndReport(t *testing.T) {
 	require.ErrorIs(t, err, policy.ErrPolicyNotFound)
 	r.Close(ctx)
 
-	require.Equal(t, filepath.Join(os.Getenv("HOME"), "x"), engine.ExpandHome("~/x"))
+	// os.UserHomeDir, not $HOME directly: HOME is a POSIX-only convention
+	// and is typically unset on Windows, where the home directory comes
+	// from USERPROFILE instead -- the same source ExpandHome itself uses.
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+	require.Equal(t, filepath.Join(home, "x"), engine.ExpandHome("~/x"))
 }
 
 func TestStatus(t *testing.T) {
 	ctx := context.Background()
+
 	t.Setenv("WARPHOLD_STATE_DIR", t.TempDir())
 	cfg, pw, _ := provisionedRepo(t)
 	h, err := engine.StartHeadless(ctx, cfg, pw, "user", passwordpersist.None())
 	require.NoError(t, err)
+
 	defer h.Stop(ctx)
+
 	api, err := h.Client()
 	require.NoError(t, err)
 	l, err := engine.NewLocal(context.Background(), api)
@@ -145,6 +163,7 @@ func TestStatus(t *testing.T) {
 // router.
 func TestHeadlessServesUI(t *testing.T) {
 	ctx := context.Background()
+
 	t.Setenv("WARPHOLD_STATE_DIR", t.TempDir())
 	cfg, pw, _ := provisionedRepo(t)
 	h, err := engine.StartHeadless(ctx, cfg, pw, "user", passwordpersist.None())
@@ -152,7 +171,7 @@ func TestHeadlessServesUI(t *testing.T) {
 
 	defer h.Stop(ctx) //nolint:errcheck
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, h.BaseURL+"/", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, h.BaseURL+"/", http.NoBody)
 	require.NoError(t, err)
 	req.SetBasicAuth(h.User, h.Password)
 
@@ -172,7 +191,7 @@ func TestHeadlessServesUI(t *testing.T) {
 	// isKnownUIRoute allowlist does not know them, so they must be served the
 	// index rather than the file server's 404.
 	for _, p := range []string{"/agent", "/fleet/devices"} {
-		deepReq, err := http.NewRequestWithContext(ctx, http.MethodGet, h.BaseURL+p, nil)
+		deepReq, err := http.NewRequestWithContext(ctx, http.MethodGet, h.BaseURL+p, http.NoBody)
 		require.NoError(t, err)
 		deepReq.SetBasicAuth(h.User, h.Password)
 
@@ -188,7 +207,7 @@ func TestHeadlessServesUI(t *testing.T) {
 	}
 
 	// ... and an unknown path is still a 404.
-	nopeReq, err := http.NewRequestWithContext(ctx, http.MethodGet, h.BaseURL+"/nope", nil)
+	nopeReq, err := http.NewRequestWithContext(ctx, http.MethodGet, h.BaseURL+"/nope", http.NoBody)
 	require.NoError(t, err)
 	nopeReq.SetBasicAuth(h.User, h.Password)
 
@@ -200,7 +219,7 @@ func TestHeadlessServesUI(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, nope.StatusCode)
 
 	// the SPA's mode detection: no Fleet routes in agent mode.
-	fleetReq, err := http.NewRequestWithContext(ctx, http.MethodGet, h.BaseURL+"/api/v1/fleet/status", nil)
+	fleetReq, err := http.NewRequestWithContext(ctx, http.MethodGet, h.BaseURL+"/api/v1/fleet/status", http.NoBody)
 	require.NoError(t, err)
 	fleetReq.SetBasicAuth(h.User, h.Password)
 

@@ -67,6 +67,7 @@ type logSink struct {
 func (l *logSink) add(e gateway.LogEntry) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
 	l.entries = append(l.entries, e)
 }
 
@@ -98,6 +99,7 @@ func newFixture(t *testing.T, opt fixtureOpts) *fixture {
 
 	objs, err := gateway.NewLocal(root, gateway.LocalOptions{MaxObjectSize: opt.maxObjectBytes})
 	require.NoError(t, err)
+	closeStore(t, objs)
 
 	if opt.wrapStore != nil {
 		objs = opt.wrapStore(objs)
@@ -124,6 +126,26 @@ func newFixture(t *testing.T, opt fixtureOpts) *fixture {
 	t.Cleanup(srv.Close)
 
 	return &fixture{srv: srv, root: root, logs: logs, st: st, key: key}
+}
+
+// closeStore releases a store's handle, if it holds one, before the test's
+// t.TempDir() tries to remove the directory backing it. The local backend
+// keeps an open directory handle (os.OpenRoot) for its lifetime; POSIX's
+// advisory-only locking lets TempDir's cleanup remove the directory anyway,
+// but Windows enforces the lock and the removal fails. Registered on the
+// pre-wrap store, since a wrapStore fixture-opts test double embeds the
+// ObjectStore interface without promoting this method.
+func closeStore(t *testing.T, s gateway.ObjectStore) {
+	t.Helper()
+
+	c, ok := s.(interface {
+		Close(ctx context.Context) error
+	})
+	if !ok {
+		return
+	}
+
+	t.Cleanup(func() { require.NoError(t, c.Close(context.Background())) })
 }
 
 // testStore builds a Fleet store holding one hosted target, two devices and
@@ -424,7 +446,7 @@ func TestGatewayPutIsCreateOnly(t *testing.T) {
 		{"X-Amz-Server-Side-Encryption": {"AES256"}},
 		{"Expect": {"100-continue"}},
 	} {
-		h.Set("Content-Md5", contentMD5([]byte("overwrite attempt")))
+		h.Set("Content-MD5", contentMD5([]byte("overwrite attempt")))
 
 		resp := f.do(t, call{
 			akid: akidA, secret: testSecret, method: http.MethodPut, path: objectPath(devA + "/" + packKey),
@@ -700,7 +722,7 @@ func TestGatewayListIsPrefixConfined(t *testing.T) {
 		}
 	})
 
-	t.Run("another device's prefix is replaced, not honoured", func(t *testing.T) {
+	t.Run("another device's prefix is replaced, not honored", func(t *testing.T) {
 		_, res := f.list(t, akidA, testSecret, url.Values{"prefix": {devB + "/"}})
 		require.Equal(t, 5, res.KeyCount)
 
@@ -709,7 +731,7 @@ func TestGatewayListIsPrefixConfined(t *testing.T) {
 		}
 	})
 
-	t.Run("a prefix inside the device is honoured", func(t *testing.T) {
+	t.Run("a prefix inside the device is honored", func(t *testing.T) {
 		_, res := f.list(t, akidA, testSecret, url.Values{"prefix": {devA + "/p0"}})
 		require.Equal(t, 5, res.KeyCount)
 	})
@@ -925,8 +947,10 @@ func TestGatewayRefusesMalformedCredentialPrefix(t *testing.T) {
 			f := newFixture(t, fixtureOpts{prefixOverride: &tc.prefix})
 
 			for _, c := range []call{
-				{method: http.MethodPut, path: objectPath(devA + "/" + packKey), body: []byte("x"), payloadHash: unsigned,
-					header: http.Header{"Content-Md5": {contentMD5([]byte("x"))}}},
+				{
+					method: http.MethodPut, path: objectPath(devA + "/" + packKey), body: []byte("x"), payloadHash: unsigned,
+					header: http.Header{"Content-Md5": {contentMD5([]byte("x"))}},
+				},
 				{method: http.MethodGet, path: objectPath(devA + "/" + packKey)},
 				{method: http.MethodHead, path: objectPath(devA + "/" + packKey)},
 				{method: http.MethodDelete, path: objectPath(devA + "/" + sessionKey)},
@@ -1063,7 +1087,7 @@ func TestClientIPTrustsForwardedOnlyFromATrustedProxy(t *testing.T) {
 		{"chain trusted end to end", "127.0.0.1:9", "10.1.1.1, 127.0.0.2", "127.0.0.1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", http.NoBody)
 			r.RemoteAddr = tc.peer
 
 			if tc.xff != "" {
@@ -1092,7 +1116,7 @@ func TestClientIPJoinsMultipleForwardedForHeaderLines(t *testing.T) {
 	trusted, err := gateway.ParseTrustedProxies("10.0.0.0/8")
 	require.NoError(t, err)
 
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", http.NoBody)
 	r.RemoteAddr = "10.0.0.1:9" // trusted proxy
 
 	r.Header.Add("X-Forwarded-For", "1.2.3.4")     // client-supplied spoof line
@@ -1177,7 +1201,7 @@ func TestGatewayRefusesEmptyValuedSubresources(t *testing.T) {
 
 // The trusted-proxy list is a trust boundary, so the Gateway must not alias
 // the caller's slice. The test is differential: it mutates the caller's copy
-// after construction and asserts the gateway still honours X-Forwarded-For,
+// after construction and asserts the gateway still honors X-Forwarded-For,
 // which it only does while it still trusts the loopback peer.
 func TestGatewayCopiesTheTrustedProxyList(t *testing.T) {
 	nets, err := gateway.ParseTrustedProxies("127.0.0.0/8")
@@ -1203,7 +1227,7 @@ func TestGatewayCopiesTheTrustedProxyList(t *testing.T) {
 	// Burst is 1, so two requests share a bucket only if they resolve to the
 	// same client. Distinct forwarded clients must each get their own.
 	for _, xff := range []string{"203.0.113.9", "203.0.113.10"} {
-		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+objectPath(devA+"/x"), nil)
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+objectPath(devA+"/x"), http.NoBody)
 		require.NoError(t, err)
 		req.Header.Set("X-Forwarded-For", xff)
 

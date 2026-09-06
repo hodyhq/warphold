@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -27,6 +28,7 @@ func newStore(t *testing.T) (gateway.ObjectStore, string) {
 
 	s, err := gateway.NewLocal(dir, gateway.LocalOptions{})
 	require.NoError(t, err)
+	closeStore(t, s)
 
 	return s, dir
 }
@@ -86,16 +88,13 @@ func TestConcurrentPutHasExactlyOneWinner(t *testing.T) {
 	)
 
 	for i := range n {
-		wg.Add(1)
-
-		go func() {
-			defer wg.Done()
-
+		wg.Go(func() {
 			body := fmt.Sprintf("body-%02d", i)
 
 			_, err := put(t, s, "dev1/race", body, false)
 			if err == nil {
 				mu.Lock()
+
 				winners = append(winners, body)
 				mu.Unlock()
 
@@ -104,10 +103,11 @@ func TestConcurrentPutHasExactlyOneWinner(t *testing.T) {
 
 			if !errors.Is(err, gateway.ErrExists) {
 				mu.Lock()
+
 				winners = append(winners, "unexpected error: "+err.Error())
 				mu.Unlock()
 			}
-		}()
+		})
 	}
 
 	wg.Wait()
@@ -176,6 +176,7 @@ func TestHead(t *testing.T) {
 	// right when the xattr is missing (the documented hash-on-read fallback)
 	reopened, err := gateway.NewLocal(dir, gateway.LocalOptions{})
 	require.NoError(t, err)
+	closeStore(t, reopened)
 
 	info, err = reopened.Head(context.Background(), "dev1/h")
 	require.NoError(t, err)
@@ -298,6 +299,7 @@ func TestPutSizeCap(t *testing.T) {
 
 	s, err := gateway.NewLocal(dir, gateway.LocalOptions{MaxObjectSize: 8})
 	require.NoError(t, err)
+	closeStore(t, s)
 
 	ctx := context.Background()
 
@@ -328,7 +330,7 @@ func TestPutStopsOnCanceledContext(t *testing.T) {
 	_, err := s.Put(ctx, "dev1/c", strings.NewReader("x"), 1, false)
 	require.ErrorIs(t, err, context.Canceled)
 
-	// cancelled mid-body: the copy stops and nothing is stored
+	// canceled mid-body: the copy stops and nothing is stored
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	r := io.MultiReader(strings.NewReader("half"), readerFunc(func([]byte) (int, error) {
 		cancel2()
@@ -381,6 +383,15 @@ func TestFlatKeySpace(t *testing.T) {
 }
 
 func TestOverlongSegmentIsABadKey(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// mapKeyErr recognizes syscall.ENAMETOOLONG, the errno a Linux
+		// filesystem returns for a too-long path component. Windows's
+		// hardlink call fails an overlong component with a generic
+		// invalid-argument error instead, so this Linux/ext4-specific
+		// errno mapping has no clean analog to assert here.
+		t.Skip("linux-only: ENAMETOOLONG errno mapping")
+	}
+
 	s, _ := newStore(t)
 
 	// under the 1024-byte key limit, over the filesystem's per-name limit
@@ -410,12 +421,17 @@ func TestReservedTmpDirectory(t *testing.T) {
 	require.NoError(t, os.WriteFile(leftover, []byte("partial"), 0o600))
 	require.NoError(t, os.Chtimes(leftover, time.Now().Add(-2*time.Hour), time.Now().Add(-2*time.Hour)))
 
-	_, err = gateway.NewLocal(dir, gateway.LocalOptions{})
+	reopened, err := gateway.NewLocal(dir, gateway.LocalOptions{})
 	require.NoError(t, err)
+	closeStore(t, reopened)
 	require.Empty(t, regularFiles(t, filepath.Join(dir, ".tmp")))
 }
 
 func TestModes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("linux-only: POSIX permission bits (Windows has no 0700/0600 equivalent)")
+	}
+
 	s, dir := newStore(t)
 
 	_, err := put(t, s, "dev1/m", "x", false)
@@ -442,6 +458,7 @@ func TestHostileKeysNeverEscapeTheRoot(t *testing.T) {
 
 	s, err := gateway.NewLocal(dir, gateway.LocalOptions{})
 	require.NoError(t, err)
+	closeStore(t, s)
 
 	ctx := context.Background()
 
@@ -550,18 +567,21 @@ func baseNames(paths []string) []string {
 func TestNewLocalSweepsOnlyStaleTempFiles(t *testing.T) {
 	dir := t.TempDir()
 
-	_, err := gateway.NewLocal(dir, gateway.LocalOptions{})
+	first, err := gateway.NewLocal(dir, gateway.LocalOptions{})
 	require.NoError(t, err)
+	closeStore(t, first)
 
 	fresh := filepath.Join(dir, ".tmp", "in-flight")
 	stale := filepath.Join(dir, ".tmp", "crashed")
+
 	require.NoError(t, os.WriteFile(fresh, []byte("partial"), 0o600))
 	require.NoError(t, os.WriteFile(stale, []byte("partial"), 0o600))
 	require.NoError(t, os.Chtimes(stale, time.Now().Add(-2*time.Hour), time.Now().Add(-2*time.Hour)))
 
 	// A second store on the same root, which is exactly the hosted-adapter case.
-	_, err = gateway.NewLocal(dir, gateway.LocalOptions{})
+	second, err := gateway.NewLocal(dir, gateway.LocalOptions{})
 	require.NoError(t, err)
+	closeStore(t, second)
 
 	require.FileExists(t, fresh, "a partial write from another opener must survive")
 	require.NoFileExists(t, stale, "a partial write left by a crash must be swept")

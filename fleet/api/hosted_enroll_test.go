@@ -17,10 +17,13 @@ import (
 // mkHostedGroup creates a hosted/disk target rooted at dir and a group on it.
 func (h *harness) mkHostedGroup(t *testing.T, dir string) float64 {
 	t.Helper()
+
 	_, tg := h.do("POST", "/api/v1/fleet/targets", map[string]any{"name": "hosted", "kind": "hosted", "storage_mode": "disk", "path": dir})
 	require.NotNil(t, tg["id"], tg)
+
 	_, tp := h.do("POST", "/api/v1/fleet/templates", map[string]any{"name": "Home default", "sources": []string{"~"}, "policy": map[string]any{}})
 	_, g := h.do("POST", "/api/v1/fleet/groups", map[string]any{"name": "Laptops", "target_id": tg["id"], "template_id": tp["id"]})
+
 	return g["id"].(float64)
 }
 
@@ -28,6 +31,7 @@ func (h *harness) mkHostedGroup(t *testing.T, dir string) float64 {
 // device was handed, pointed at this Fleet's own gateway.
 func deviceStore(t *testing.T, connectToken string) blob.Storage {
 	t.Helper()
+
 	ci, _, err := repo.DecodeToken(connectToken)
 	require.NoError(t, err)
 	require.Equal(t, "s3", ci.Type)
@@ -40,6 +44,7 @@ func deviceStore(t *testing.T, connectToken string) blob.Storage {
 	st, err := blob.NewStorage(context.Background(), ci, false)
 	require.NoError(t, err)
 	t.Cleanup(func() { st.Close(context.Background()) }) //nolint:errcheck
+
 	return st
 }
 
@@ -51,7 +56,8 @@ func TestHostedEnrollProvisionsAndRevokeDisablesTheGatewayKey(t *testing.T) {
 	h := newHarness(t)
 	h.activateAndLogin()
 	h.setPublicURL()
-	root := t.TempDir()
+
+	root := h.hostedDir(t)
 	gid := h.mkHostedGroup(t, root)
 	_, tok := h.do("POST", "/api/v1/fleet/tokens", map[string]any{"group_id": gid})
 
@@ -96,7 +102,7 @@ func TestRevokeUsesTheConfiguredRetentionWindow(t *testing.T) {
 	h := newHarness(t)
 	h.activateAndLogin()
 	h.setPublicURL()
-	gid := h.mkHostedGroup(t, t.TempDir())
+	gid := h.mkHostedGroup(t, h.hostedDir(t))
 
 	resp, body := h.do("PUT", "/api/v1/fleet/settings", map[string]any{"revoked_retention_days": 7})
 	require.Equal(t, 200, resp.StatusCode, body)
@@ -182,6 +188,7 @@ func TestHostedEnrollFailureLeavesNothingBehind(t *testing.T) {
 // agentIDs lists the ids the admin API reports, as a set.
 func (h *harness) agentIDs(t *testing.T) map[string]bool {
 	t.Helper()
+
 	resp, list := h.doList("GET", "/api/v1/fleet/agents")
 	require.Equal(t, 200, resp.StatusCode)
 
@@ -189,6 +196,7 @@ func (h *harness) agentIDs(t *testing.T) map[string]bool {
 	for _, a := range list {
 		out[a["id"].(string)] = true
 	}
+
 	return out
 }
 

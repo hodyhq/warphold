@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -49,11 +50,32 @@ func newHarness(t *testing.T) *harness {
 	dir := t.TempDir()
 	s := api.New(dir)
 	t.Cleanup(func() { s.Close() })
+
 	m := mux.NewRouter()
 	s.Mount(m)
 	ts := httptest.NewServer(m)
 	t.Cleanup(ts.Close)
+
 	return &harness{t: t, srv: ts, s: s, stateDir: dir}
+}
+
+// hostedDir returns a fresh directory for a hosted/disk target's storage,
+// nested under the harness's own state directory rather than an independent
+// t.TempDir(). A hosted target's backing store keeps an open directory
+// handle (fleet/gateway's local backend) until s.Close() releases it; an
+// independent t.TempDir() registers its own removal with t.Cleanup, and
+// since cleanups run in the reverse of registration order, one created
+// after newHarness would be removed *before* s.Close() runs. Nesting under
+// stateDir -- whose own cleanup was registered first in newHarness, and so
+// runs last -- ties its lifetime to a cleanup that is guaranteed to fire
+// after the store holding it is closed.
+func (h *harness) hostedDir(t *testing.T) string {
+	t.Helper()
+
+	dir, err := os.MkdirTemp(h.stateDir, "hosted-*")
+	require.NoError(t, err)
+
+	return dir
 }
 
 type fakeB2API struct {
@@ -161,6 +183,7 @@ func (h *harness) cookie(name string) string {
 			return c.Value
 		}
 	}
+
 	return ""
 }
 
@@ -172,6 +195,7 @@ func (h *harness) mergeCookies(cs []*http.Cookie) {
 	if len(cs) == 0 {
 		return
 	}
+
 	jar := append([]*http.Cookie(nil), h.jar...)
 	for _, c := range cs {
 		replaced := false
@@ -181,10 +205,12 @@ func (h *harness) mergeCookies(cs []*http.Cookie) {
 				break
 			}
 		}
+
 		if !replaced {
 			jar = append(jar, c)
 		}
 	}
+
 	h.jar = jar
 }
 
@@ -193,34 +219,45 @@ func (h *harness) mergeCookies(cs []*http.Cookie) {
 // call has to make.
 func (h *harness) newRequest(method, path string, body io.Reader) *http.Request {
 	h.t.Helper()
-	req, err := http.NewRequest(method, h.srv.URL+path, body)
+	req, err := http.NewRequestWithContext(h.t.Context(), method, h.srv.URL+path, body)
 	require.NoError(h.t, err)
+
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+
 	for _, c := range h.jar {
 		req.AddCookie(c)
 	}
+
 	if tok := h.cookie(csrfCookieName); tok != "" {
 		req.Header.Set(csrfHeaderName, tok)
 	}
+
 	return req
 }
 
 func (h *harness) do(method, path string, body any) (*http.Response, map[string]any) {
 	h.t.Helper()
+
 	var buf bytes.Buffer
 	if body != nil {
 		require.NoError(h.t, json.NewEncoder(&buf).Encode(body))
 	}
+
 	req := h.newRequest(method, path, &buf)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(h.t, err)
+
 	defer resp.Body.Close()
+
 	h.mergeCookies(resp.Cookies())
+
 	var out map[string]any
+
 	_ = json.NewDecoder(resp.Body).Decode(&out)
+
 	return resp, out
 }
 
@@ -228,9 +265,13 @@ func (h *harness) doList(method, path string) (*http.Response, []map[string]any)
 	h.t.Helper()
 	resp, err := http.DefaultClient.Do(h.newRequest(method, path, nil))
 	require.NoError(h.t, err)
+
 	defer resp.Body.Close()
+
 	var out []map[string]any
+
 	_ = json.NewDecoder(resp.Body).Decode(&out)
+
 	return resp, out
 }
 
@@ -238,13 +279,16 @@ func (h *harness) doList(method, path string) (*http.Response, []map[string]any)
 // test can hold two independent sessions at once.
 func (h *harness) login(email, pw string) []*http.Cookie {
 	h.t.Helper()
-	req, err := http.NewRequest("POST", h.srv.URL+"/api/v1/fleet/session", jsonBody(map[string]string{"email": email, "password": pw}))
+	req, err := http.NewRequestWithContext(h.t.Context(), http.MethodPost, h.srv.URL+"/api/v1/fleet/session", jsonBody(map[string]string{"email": email, "password": pw}))
 	require.NoError(h.t, err)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(h.t, err)
+
 	defer resp.Body.Close()
+
 	require.Equal(h.t, 204, resp.StatusCode)
+
 	return resp.Cookies()
 }
 
@@ -253,6 +297,7 @@ func (h *harness) mkGroup(t *testing.T) float64 {
 	_, tg := h.do("POST", "/api/v1/fleet/targets", map[string]any{"name": "local", "kind": "filesystem", "path": t.TempDir()})
 	_, tp := h.do("POST", "/api/v1/fleet/templates", map[string]any{"name": "Home default", "sources": []string{"~"}, "policy": map[string]any{}})
 	_, g := h.do("POST", "/api/v1/fleet/groups", map[string]any{"name": "Laptops", "target_id": tg["id"], "template_id": tp["id"]})
+
 	return g["id"].(float64)
 }
 
@@ -265,14 +310,15 @@ func (h *harness) setupToken() string {
 	require.NotEmpty(h.t, path, "server has no pending setup token")
 	b, err := os.ReadFile(path)
 	require.NoError(h.t, err)
+
 	return strings.TrimSpace(string(b))
 }
 
 func (h *harness) activateAndLogin() {
 	h.t.Helper()
-	req, _ := http.NewRequest("POST", h.srv.URL+"/api/v1/fleet/activate", jsonBody(map[string]string{"passphrase": "seal-me!", "email": "hody@hody.dev", "password": "pw12345678"}))
+	req, _ := http.NewRequestWithContext(h.t.Context(), http.MethodPost, h.srv.URL+"/api/v1/fleet/activate", jsonBody(map[string]string{"passphrase": "seal-me!", "email": "hody@hody.dev", "password": "pw12345678"}))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-WarpHold-Setup-Token", h.setupToken())
+	req.Header.Set("X-Warphold-Setup-Token", h.setupToken())
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(h.t, err)
 	resp.Body.Close()
@@ -289,6 +335,7 @@ func (h *harness) setPublicURL() string {
 	h.t.Helper()
 	resp, body := h.do("PUT", "/api/v1/fleet/settings", map[string]any{"public_url": h.srv.URL})
 	require.Equal(h.t, 200, resp.StatusCode, body)
+
 	return h.srv.URL
 }
 
@@ -325,17 +372,23 @@ func TestSessionCookieSecureFollowsForwardedProto(t *testing.T) {
 
 	login := func(proto string) []*http.Cookie {
 		t.Helper()
-		req, _ := http.NewRequest("POST", h.srv.URL+"/api/v1/fleet/session", jsonBody(map[string]string{"email": "hody@hody.dev", "password": "pw12345678"}))
+
+		req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, h.srv.URL+"/api/v1/fleet/session", jsonBody(map[string]string{"email": "hody@hody.dev", "password": "pw12345678"}))
 		req.Header.Set("Content-Type", "application/json")
+
 		if proto != "" {
 			req.Header.Set("X-Forwarded-Proto", proto)
 		}
+
 		resp, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
+
 		defer resp.Body.Close()
+
 		require.Equal(t, 204, resp.StatusCode)
 		cs := resp.Cookies()
 		require.Len(t, cs, 2, "login sets the session and CSRF cookies")
+
 		return cs
 	}
 
@@ -343,8 +396,10 @@ func TestSessionCookieSecureFollowsForwardedProto(t *testing.T) {
 	// is as good as no CSRF token.
 	secure := func(proto string) bool {
 		t.Helper()
+
 		cs := login(proto)
 		require.Equal(t, cs[0].Secure, cs[1].Secure, "both cookies agree")
+
 		return cs[0].Secure
 	}
 
@@ -357,11 +412,13 @@ func TestSessionCookieSecureFollowsForwardedProto(t *testing.T) {
 func TestLoginRateLimitAndBadPassword(t *testing.T) {
 	h := newHarness(t)
 	h.activateAndLogin()
+
 	h.jar = nil
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		resp, _ := h.do("POST", "/api/v1/fleet/session", map[string]string{"email": "hody@hody.dev", "password": "wrong"})
 		require.Equal(t, 401, resp.StatusCode)
 	}
+
 	resp, _ := h.do("POST", "/api/v1/fleet/session", map[string]string{"email": "hody@hody.dev", "password": "pw12345678"})
 	require.Equal(t, 429, resp.StatusCode)
 }
@@ -379,6 +436,7 @@ func TestActivationSurvivesRestart(t *testing.T) {
 
 	s2 := api.New(dir)
 	defer s2.Close()
+
 	require.True(t, s2.Activated(), "key file + db must reopen without the passphrase")
 }
 
@@ -400,6 +458,7 @@ func TestActivateRequiresToken(t *testing.T) {
 	dir := t.TempDir()
 	s := api.New(dir)
 	t.Cleanup(func() { s.Close() })
+
 	m := mux.NewRouter()
 	s.Mount(m)
 
@@ -408,21 +467,24 @@ func TestActivateRequiresToken(t *testing.T) {
 		return bytes.NewBuffer(b)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/fleet/activate", body())
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/fleet/activate", body())
 	req.RemoteAddr = "203.0.113.5:1234"
 	req.Header.Set("Content-Type", "application/json")
+
 	rr := httptest.NewRecorder()
 	m.ServeHTTP(rr, req)
 	require.Equal(t, 403, rr.Code)
 
 	tokBytes, err := os.ReadFile(filepath.Join(dir, "setup-token"))
 	require.NoError(t, err)
+
 	tok := strings.TrimSpace(string(tokBytes))
 
-	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/fleet/activate", body())
+	req2 := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/fleet/activate", body())
 	req2.RemoteAddr = "203.0.113.5:1234"
 	req2.Header.Set("Content-Type", "application/json")
-	req2.Header.Set("X-WarpHold-Setup-Token", tok)
+	req2.Header.Set("X-Warphold-Setup-Token", tok)
+
 	rr2 := httptest.NewRecorder()
 	m.ServeHTTP(rr2, req2)
 	require.Equal(t, 201, rr2.Code)
@@ -436,15 +498,19 @@ func TestActivateIsExclusive(t *testing.T) {
 	t.Cleanup(func() { s.Close() })
 
 	const n = 5
+
 	errs := make([]error, n)
+
 	var wg sync.WaitGroup
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
+
 			errs[i] = s.Activate(context.Background(), "seal-me!", fmt.Sprintf("admin%d@hody.dev", i), "pw12345678", "")
 		}(i)
 	}
+
 	wg.Wait()
 
 	var successes, conflicts int
@@ -458,6 +524,7 @@ func TestActivateIsExclusive(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	}
+
 	require.Equal(t, 1, successes)
 	require.Equal(t, n-1, conflicts)
 
@@ -508,6 +575,10 @@ func TestActivateRefusesToOverwriteUnloadableState(t *testing.T) {
 func TestFailedActivationLeavesNoStateBehind(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores file permissions")
+	}
+
+	if runtime.GOOS == "windows" {
+		t.Skip("linux-only: POSIX permission bits; a 0o500 dir is still writable on Windows")
 	}
 
 	dir := t.TempDir()

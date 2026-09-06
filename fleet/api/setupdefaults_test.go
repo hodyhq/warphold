@@ -3,6 +3,7 @@ package api_test
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -28,7 +29,12 @@ func TestSetupDefaultsLeavesAFleetThatCanEnroll(t *testing.T) {
 
 	fi, err := os.Stat(hostedRoot)
 	require.NoError(t, err)
-	require.Equal(t, os.FileMode(0o750), fi.Mode().Perm(), "the hosted root is not world-readable")
+
+	if runtime.GOOS != "windows" {
+		// Windows has no POSIX permission bits, so this only holds where
+		// warphold actually ships: Linux and macOS.
+		require.Equal(t, os.FileMode(0o750), fi.Mode().Perm(), "the hosted root is not world-readable")
+	}
 
 	resp, targets := h.doList("GET", "/api/v1/fleet/targets")
 	require.Equal(t, 200, resp.StatusCode)
