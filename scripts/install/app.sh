@@ -20,8 +20,10 @@
 # Every download is verified against the release's checksums.txt before
 # anything is installed; a mismatch aborts before a single file is written.
 # The trust anchor for that checksum is the TLS connection to the release
-# host; verifying the detached signature of checksums.txt lands with the
-# release signing key.
+# host, so checksums.txt itself is verified against its detached signature
+# under the pinned WarpHold release signing key: a substituted release host
+# that serves its own checksums.txt is caught too. https release bases only -
+# a non-https WARPHOLD_RELEASE_BASE is the operator's own trust decision.
 # Re-running upgrades the binary and leaves configuration and state alone.
 #
 # Options:
@@ -47,6 +49,29 @@ ROOT="${WARPHOLD_INSTALL_ROOT:-}"
 SCOPE=user
 DRY=0
 OPEN=1
+
+# WARPHOLD_SIGNING_FINGERPRINT pins the WarpHold Release Signing key (see
+# docs/RELEASING.md); warphold_signing_key embeds its public half so this
+# script verifies checksums.txt without ever fetching a key from the network -
+# a substituted release host could otherwise hand out its own key alongside
+# its own checksums.txt and sign both. Only https:// release bases require
+# this: a non-https WARPHOLD_RELEASE_BASE (a LAN mirror, this repository's own
+# test server) is already the operator's own trust decision (see fetch()).
+WARPHOLD_SIGNING_FINGERPRINT=A6F90B08A0E92752852813E7323C001969AA4FB3
+warphold_signing_key() {
+  cat <<'WARPHOLD_PUBKEY'
+-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mDMEaplZShYJKwYBBAHaRw8BAQdAZpR6jcK6tS6Z8+ZaKQc+hS974nJiBke7lrx6
+lS47mw60MFdhcnBIb2xkIFJlbGVhc2UgU2lnbmluZyA8cmVsZWFzZXNAd2FycGhv
+bGQuY29tPoiWBBMWCgA+FiEEpvkLCKDpJ1KFKBPnMjwAGWmqT7MFAmqZWUoCGwMF
+CQPCZwAFCwkIBwIGFQoJCAsCBBYCAwECHgECF4AACgkQMjwAGWmqT7M5QwEA2/1G
+jHR9EUZ0BuPiYR82caUuJyi6c0Ou2BHep9qSeIgA/3Dqwh6es0uahjFYyT8yim8p
+XlkHQ/SqTkk684fducUC
+=qlQU
+-----END PGP PUBLIC KEY BLOCK-----
+WARPHOLD_PUBKEY
+}
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'app.sh: %s\n' "$*" >&2; exit 1; }
@@ -140,6 +165,30 @@ DL="$RELEASE_BASE/download/$VERSION"
 say "Installing WarpHold $VERSION from $DL"
 
 fetch "$DL/checksums.txt" > "$TMP/checksums.txt" || die "cannot download $DL/checksums.txt"
+
+# A checksum alone only proves the tarball matches checksums.txt; the
+# signature is what proves checksums.txt itself came from WarpHold and not a
+# substituted release host (see fetch()'s comment on the TLS trust anchor).
+# Fail closed: no bypass, and only a non-https release base (already the
+# operator's own trust decision) skips this.
+case "$RELEASE_BASE" in
+  https://*)
+    command -v gpg >/dev/null 2>&1 ||
+      die "gpg is required to verify the signed release (install gnupg)"
+    fetch "$DL/checksums.txt.sig" > "$TMP/checksums.txt.sig" ||
+      die "cannot download $DL/checksums.txt.sig"
+    GNUPGHOME="$TMP/gnupg"
+    mkdir -m 700 "$GNUPGHOME"
+    export GNUPGHOME
+    warphold_signing_key | gpg --batch --quiet --import 2>/dev/null ||
+      die "cannot import the WarpHold release signing key"
+    gpg --batch --list-keys "$WARPHOLD_SIGNING_FINGERPRINT" >/dev/null 2>&1 ||
+      die "the embedded release signing key does not match the pinned fingerprint $WARPHOLD_SIGNING_FINGERPRINT"
+    gpg --batch --quiet --verify "$TMP/checksums.txt.sig" "$TMP/checksums.txt" 2>/dev/null ||
+      die "checksums.txt failed signature verification against the WarpHold release signing key - refusing to install"
+    ;;
+esac
+
 
 # The asset name comes out of checksums.txt rather than being built from a
 # template here, so a change to the release naming cannot make this script

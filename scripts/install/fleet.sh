@@ -1,7 +1,7 @@
 #!/bin/sh
 # WarpHold Fleet server installer.
 #
-#   curl -fsSL https://get.warphold.com/fleet.sh -o fleet.sh && sh fleet.sh
+#   curl -fsSL https://get.warphold.com/fleet.sh -o fleet.sh && sudo sh fleet.sh
 #
 # Installs the warphold binary, creates the "warphold" system user and its
 # directories, writes /etc/warphold/env and a systemd unit that binds the
@@ -13,8 +13,10 @@
 # The trust anchor for that checksum is the TLS connection to the release
 # host: checksums.txt comes from the same release as the artifact, so it
 # proves the download was not corrupted, not that it was not substituted at
-# the source. Verifying the detached signature of checksums.txt lands with
-# the release signing key.
+# the source. checksums.txt itself is therefore verified against its detached
+# signature under the pinned WarpHold release signing key, which catches a
+# substituted host too. https release bases only - a non-https
+# WARPHOLD_RELEASE_BASE is the operator's own trust decision.
 #
 # This installs the release tarball on every distribution, deliberately: the
 # deb and the rpm are separate release assets with their own install path, so

@@ -24,9 +24,13 @@ APP_SH="$REPO_DIR/scripts/install/app.sh"
 
 WORK="$(mktemp -d)"
 SERVER_PID=""
+TLS_PID=""
 cleanup() {
   if [ -n "$SERVER_PID" ]; then
     kill "$SERVER_PID" 2>/dev/null || true
+  fi
+  if [ -n "$TLS_PID" ]; then
+    kill "$TLS_PID" 2>/dev/null || true
   fi
   rm -rf "$WORK"
 }
@@ -45,7 +49,8 @@ mkdir -p "$FAKEHOME/.config" "$WORK/root"
 run_app() {
   env HOME="$FAKEHOME" XDG_CONFIG_HOME="$FAKEHOME/.config" \
       XDG_RUNTIME_DIR="$WORK/norun" DBUS_SESSION_BUS_ADDRESS="unix:path=$WORK/nobus" \
-      WARPHOLD_INSTALL_ROOT="$WORK/root" WARPHOLD_RELEASE_BASE="$RELEASE_BASE" \
+      WARPHOLD_INSTALL_ROOT="$WORK/root" WARPHOLD_RELEASE_BASE="${BASE_OVERRIDE:-$RELEASE_BASE}" \
+      CURL_CA_BUNDLE="${CA_OVERRIDE:-}" \
       PATH="/usr/bin:/bin" \
       sh "$APP_SH" "$@"
 }
@@ -159,6 +164,75 @@ set -e
 check "exited non-zero"        "[ $RC -ne 0 ]"
 check "said checksum mismatch" "grep -qi 'checksum mismatch' '$WORK/bad.out'"
 check "installed nothing"      "[ ! -e '$BIN' ]"
+
+# ------------------------------------------------ 5b. bad release signature
+
+# The signature check applies only to an https release base (a plaintext
+# WARPHOLD_RELEASE_BASE is the operator's own trust decision, see fetch()), so
+# this section serves the same fake release over TLS with a throwaway
+# certificate the test hands curl through CURL_CA_BUNDLE.
+echo "== over https, a checksums.txt the release key did not sign is refused"
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+  -keyout "$WORK/tls.key" -out "$WORK/tls.crt" \
+  -subj /CN=127.0.0.1 -addext subjectAltName=IP:127.0.0.1 >/dev/null 2>&1
+cat "$WORK/tls.key" "$WORK/tls.crt" > "$WORK/tls.pem"
+
+# A real, valid signature over the real checksums.txt - from a key that is not
+# the pinned release key. The fingerprint pin, not merely "a signature
+# verified", is what has to reject this.
+mkdir -m 700 "$WORK/gnupg"
+GNUPGHOME="$WORK/gnupg" gpg --batch --quiet --pinentry-mode loopback --passphrase '' \
+  --quick-generate-key "Not WarpHold <nobody@example.com>" default default never
+GNUPGHOME="$WORK/gnupg" gpg --batch --quiet --pinentry-mode loopback --passphrase '' \
+  --detach-sign -o "$WORK/rel/download/v$VER/checksums.txt.sig" \
+  "$WORK/rel/download/v$VER/checksums.txt"
+
+cat > "$WORK/tlsserver.py" <<'EOPY'
+import functools
+import http.server
+import ssl
+import sys
+
+port, root, pem = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+ctx.load_cert_chain(pem)
+handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=root)
+httpd = http.server.HTTPServer(("127.0.0.1", port), handler)
+httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+httpd.serve_forever()
+EOPY
+
+TLS_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+python3 "$WORK/tlsserver.py" "$TLS_PORT" "$WORK/rel" "$WORK/tls.pem" >"$WORK/https.log" 2>&1 &
+TLS_PID=$!
+BASE_OVERRIDE="https://127.0.0.1:$TLS_PORT"
+CA_OVERRIDE="$WORK/tls.crt"
+for _ in $(seq 50); do
+  curl -fsS --cacert "$CA_OVERRIDE" "$BASE_OVERRIDE/download/v$VER/checksums.txt" >/dev/null 2>&1 && break
+  sleep 0.1
+done
+
+rm -f "$BIN"
+set +e
+run_app --version "v$VER" --no-open > "$WORK/badsig.out" 2>&1
+RC=$?
+set -e
+check "exited non-zero"           "[ $RC -ne 0 ]"
+check "said the signature failed" "grep -q 'failed signature verification' '$WORK/badsig.out'"
+check "installed nothing"         "[ ! -e '$BIN' ]"
+
+echo "== over https, a release with no checksums.txt.sig at all is refused"
+rm -f "$WORK/rel/download/v$VER/checksums.txt.sig"
+set +e
+run_app --version "v$VER" --no-open > "$WORK/nosig.out" 2>&1
+RC=$?
+set -e
+check "exited non-zero"         "[ $RC -ne 0 ]"
+check "named the missing sig"   "grep -q 'checksums.txt.sig' '$WORK/nosig.out'"
+check "installed nothing"       "[ ! -e '$BIN' ]"
+
+BASE_OVERRIDE=""
+CA_OVERRIDE=""
 
 # ---------------------------------------------------------- 6. D11 boundary
 
