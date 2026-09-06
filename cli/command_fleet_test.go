@@ -761,28 +761,42 @@ func TestFleetJobsRunQueuesARow(t *testing.T) {
 		"--admin-password", "pw12345678",
 		"--passphrase", "seal-me-please")
 
+	st, err := store.Open(fleet.PathsFor(stateDir).DB)
+	require.NoError(t, err)
+
+	defer st.Close() //nolint:errcheck // test cleanup
+
+	// `fleet activate` now provisions the host's own repository and the setup
+	// defaults (Task 20), which starts the scheduler; test-restore is itself
+	// one of the interval-driven kinds (fleet/jobs/scheduler.go's intervals
+	// map), so the scheduler may seed - and even claim and finish - its own
+	// fleet-wide test-restore row before or while this test's own CLI-queued
+	// one exists. Snapshotting the IDs already present before the CLI call,
+	// rather than filtering by kind/status alone, is what tells the two apart
+	// regardless of scheduler timing.
+	ctx := context.Background()
+
+	before, err := st.RecentJobs(ctx, "test-restore", 50)
+	require.NoError(t, err)
+
+	seen := make(map[int64]bool, len(before))
+	for _, j := range before {
+		seen[j.ID] = true
+	}
+
 	out := e.RunAndExpectSuccess(t, "fleet", "jobs", "run", "--kind", "test-restore")
 	require.Contains(t, strings.Join(out, "\n"), "Queued test-restore job")
 
 	e.RunAndExpectFailure(t, "fleet", "jobs", "run", "--kind", "nonesuch")
 	e.RunAndExpectFailure(t, "fleet", "jobs", "run", "--kind", "verify", "--agent", "ag_nope")
 
-	st, err := store.Open(fleet.PathsFor(stateDir).DB)
+	all, err := st.RecentJobs(ctx, "", 50)
 	require.NoError(t, err)
 
-	defer st.Close() //nolint:errcheck // test cleanup
-
-	js, err := st.RecentJobs(context.Background(), "", 50)
-	require.NoError(t, err)
-
-	// Not "exactly one row": `fleet activate` now provisions the host's own
-	// repository and the setup defaults (Task 20), which takes long enough
-	// that the scheduler it starts has already enqueued and run this fleet's
-	// interval-driven kinds. What this test owns is what the CLI queued.
 	var queued []store.Job
 
-	for _, j := range js {
-		if j.Status == "pending" {
+	for _, j := range all {
+		if j.Kind == "test-restore" && !seen[j.ID] {
 			queued = append(queued, j)
 		}
 
@@ -790,9 +804,10 @@ func TestFleetJobsRunQueuesARow(t *testing.T) {
 		require.NotEqual(t, "ag_nope", j.AgentID, "an unknown agent is rejected before it is written")
 	}
 
-	require.Len(t, queued, 1, "only the accepted kind was queued")
+	require.Len(t, queued, 1, "only the CLI's own test-restore job is new")
 	require.Equal(t, "test-restore", queued[0].Kind)
 	require.Empty(t, queued[0].AgentID)
+	require.Equal(t, "pending", queued[0].Status)
 }
 
 // One Fleet process per state directory, enforced rather than merely claimed.
