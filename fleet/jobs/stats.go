@@ -18,8 +18,8 @@ import (
 // Stored tile and dedup ratio need not open a repository on every page load
 // (spec §7.2, daily). It never writes: the repository is opened read-only,
 // like verify.
-func Stats(st *store.Store, k seal.Key, cloud CloudStoreFn) Runner {
-	return perAgent(st, k, cloud, "measured", true, func(ctx context.Context, rep repo.Repository, a store.Agent) error {
+func Stats(st *store.Store, open seal.Opener, cloud CloudStoreFn) Runner {
+	return perAgent(st, open, cloud, "measured", true, func(ctx context.Context, rep repo.Repository, a store.Agent) error {
 		dr, ok := rep.(repo.DirectRepository)
 		if !ok {
 			return errors.New("stats needs a direct repository connection")

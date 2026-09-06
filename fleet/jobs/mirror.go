@@ -84,9 +84,9 @@ func mirrorCI(t store.Target, c mirrorCreds) (blob.ConnectionInfo, error) {
 // with a mirror configured, upload every local object the mirror does not
 // already hold (spec §7.3). It is append-only - nothing is ever deleted from a
 // mirror bucket - and a failure on one device continues with the next.
-func Mirror(st *store.Store, k seal.Key) Runner {
+func Mirror(st *store.Store, open seal.Opener) Runner {
 	return func(ctx context.Context, j store.Job) (string, error) {
-		m := &mirrorRun{st: st, key: k, now: time.Now()}
+		m := &mirrorRun{st: st, open: open, now: time.Now()}
 
 		targets, err := st.Targets(ctx)
 		if err != nil {
@@ -121,9 +121,9 @@ func Mirror(st *store.Store, k seal.Key) Runner {
 
 // mirrorRun accumulates one job's counters across every mirrored target.
 type mirrorRun struct {
-	st  *store.Store
-	key seal.Key
-	now time.Time
+	st   *store.Store
+	open seal.Opener
+	now  time.Time
 
 	local, remote gateway.ObjectStore
 
@@ -177,7 +177,7 @@ func (m *mirrorRun) target(ctx context.Context, t store.Target) {
 
 	var c mirrorCreds
 
-	plain, err := m.key.Open(t.SealedMirrorKey)
+	plain, err := m.open(t.SealedMirrorKey)
 	if err != nil {
 		m.fail(t.Name, errors.New("unsealing the mirror credentials failed"))
 

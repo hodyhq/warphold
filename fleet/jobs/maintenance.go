@@ -17,8 +17,8 @@ import (
 // with --no-auto-maintenance, so this is the only process that maintains a
 // device repository - it happens here, exactly once per repository, and this
 // is the only job that opens one for writing.
-func Maintenance(st *store.Store, k seal.Key, cloud CloudStoreFn) Runner {
-	return perAgent(st, k, cloud, "maintained", false, maintainRepo)
+func Maintenance(st *store.Store, open seal.Opener, cloud CloudStoreFn) Runner {
+	return perAgent(st, open, cloud, "maintained", false, maintainRepo)
 }
 
 func maintainRepo(ctx context.Context, rep repo.Repository, _ store.Agent) error {

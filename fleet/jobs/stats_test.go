@@ -35,7 +35,7 @@ func TestStatsRecordsRepositorySize(t *testing.T) {
 	wantBlobs, wantBytes := blobCountAndBytes(t, fx, "ag_1")
 	require.NotZero(t, wantBlobs, "the fixture must have written at least one blob")
 
-	detail, err := Stats(fx.st, fx.key, nil)(ctx, store.Job{Kind: "stats"})
+	detail, err := Stats(fx.st, fx.key.Open, nil)(ctx, store.Job{Kind: "stats"})
 	require.NoError(t, err)
 	require.Equal(t, "measured 2/2 ok; 0 failed", detail)
 
@@ -55,7 +55,7 @@ func TestStatsScopesToOneAgent(t *testing.T) {
 	fx := newRepoFixture(t, "ag_1", "ag_2")
 	ctx := context.Background()
 
-	detail, err := Stats(fx.st, fx.key, nil)(ctx, store.Job{Kind: "stats", AgentID: "ag_1"})
+	detail, err := Stats(fx.st, fx.key.Open, nil)(ctx, store.Job{Kind: "stats", AgentID: "ag_1"})
 	require.NoError(t, err)
 	require.Equal(t, "measured 1/1 ok; 0 failed", detail)
 
@@ -74,7 +74,7 @@ func TestStatsPreservesMirrorProgress(t *testing.T) {
 
 	require.NoError(t, fx.st.SetMirrored(ctx, "ag_1", time.Now(), 4096))
 
-	_, err := Stats(fx.st, fx.key, nil)(ctx, store.Job{Kind: "stats"})
+	_, err := Stats(fx.st, fx.key.Open, nil)(ctx, store.Job{Kind: "stats"})
 	require.NoError(t, err)
 
 	got, err := fx.st.RepoStat(ctx, "ag_1")

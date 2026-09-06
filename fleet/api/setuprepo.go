@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+
+	"github.com/kopia/kopia/fleet/store"
 )
 
 const (
@@ -14,7 +16,13 @@ const (
 	// because settings are TEXT. Nothing but this Fleet needs it: it exists so
 	// the server can reconnect its own repository without an operator typing
 	// anything, and so passphrase rotation can re-seal it with everything else.
-	fleetRepoPasswordSetting = "fleet_repo_password"
+	//
+	// The store.SealedSettingPrefix is load-bearing, not decoration: Reseal
+	// sweeps `sealed\_%` and nothing else, so this key spelled without it was
+	// skipped by every rotation and the Fleet host's own repository became
+	// unopenable the first time anyone rotated. Databases written under the
+	// old name are moved by renamedSettings in fleet/store/migrate.go.
+	fleetRepoPasswordSetting = store.SealedSettingPrefix + "fleet_repo_password"
 	// fleetRepoPathSetting records where that repository lives, so a server
 	// started without the --data-dir the operator activated with still finds it.
 	fleetRepoPathSetting = "fleet_repo_path"

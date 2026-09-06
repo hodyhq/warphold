@@ -242,10 +242,13 @@ func (s *Server) startJobs() {
 		return
 	}
 	old := s.sched
-	// cloudStoreFor is handed to the runners so a job can open a cloud-direct
-	// hosted repository the same way the gateway does; it is a method value on
-	// s, so it always sees the current sealing key.
-	s.sched = jobs.NewScheduler(s.st, jobs.Runners(s.st, s.key, s.cloudStoreFor), jobs.DefaultTick)
+	// Both arguments are method values on s, never captured state: s.unseal
+	// reads the CURRENT sealing key on every call, and s.cloudStoreFor opens a
+	// cloud-direct hosted repository the same way the gateway does. Handing
+	// jobs.Runners a seal.Key here instead would freeze a copy -- Key is
+	// [32]byte -- and a passphrase rotation would leave the scheduler unsealing
+	// with a retired key while every ciphertext in the store had moved on.
+	s.sched = jobs.NewScheduler(s.st, jobs.Runners(s.st, s.unseal, s.cloudStoreFor), jobs.DefaultTick)
 	s.sched.Start(context.Background())
 	if old != nil {
 		// In a goroutine: Stop waits for the running job, which must not
@@ -319,6 +322,25 @@ func (s *Server) store() *store.Store {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.st
+}
+
+// unseal opens one sealed value under the sealing key as it is right now,
+// holding the rotation lock for that call and nothing more. It is the seam the
+// job scheduler reaches the key through: a job may run for minutes, and
+// holding the lock across one would block a rotation for that long, so the
+// lock covers the unseal only.
+//
+// The residual window is the same one the gateway documents: a job that read a
+// row before a rotation and unseals it after gets ErrTampered once, and the
+// next scheduled run of that job succeeds against the re-sealed row. HTTP
+// handlers do not use this - they are wrapped in sealHeld, which already holds
+// the read lock for their whole span, and taking it again here could deadlock
+// against a waiting rotation.
+func (s *Server) unseal(sealed []byte) ([]byte, error) {
+	s.sealMu.RLock()
+	defer s.sealMu.RUnlock()
+
+	return s.sealKey().Open(sealed)
 }
 
 // sealKey returns the sealing key; the zero Key before activation.
@@ -697,10 +719,6 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusForbidden, "missing or invalid "+csrfHeader+" header")
 			return
 		}
-		if pu, _ := s.PublicURL(r.Context()); !originAllowed(r, pu) {
-			writeErr(w, http.StatusForbidden, "request origin does not match the configured public URL")
-			return
-		}
 		if err := s.store().RevokeSession(r.Context(), sess.ID, s.now()); err != nil {
 			adminFailed(w, "revoke session", err)
 			return
@@ -721,7 +739,7 @@ func (s *Server) SetupTokenPathForTesting() string {
 // MailConfigForTesting exposes the stored SMTP settings, password included,
 // so a test can prove the password round-trips through the seal.
 func (s *Server) MailConfigForTesting(ctx context.Context) (mail.Config, error) {
-	return mail.Load(ctx, s.store(), s.sealKey())
+	return mail.Load(ctx, s.store(), s.sealKey().Open)
 }
 
 // SetB2ForTesting swaps the B2 client.

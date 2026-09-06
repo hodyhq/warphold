@@ -14,8 +14,15 @@ import (
 )
 
 func (s *Server) mountAdminKit(m *mux.Router, adm func(http.HandlerFunc) http.HandlerFunc) {
-	m.HandleFunc("/api/v1/fleet/agents/{id}/kit", adm(s.handleAgentKit)).Methods(http.MethodGet)
-	m.HandleFunc("/api/v1/fleet/agents/{id}/kit/regenerate", adm(s.handleAgentKitRegenerate)).Methods(http.MethodPost)
+	// sealHeld on both: each reaches readOnlyKey, whose mint branch seals the
+	// new credential and then writes it to device_keys. A rotation committing
+	// between those two statements would leave the row sealed under the
+	// retired key AFTER Reseal had already swept device_keys, and nothing
+	// re-seals it later -- the printed kit's credential would 403 forever,
+	// with no error at the moment it was created. Same span, same one-line
+	// guard as handleTargetCreate and PUT /targets/{id}/mirror.
+	m.HandleFunc("/api/v1/fleet/agents/{id}/kit", adm(s.sealHeld(s.handleAgentKit))).Methods(http.MethodGet)
+	m.HandleFunc("/api/v1/fleet/agents/{id}/kit/regenerate", adm(s.sealHeld(s.handleAgentKitRegenerate))).Methods(http.MethodPost)
 	m.HandleFunc("/api/v1/fleet/agents/{id}/kit/ack", adm(s.handleAgentKitAck)).Methods(http.MethodPost)
 }
 

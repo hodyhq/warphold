@@ -38,8 +38,8 @@ const (
 // compare the bytes on disk with the object in the repository (spec §3.3,
 // monthly). The repository is opened read-only and nothing is written back to
 // it: only the temporary copy, which is removed either way.
-func TestRestore(st *store.Store, k seal.Key, cloud CloudStoreFn) Runner {
-	return perAgent(st, k, cloud, "restored", true, testRestoreRepo)
+func TestRestore(st *store.Store, open seal.Opener, cloud CloudStoreFn) Runner {
+	return perAgent(st, open, cloud, "restored", true, testRestoreRepo)
 }
 
 func testRestoreRepo(ctx context.Context, rep repo.Repository, _ store.Agent) error {

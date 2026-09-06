@@ -45,21 +45,27 @@ func (c *commandFleet) setup(svc advancedAppServices, parent commandParent) {
 				return errors.Join(errors.New("fleet state in "+stateDir+" cannot be used"), err)
 			}
 
-			// Held for as long as this server serves, so `fleet
-			// rotate-passphrase` can tell a running Fleet from a stopped one.
-			// Already held means another Fleet has it and the offline command
-			// is refused anyway; anything else (bad permissions on the state
-			// dir) would leave this server unlocked and the offline rotation
-			// free to run underneath it, so it refuses to start.
+			// Held for as long as this server serves. Failing to take it is
+			// fatal either way, and ErrLocked most of all: one Fleet process
+			// per state directory is a real invariant, not a nicety. Two
+			// servers on one state dir each run a scheduler, and both would
+			// maintain the same device repositories through their own scratch
+			// configs -- Kopia's .mlock is keyed to the config file, so it
+			// would not keep them apart (see fleet/jobs/repo.go). It is also
+			// what lets the offline `fleet rotate-passphrase` tell a running
+			// Fleet from a stopped one. Warning and serving anyway made the
+			// lock a one-way signal and left both claims untrue.
 			lock, lockErr := fleet.TryLock(stateDir)
 			if lockErr != nil {
-				if !errors.Is(lockErr, fleet.ErrLocked) {
-					fs.Close() //nolint:errcheck
+				fs.Close() //nolint:errcheck
 
-					return errors.Join(errors.New("cannot hold "+fleet.PathsFor(stateDir).LockFile), lockErr)
+				if errors.Is(lockErr, fleet.ErrLocked) {
+					return errors.New("another WarpHold Fleet is already serving " + stateDir +
+						" (it holds " + fleet.PathsFor(stateDir).LockFile +
+						"); stop it before starting this one")
 				}
 
-				log(ctx).Warnf("warphold fleet: %s is already held: %v", fleet.PathsFor(stateDir).LockFile, lockErr)
+				return errors.Join(errors.New("cannot hold "+fleet.PathsFor(stateDir).LockFile), lockErr)
 			}
 
 			fs.Mount(m)
@@ -97,9 +103,7 @@ func (c *commandFleet) setup(svc advancedAppServices, parent commandParent) {
 					err = prev(ctx)
 				}
 
-				if lock != nil {
-					err = errors.Join(err, lock.Unlock())
-				}
+				err = errors.Join(err, lock.Unlock())
 
 				return errors.Join(err, fs.Close())
 			}

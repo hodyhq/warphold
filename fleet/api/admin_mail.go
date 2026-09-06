@@ -38,7 +38,10 @@ func (s *Server) handleSMTPTest(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "malformed body")
 		return
 	}
-	cfg, err := mail.Load(r.Context(), s.store(), s.sealKey())
+	// sealKey().Open, not s.unseal: this route is mounted under sealHeld, so
+	// the rotation read lock is already held and taking it again could deadlock
+	// against a rotation waiting for the write lock.
+	cfg, err := mail.Load(r.Context(), s.store(), s.sealKey().Open)
 	if err != nil {
 		// The one error worth naming: the stored password does not open with
 		// this fleet's key (a restored DB, a rotated passphrase). The fix is

@@ -43,7 +43,7 @@ func TestMaintenanceRunsAndRecordsIt(t *testing.T) {
 
 	require.True(t, schedule(t, fx, "ag_1").NextFullMaintenanceTime.IsZero(), "nothing has maintained this repository yet")
 
-	detail, err := Maintenance(fx.st, fx.key, nil)(context.Background(), store.Job{Kind: "maintenance"})
+	detail, err := Maintenance(fx.st, fx.key.Open, nil)(context.Background(), store.Job{Kind: "maintenance"})
 	require.NoError(t, err)
 	require.Equal(t, "maintained 1/1 ok; 0 failed", detail)
 
@@ -76,7 +76,7 @@ func TestMaintenanceTakesOverAnOtherwiseOwnedRepository(t *testing.T) {
 
 	require.Equal(t, "someone@elsewhere", owner(t, fx, "ag_1"))
 
-	detail, err := Maintenance(fx.st, fx.key, nil)(ctx, store.Job{Kind: "maintenance"})
+	detail, err := Maintenance(fx.st, fx.key.Open, nil)(ctx, store.Job{Kind: "maintenance"})
 	require.NoError(t, err)
 	require.Equal(t, "maintained 1/1 ok; 0 failed", detail)
 
@@ -95,7 +95,7 @@ func TestMaintenanceReportsTheDeviceThatFailed(t *testing.T) {
 		BearerHash: []byte("h_bad"), SealedBundle: []byte("not sealed at all"), EnrolledAt: time.Now(),
 	}))
 
-	detail, err := Maintenance(fx.st, fx.key, nil)(ctx, store.Job{Kind: "maintenance"})
+	detail, err := Maintenance(fx.st, fx.key.Open, nil)(ctx, store.Job{Kind: "maintenance"})
 	require.Error(t, err)
 	require.Contains(t, detail, "maintained 2/3 ok; 1 failed")
 	require.Contains(t, detail, "ag_bad: unsealing the escrowed bundle failed")

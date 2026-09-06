@@ -16,7 +16,7 @@ import (
 func TestTestRestoreRestoresAndComparesAFile(t *testing.T) {
 	fx := newRepoFixture(t, "ag_1", "ag_2")
 
-	detail, err := TestRestore(fx.st, fx.key, nil)(context.Background(), store.Job{Kind: "test-restore"})
+	detail, err := TestRestore(fx.st, fx.key.Open, nil)(context.Background(), store.Job{Kind: "test-restore"})
 	require.NoError(t, err)
 	require.Equal(t, "restored 2/2 ok; 0 failed", detail)
 }
@@ -34,14 +34,14 @@ func TestTestRestoreUsesTheLatestSnapshot(t *testing.T) {
 
 	fx.snapshotFrom(t, "ag_1", newest)
 
-	detail, err := TestRestore(fx.st, fx.key, nil)(context.Background(), store.Job{Kind: "test-restore"})
+	detail, err := TestRestore(fx.st, fx.key.Open, nil)(context.Background(), store.Job{Kind: "test-restore"})
 	require.NoError(t, err)
 	require.Equal(t, "restored 1/1 ok; 0 failed", detail)
 
 	// And with the data packs gone it fails loudly, with the raw error.
 	fx.dropDataPacks(t, "ag_1")
 
-	detail, err = TestRestore(fx.st, fx.key, nil)(context.Background(), store.Job{Kind: "test-restore"})
+	detail, err = TestRestore(fx.st, fx.key.Open, nil)(context.Background(), store.Job{Kind: "test-restore"})
 	require.Error(t, err)
 	require.Contains(t, detail, "restored 0/1 ok; 1 failed")
 	require.Contains(t, detail, "ag_1: ")
@@ -76,7 +76,7 @@ func TestTestRestoreIsFineWithAnAgentThatHasNoSnapshots(t *testing.T) {
 	// An agent whose repository exists but was never snapshotted.
 	fx.provision(t, "ag_new")
 
-	detail, err := TestRestore(fx.st, fx.key, nil)(ctx, store.Job{Kind: "test-restore"})
+	detail, err := TestRestore(fx.st, fx.key.Open, nil)(ctx, store.Job{Kind: "test-restore"})
 	require.NoError(t, err)
 	require.Equal(t, "restored 1/1 ok; 0 failed", detail)
 }

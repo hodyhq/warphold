@@ -38,8 +38,8 @@ const (
 // Verify returns the runner for the "verify" job: walk every snapshot of every
 // (or one) agent's repository and prove the content behind it is still there
 // (spec §3.3, weekly). It never writes: the repository is opened read-only.
-func Verify(st *store.Store, k seal.Key, cloud CloudStoreFn) Runner {
-	return perAgent(st, k, cloud, "verified", true, verifyRepo)
+func Verify(st *store.Store, open seal.Opener, cloud CloudStoreFn) Runner {
+	return perAgent(st, open, cloud, "verified", true, verifyRepo)
 }
 
 func verifyRepo(ctx context.Context, rep repo.Repository, _ store.Agent) error {

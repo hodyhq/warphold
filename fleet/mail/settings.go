@@ -33,9 +33,9 @@ type Sender func(ctx context.Context, to []string, subject, textBody, htmlBody s
 
 // SenderFor returns a Sender that reads the settings on each call, so a
 // change in the UI takes effect on the next email without a restart.
-func SenderFor(st *store.Store, k seal.Key) Sender {
+func SenderFor(st *store.Store, open seal.Opener) Sender {
 	return func(ctx context.Context, to []string, subject, textBody, htmlBody string) error {
-		c, err := Load(ctx, st, k)
+		c, err := Load(ctx, st, open)
 		if err != nil {
 			return err
 		}
@@ -103,7 +103,7 @@ func Settings(ctx context.Context, st *store.Store) (Config, error) {
 // Load is Settings plus the unsealed password: the sending paths only. An
 // unopenable password is an error rather than an empty one, because sending
 // with a silently blank password fails at the server with a misleading message.
-func Load(ctx context.Context, st *store.Store, k seal.Key) (Config, error) {
+func Load(ctx context.Context, st *store.Store, open seal.Opener) (Config, error) {
 	c, err := Settings(ctx, st)
 	if err != nil {
 		return Config{}, err
@@ -117,7 +117,7 @@ func Load(ctx context.Context, st *store.Store, k seal.Key) (Config, error) {
 		if err != nil {
 			return Config{}, errors.New("stored SMTP password is malformed")
 		}
-		plain, err := k.Open(raw)
+		plain, err := open(raw)
 		if err != nil {
 			return Config{}, err
 		}

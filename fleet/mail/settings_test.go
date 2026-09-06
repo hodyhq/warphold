@@ -27,7 +27,7 @@ func TestLoadFallsBackToDefaultsAndRoundTripsThroughTheSeal(t *testing.T) {
 	require.NoError(t, err)
 	k := seal.Derive("pw", salt)
 
-	c, err := Load(ctx, st, k)
+	c, err := Load(ctx, st, k.Open)
 	require.NoError(t, err)
 	require.Equal(t, Defaults(), c, "nothing stored yet")
 
@@ -40,7 +40,7 @@ func TestLoadFallsBackToDefaultsAndRoundTripsThroughTheSeal(t *testing.T) {
 		"public_url": "https://fleet.example.com",
 	}))
 
-	c, err = Load(ctx, st, k)
+	c, err = Load(ctx, st, k.Open)
 	require.NoError(t, err)
 	require.Equal(t, Config{
 		Host: "mail.example.com", Port: 587, Username: "u", Password: "s3cret",
@@ -48,7 +48,7 @@ func TestLoadFallsBackToDefaultsAndRoundTripsThroughTheSeal(t *testing.T) {
 	}, c)
 
 	// The wrong key must fail loudly rather than sending with a blank password.
-	_, err = Load(ctx, st, seal.Derive("other", salt))
+	_, err = Load(ctx, st, seal.Derive("other", salt).Open)
 	require.Error(t, err)
 }
 
@@ -65,7 +65,7 @@ func TestSenderForUsesTheStoredSettings(t *testing.T) {
 		PasswordKey: sealed, FromKey: "fleet@example.com", TLSKey: "true",
 	}))
 
-	send := SenderFor(st, k)
+	send := SenderFor(st, k.Open)
 	require.NoError(t, send(ctx, []string{"ops@example.com"}, "hi", "t", "<p>h</p>"))
 	auth, from, rcpt, _ := s.snapshot()
 	require.Equal(t, "\x00user\x00pw", auth)

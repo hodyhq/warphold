@@ -35,7 +35,7 @@ func TestReapRemovesARevokedRepositoryPastItsRetention(t *testing.T) {
 
 	revoke(t, fx, "ag_1", 31*24*time.Hour)
 
-	detail, err := Reap(fx.st, fx.key)(ctx, store.Job{Kind: "reap"})
+	detail, err := Reap(fx.st)(ctx, store.Job{Kind: "reap"})
 	require.NoError(t, err)
 	require.Equal(t, "reaped 1/1 ok; 0 failed", detail)
 
@@ -57,7 +57,7 @@ func TestReapRefusesInsideTheRetentionWindow(t *testing.T) {
 
 	revoke(t, fx, "ag_1", 29*24*time.Hour)
 
-	detail, err := Reap(fx.st, fx.key)(ctx, store.Job{Kind: "reap"})
+	detail, err := Reap(fx.st)(ctx, store.Job{Kind: "reap"})
 	require.NoError(t, err)
 	require.Equal(t, "reaped 0/0 ok; 0 failed, 1 still inside the retention window", detail)
 
@@ -75,7 +75,7 @@ func TestReapFollowsTheConfiguredRetention(t *testing.T) {
 	revoke(t, fx, "ag_1", 8*24*time.Hour)
 	require.NoError(t, fx.st.SetSetting(ctx, RevokedRetentionSetting, "7"))
 
-	_, err := Reap(fx.st, fx.key)(ctx, store.Job{Kind: "reap"})
+	_, err := Reap(fx.st)(ctx, store.Job{Kind: "reap"})
 	require.NoError(t, err)
 	require.NoDirExists(t, repoDir(fx, "ag_1"))
 }
@@ -100,7 +100,7 @@ func TestReapIsIdempotent(t *testing.T) {
 
 	revoke(t, fx, "ag_1", 40*24*time.Hour)
 
-	_, err := Reap(fx.st, fx.key)(ctx, store.Job{Kind: "reap"})
+	_, err := Reap(fx.st)(ctx, store.Job{Kind: "reap"})
 	require.NoError(t, err)
 
 	retired, err := fx.st.Agent(ctx, "ag_1")
@@ -108,7 +108,7 @@ func TestReapIsIdempotent(t *testing.T) {
 	require.NotNil(t, retired.RetiredAt)
 
 	// A second sweep finds nothing left to do and says so without failing.
-	detail, err := Reap(fx.st, fx.key)(ctx, store.Job{Kind: "reap"})
+	detail, err := Reap(fx.st)(ctx, store.Job{Kind: "reap"})
 	require.NoError(t, err)
 	require.Equal(t, "reaped 0/0 ok; 0 failed", detail)
 
@@ -123,7 +123,7 @@ func TestReapRefusesAnAgentThatIsNoLongerRevoked(t *testing.T) {
 	fx := newRepoFixture(t, "ag_1")
 	ctx := context.Background()
 
-	_, err := Reap(fx.st, fx.key)(ctx, store.Job{Kind: "reap", AgentID: "ag_1"})
+	_, err := Reap(fx.st)(ctx, store.Job{Kind: "reap", AgentID: "ag_1"})
 	require.ErrorContains(t, err, "ag_1 is not revoked")
 
 	require.DirExists(t, repoDir(fx, "ag_1"))
@@ -147,7 +147,7 @@ func TestReapOfATargetWithNoLocalDataStillRetires(t *testing.T) {
 	}))
 	revoke(t, fx, "ag_cloud", 60*24*time.Hour)
 
-	detail, err := Reap(fx.st, fx.key)(ctx, store.Job{Kind: "reap"})
+	detail, err := Reap(fx.st)(ctx, store.Job{Kind: "reap"})
 	require.NoError(t, err)
 	require.Equal(t, "reaped 1/1 ok; 0 failed, 1 with no local repository", detail)
 
@@ -176,7 +176,7 @@ func TestReapLeavesTheRestOfTheTargetAlone(t *testing.T) {
 
 	revoke(t, fx, "ag_1", 90*24*time.Hour)
 
-	_, err := Reap(fx.st, fx.key)(ctx, store.Job{Kind: "reap"})
+	_, err := Reap(fx.st)(ctx, store.Job{Kind: "reap"})
 	require.NoError(t, err)
 
 	require.NoDirExists(t, repoDir(fx, "ag_1"))

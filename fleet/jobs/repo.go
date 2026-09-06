@@ -148,8 +148,8 @@ func fleetConnection(ctx context.Context, st *store.Store, cloud CloudStoreFn, a
 // invariant is one Fleet process per state dir, and it is enforced upstream of
 // this by the <stateDir>/.lock flock (fleet/lock.go, Task 26), which
 // `server start` holds for as long as it serves.
-func openAgentRepo(ctx context.Context, st *store.Store, cloud CloudStoreFn, k seal.Key, a store.Agent, id identity, readOnly bool) (*openedRepo, error) {
-	plain, err := k.Open(a.SealedBundle)
+func openAgentRepo(ctx context.Context, st *store.Store, cloud CloudStoreFn, open seal.Opener, a store.Agent, id identity, readOnly bool) (*openedRepo, error) {
+	plain, err := open(a.SealedBundle)
 	if err != nil {
 		// Never the underlying error: it is about the sealing key, and the
 		// row is shown in the UI.
@@ -312,7 +312,7 @@ func (s *sweep) err() error {
 
 // perAgent is the shape all three repository jobs share: open each agent's
 // repository, do one thing to it, and keep going when a device fails.
-func perAgent(st *store.Store, k seal.Key, cloud CloudStoreFn, verb string, readOnly bool, fn func(context.Context, repo.Repository, store.Agent) error) Runner {
+func perAgent(st *store.Store, open seal.Opener, cloud CloudStoreFn, verb string, readOnly bool, fn func(context.Context, repo.Repository, store.Agent) error) Runner {
 	return func(ctx context.Context, j store.Job) (string, error) {
 		s := &sweep{verb: verb}
 
@@ -338,7 +338,7 @@ func perAgent(st *store.Store, k seal.Key, cloud CloudStoreFn, verb string, read
 			// provider must not spend the whole job's timeout on device one.
 			dctx, cancel := context.WithTimeout(ctx, deviceDeadline)
 
-			r, err := openAgentRepo(dctx, st, cloud, k, a, id, readOnly)
+			r, err := openAgentRepo(dctx, st, cloud, open, a, id, readOnly)
 			if err != nil {
 				cancel()
 				s.fail(a.ID, err)
@@ -372,25 +372,25 @@ const deviceDeadline = 30 * time.Minute
 
 // runnerFor is every job kind the Fleet server runs. It is the one list:
 // Runners builds them, HasKind validates a request against it.
-var runnerFor = map[string]func(*store.Store, seal.Key, CloudStoreFn) Runner{
-	"mirror":       func(st *store.Store, k seal.Key, _ CloudStoreFn) Runner { return Mirror(st, k) },
+var runnerFor = map[string]func(*store.Store, seal.Opener, CloudStoreFn) Runner{
+	"mirror":       func(st *store.Store, open seal.Opener, _ CloudStoreFn) Runner { return Mirror(st, open) },
 	"verify":       Verify,
 	"test-restore": TestRestore,
 	"maintenance":  Maintenance,
-	"reap":         func(st *store.Store, k seal.Key, _ CloudStoreFn) Runner { return Reap(st, k) },
+	"reap":         func(st *store.Store, _ seal.Opener, _ CloudStoreFn) Runner { return Reap(st) },
 	"stats":        Stats,
-	"digest": func(st *store.Store, k seal.Key, _ CloudStoreFn) Runner {
-		return Digest(st, k, mail.SenderFor(st, k))
+	"digest": func(st *store.Store, open seal.Opener, _ CloudStoreFn) Runner {
+		return Digest(st, open, mail.SenderFor(st, open))
 	},
 }
 
 // Runners is every runner, keyed by kind. The scheduler enqueues the
 // interval-driven kinds itself (see intervals); the jobs API can enqueue any
 // of them, for one agent or fleet-wide, on demand.
-func Runners(st *store.Store, k seal.Key, cloud CloudStoreFn) map[string]Runner {
+func Runners(st *store.Store, open seal.Opener, cloud CloudStoreFn) map[string]Runner {
 	out := make(map[string]Runner, len(runnerFor))
 	for kind, make := range runnerFor {
-		out[kind] = make(st, k, cloud)
+		out[kind] = make(st, open, cloud)
 	}
 
 	return out

@@ -120,7 +120,7 @@ func newHostedFixture(t *testing.T, id string) *repoFixture {
 func TestVerifyRunsAgainstAHostedDiskRepository(t *testing.T) {
 	f := newHostedFixture(t, "ag_hosted")
 
-	detail, err := Verify(f.st, f.key, nil)(context.Background(), store.Job{Kind: "verify"})
+	detail, err := Verify(f.st, f.key.Open, nil)(context.Background(), store.Job{Kind: "verify"})
 	require.NoError(t, err, detail)
 	require.Contains(t, detail, "verified 1/1 ok; 0 failed")
 }

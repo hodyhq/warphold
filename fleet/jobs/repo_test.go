@@ -112,7 +112,7 @@ func (f *repoFixture) open(t *testing.T, id string, readOnly bool) *openedRepo {
 
 	ctx := context.Background()
 
-	r, err := openAgentRepo(ctx, f.st, nil, f.key, f.agent(t, id), fleetIdentity(ctx, f.st), readOnly)
+	r, err := openAgentRepo(ctx, f.st, nil, f.key.Open, f.agent(t, id), fleetIdentity(ctx, f.st), readOnly)
 	require.NoError(t, err)
 	t.Cleanup(func() { r.close(context.Background()) })
 

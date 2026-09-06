@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/kopia/kopia/fleet/enroll"
-	"github.com/kopia/kopia/fleet/seal"
 	"github.com/kopia/kopia/fleet/store"
 )
 
@@ -63,7 +62,7 @@ var errNoLocalData = errors.New("no local repository directory")
 // before the scheduler existed; a job that names an agent reaps only that one.
 // It is idempotent: an already retired agent, a directory that is already
 // gone, and an agent that has been un-revoked are all no-ops.
-func Reap(st *store.Store, k seal.Key) Runner {
+func Reap(st *store.Store) Runner {
 	return func(ctx context.Context, j store.Job) (string, error) {
 		s := &sweep{verb: "reaped"}
 		now := time.Now()

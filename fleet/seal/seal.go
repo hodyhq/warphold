@@ -17,6 +17,17 @@ import (
 // Key is a 256-bit sealing key.
 type Key [32]byte
 
+// Opener opens one sealed value. It exists so a long-lived consumer -- the job
+// scheduler, the mail sender -- holds a way to reach the CURRENT key instead
+// of a copy of the key it was built with. Key is [32]byte, so passing one by
+// value freezes it, and after a passphrase rotation the holder would go on
+// unsealing with a retired key forever while every ciphertext in the store had
+// been re-sealed under the new one.
+//
+// Key.Open is itself an Opener, so a caller that legitimately has a fixed key
+// (a test, or a handler already holding the rotation lock) just passes k.Open.
+type Opener func(sealed []byte) ([]byte, error)
+
 // ErrTampered is returned when sealed data does not authenticate.
 var ErrTampered = errors.New("sealed data is corrupt or the key is wrong")
 

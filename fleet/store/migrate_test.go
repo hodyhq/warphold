@@ -3,10 +3,13 @@ package store_test
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/kopia/kopia/fleet/seal"
 
 	_ "modernc.org/sqlite" // pure-Go driver, registers "sqlite"
 
@@ -131,4 +134,110 @@ func TestMigrateIsIdempotent(t *testing.T) {
 		require.NoError(t, s.Close())
 	}
 	require.True(t, columns(t, p, "targets")["mirror_bucket"])
+}
+
+// The Fleet host's own repository password was stored under
+// "fleet_repo_password", outside the sealed_ namespace Reseal sweeps, so a
+// passphrase rotation walked straight past it and the password became
+// unrecoverable. Open moves the row; the ciphertext is untouched, only its key.
+func TestMigrateRenamesTheFleetRepoPasswordIntoTheSealedNamespace(t *testing.T) {
+	ctx := context.Background()
+	p := openRaw(t, prePlan3Schema)
+
+	db, err := sql.Open("sqlite", p)
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO settings(key,value) VALUES('fleet_repo_password','deadbeef'),('fleet_repo_path','/srv/warphold')`)
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+
+	s, err := store.Open(p)
+	require.NoError(t, err)
+
+	v, err := s.Setting(ctx, "sealed_fleet_repo_password")
+	require.NoError(t, err)
+	require.Equal(t, "deadbeef", v, "the ciphertext moves verbatim")
+
+	old, err := s.Setting(ctx, "fleet_repo_password")
+	require.NoError(t, err)
+	require.Empty(t, old, "the old key is gone, so nothing reads a value Reseal will not re-seal")
+
+	unrelated, err := s.Setting(ctx, "fleet_repo_path")
+	require.NoError(t, err)
+	require.Equal(t, "/srv/warphold", unrelated, "only the sealed setting moves")
+
+	require.NoError(t, s.Close())
+
+	// Idempotent: a second Open is a no-op, and does not clobber a value
+	// written under the new name since.
+	require.NoError(t, func() error {
+		s2, err := store.Open(p)
+		require.NoError(t, err)
+		require.NoError(t, s2.SetSetting(ctx, "sealed_fleet_repo_password", "cafe"))
+		return s2.Close()
+	}())
+
+	s3, err := store.Open(p)
+	require.NoError(t, err)
+
+	defer s3.Close() //nolint:errcheck // test cleanup
+
+	v, err = s3.Setting(ctx, "sealed_fleet_repo_password")
+	require.NoError(t, err)
+	require.Equal(t, "cafe", v)
+}
+
+// The point of the rename: a rotation now re-seals it with everything else.
+func TestResealCoversTheFleetRepoPassword(t *testing.T) {
+	ctx := context.Background()
+	p := openRaw(t, prePlan3Schema)
+
+	db, err := sql.Open("sqlite", p)
+	require.NoError(t, err)
+
+	salt, err := seal.NewSalt()
+	require.NoError(t, err)
+
+	old := seal.Derive("the activation passphrase", salt)
+
+	sealed, err := old.Seal([]byte("the repository password"))
+	require.NoError(t, err)
+
+	_, err = db.Exec(`INSERT INTO settings(key,value) VALUES('fleet_repo_password',?),('seal_salt',?)`,
+		hex.EncodeToString(sealed), hex.EncodeToString(salt))
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+
+	s, err := store.Open(p)
+	require.NoError(t, err)
+
+	defer s.Close() //nolint:errcheck // test cleanup
+
+	newSalt, err := seal.NewSalt()
+	require.NoError(t, err)
+
+	next := seal.Derive("the rotated passphrase", newSalt)
+
+	counts, err := s.Reseal(ctx, hex.EncodeToString(newSalt), false, func(sealed []byte) ([]byte, error) {
+		plain, err := old.Open(sealed)
+		if err != nil {
+			return nil, err
+		}
+
+		return next.Seal(plain)
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, counts["settings"], "the fleet repo password is one of the re-sealed settings")
+
+	v, err := s.Setting(ctx, "sealed_fleet_repo_password")
+	require.NoError(t, err)
+
+	raw, err := hex.DecodeString(v)
+	require.NoError(t, err)
+
+	_, err = old.Open(raw)
+	require.Error(t, err, "the retired key must no longer open it")
+
+	plain, err := next.Open(raw)
+	require.NoError(t, err, "and the new one must")
+	require.Equal(t, "the repository password", string(plain))
 }

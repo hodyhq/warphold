@@ -112,7 +112,7 @@ func TestDigestSkipsWhenSMTPNotConfigured(t *testing.T) {
 	f.addAdmin(t, "owner@example.com")
 
 	sender := &fakeSender{}
-	detail, err := Digest(f.st, f.key, sender.send)(context.Background(), store.Job{Kind: "digest"})
+	detail, err := Digest(f.st, f.key.Open, sender.send)(context.Background(), store.Job{Kind: "digest"})
 
 	require.ErrorIs(t, err, ErrSkipped)
 	require.Equal(t, "smtp not configured", detail)
@@ -124,7 +124,7 @@ func TestDigestSkipsWhenNoAdmin(t *testing.T) {
 	f.configureSMTP(t)
 
 	sender := &fakeSender{}
-	detail, err := Digest(f.st, f.key, sender.send)(context.Background(), store.Job{Kind: "digest"})
+	detail, err := Digest(f.st, f.key.Open, sender.send)(context.Background(), store.Job{Kind: "digest"})
 
 	require.ErrorIs(t, err, ErrSkipped)
 	require.Equal(t, "no admin to send to", detail)
@@ -137,7 +137,7 @@ func TestDigestSendsWithZeroDevicesAndNoDivideByZero(t *testing.T) {
 	f.addAdmin(t, "owner@example.com")
 
 	sender := &fakeSender{}
-	detail, err := Digest(f.st, f.key, sender.send)(context.Background(), store.Job{Kind: "digest"})
+	detail, err := Digest(f.st, f.key.Open, sender.send)(context.Background(), store.Job{Kind: "digest"})
 
 	require.NoError(t, err)
 	require.Equal(t, "sent to 1 admin(s)", detail)
@@ -165,7 +165,7 @@ func TestDigestRendersDeviceHealthAndOffsiteState(t *testing.T) {
 	require.NoError(t, f.st.SetMirrored(ctx, a.ID, time.Now().Add(-30*24*time.Hour), 900))
 
 	sender := &fakeSender{}
-	_, err := Digest(f.st, f.key, sender.send)(ctx, store.Job{Kind: "digest"})
+	_, err := Digest(f.st, f.key.Open, sender.send)(ctx, store.Job{Kind: "digest"})
 	require.NoError(t, err)
 
 	require.Contains(t, sender.text, "Hody's Laptop", "the device's own name is shown")
@@ -195,7 +195,7 @@ func TestDigestNamesAKindFailingForOverAWeek(t *testing.T) {
 	f.job(t, "verify", now.Add(-time.Hour), "error")
 
 	sender := &fakeSender{}
-	_, err := Digest(f.st, f.key, sender.send)(ctx, store.Job{Kind: "digest"})
+	_, err := Digest(f.st, f.key.Open, sender.send)(ctx, store.Job{Kind: "digest"})
 	require.NoError(t, err)
 
 	require.Contains(t, sender.text, "mirror has been failing for over a week")
@@ -218,7 +218,7 @@ func TestDigestOneRecentOKRunEndsTheFailingStreak(t *testing.T) {
 	f.job(t, "reap", now.Add(-time.Hour), "error")
 
 	sender := &fakeSender{}
-	_, err := Digest(f.st, f.key, sender.send)(ctx, store.Job{Kind: "digest"})
+	_, err := Digest(f.st, f.key.Open, sender.send)(ctx, store.Job{Kind: "digest"})
 	require.NoError(t, err)
 
 	require.NotContains(t, sender.text, "reap has been failing", "the ok run two days ago broke the streak")
@@ -236,7 +236,7 @@ func TestDigestRedactsCredentialsOnSendFailure(t *testing.T) {
 	f.addAdmin(t, "owner@example.com")
 
 	sender := &fakeSender{err: errors.New("550 auth failed for svc-user with password hunter2")}
-	_, err = Digest(f.st, f.key, sender.send)(context.Background(), store.Job{Kind: "digest"})
+	_, err = Digest(f.st, f.key.Open, sender.send)(context.Background(), store.Job{Kind: "digest"})
 
 	require.Error(t, err)
 	require.NotErrorIs(t, err, ErrSkipped)
@@ -257,7 +257,7 @@ func TestDigestCountsUnacknowledgedRecoveryKits(t *testing.T) {
 	a := f.addAgent(t, "ag_1", "Hody's Laptop")
 
 	sender := &fakeSender{}
-	_, err := Digest(f.st, f.key, sender.send)(ctx, store.Job{Kind: "digest"})
+	_, err := Digest(f.st, f.key.Open, sender.send)(ctx, store.Job{Kind: "digest"})
 	require.NoError(t, err)
 	require.Contains(t, sender.text, "1 device(s) have no saved recovery kit")
 	require.Contains(t, sender.html, "no saved recovery kit")
@@ -265,7 +265,7 @@ func TestDigestCountsUnacknowledgedRecoveryKits(t *testing.T) {
 	require.NoError(t, f.st.SetKitAck(ctx, a.ID, adminID, time.Now()))
 
 	sender = &fakeSender{}
-	_, err = Digest(f.st, f.key, sender.send)(ctx, store.Job{Kind: "digest"})
+	_, err = Digest(f.st, f.key.Open, sender.send)(ctx, store.Job{Kind: "digest"})
 	require.NoError(t, err)
 	require.NotContains(t, sender.text, "no saved recovery kit")
 	require.NotContains(t, sender.html, "no saved recovery kit")

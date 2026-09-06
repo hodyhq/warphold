@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kopia/kopia/fleet"
+	"github.com/kopia/kopia/repo"
 	"github.com/kopia/kopia/tests/testenv"
 )
 
@@ -91,4 +92,36 @@ func TestFleetRotatePassphraseRefusesWhileTheStateDirIsLocked(t *testing.T) {
 	require.NoError(t, lock.Unlock())
 	e.RunAndExpectSuccess(t, "fleet", "rotate-passphrase",
 		"--passphrase", "seal-me-please", "--new-passphrase", "a-much-longer-passphrase")
+}
+
+// The Fleet host's own repository must survive a rotation. Its password was
+// stored under "fleet_repo_password", which Reseal's `sealed\_%` sweep does not
+// match, so the first rotation left it sealed under the retired key and the
+// repository could never be opened again. This drives the whole path -
+// activate, rotate offline, then open the repository with the password the
+// server would unseal - because the API harness never runs `fleet activate` and
+// so never has the setting at all.
+func TestFleetRotatePassphraseKeepsTheHostRepositoryOpenable(t *testing.T) {
+	runner := testenv.NewInProcRunner(t)
+	e := testenv.NewCLITest(t, nil, runner)
+
+	e.RunAndExpectSuccess(t, "fleet", "activate",
+		"--email", "hody@hody.dev", "--admin-password", "pw12345678", "--passphrase", "seal-me-please")
+
+	before := fleetRepoPassword(t, e)
+	require.NotEmpty(t, before)
+
+	e.RunAndExpectSuccess(t, "fleet", "rotate-passphrase",
+		"--passphrase", "seal-me-please", "--new-passphrase", "a-much-longer-passphrase")
+
+	// Same password, re-sealed under the new key: unsealing it now needs the
+	// rotated seal.key, which fleetRepoPassword reads from disk.
+	after := fleetRepoPassword(t, e)
+	require.Equal(t, before, after, "the rotation re-seals the password, it does not change it")
+
+	stateDir := fleet.StateDirFor(fleetConfigFile(e))
+
+	rep, err := repo.Open(t.Context(), filepath.Join(stateDir, "fleet-repo.config"), after, nil)
+	require.NoError(t, err, "the Fleet host's own repository still opens after a rotation")
+	require.NoError(t, rep.Close(t.Context()))
 }

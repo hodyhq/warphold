@@ -55,9 +55,9 @@ var digestHTMLTmpl = template.Must(template.New("digest").Parse(digestHTMLSrc))
 // notice a device has gone quiet (spec §7.4). A fleet with no SMTP configured
 // - the default state - is not a failure: the run is recorded 'skipped', with
 // a detail saying why, rather than 'error'.
-func Digest(st *store.Store, k seal.Key, send mail.Sender) Runner {
+func Digest(st *store.Store, open seal.Opener, send mail.Sender) Runner {
 	return func(ctx context.Context, j store.Job) (string, error) {
-		cfg, err := mail.Load(ctx, st, k)
+		cfg, err := mail.Load(ctx, st, open)
 		if err != nil {
 			return "", fmt.Errorf("reading smtp settings: %w", err)
 		}

@@ -13,7 +13,7 @@ import (
 func TestVerifyPassesOnAGoodRepository(t *testing.T) {
 	fx := newRepoFixture(t, "ag_1", "ag_2")
 
-	detail, err := Verify(fx.st, fx.key, nil)(context.Background(), store.Job{Kind: "verify"})
+	detail, err := Verify(fx.st, fx.key.Open, nil)(context.Background(), store.Job{Kind: "verify"})
 	require.NoError(t, err)
 	require.Equal(t, "verified 2/2 ok; 0 failed", detail)
 }
@@ -22,7 +22,7 @@ func TestVerifyFailsWithTheRawErrorOnACorruptedRepository(t *testing.T) {
 	fx := newRepoFixture(t, "ag_1", "ag_2")
 	gone := fx.deleteAPackBlob(t, "ag_2")
 
-	detail, err := Verify(fx.st, fx.key, nil)(context.Background(), store.Job{Kind: "verify"})
+	detail, err := Verify(fx.st, fx.key.Open, nil)(context.Background(), store.Job{Kind: "verify"})
 	require.Error(t, err)
 
 	// One device's corruption does not cost the other its verification, and
@@ -36,7 +36,7 @@ func TestVerifyRunsOnlyTheAgentTheJobNames(t *testing.T) {
 	fx := newRepoFixture(t, "ag_1", "ag_2")
 	fx.deleteAPackBlob(t, "ag_2")
 
-	detail, err := Verify(fx.st, fx.key, nil)(context.Background(), store.Job{Kind: "verify", AgentID: "ag_1"})
+	detail, err := Verify(fx.st, fx.key.Open, nil)(context.Background(), store.Job{Kind: "verify", AgentID: "ag_1"})
 	require.NoError(t, err)
 	require.Equal(t, "verified 1/1 ok; 0 failed", detail)
 }
@@ -47,7 +47,7 @@ func TestVerifySkipsARevokedAgent(t *testing.T) {
 
 	require.NoError(t, fx.st.RevokeAgent(ctx, "ag_2", time.Now()))
 
-	detail, err := Verify(fx.st, fx.key, nil)(ctx, store.Job{Kind: "verify"})
+	detail, err := Verify(fx.st, fx.key.Open, nil)(ctx, store.Job{Kind: "verify"})
 	require.NoError(t, err)
 	require.Equal(t, "verified 1/1 ok; 0 failed", detail)
 }
@@ -58,6 +58,6 @@ func TestVerifyStopsWhenTheContextIsDone(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := Verify(fx.st, fx.key, nil)(ctx, store.Job{Kind: "verify"})
+	_, err := Verify(fx.st, fx.key.Open, nil)(ctx, store.Job{Kind: "verify"})
 	require.ErrorIs(t, err, context.Canceled)
 }

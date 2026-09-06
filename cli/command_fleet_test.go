@@ -313,7 +313,7 @@ func fleetRepoPassword(t *testing.T, e *testenv.CLITest) string {
 	key, err := seal.ReadKeyFile(filepath.Join(fleet.StateDirFor(fleetConfigFile(e)), "seal.key"))
 	require.NoError(t, err)
 
-	sealed, err := hex.DecodeString(fleetSetting(t, e, "fleet_repo_password"))
+	sealed, err := hex.DecodeString(fleetSetting(t, e, "sealed_fleet_repo_password"))
 	require.NoError(t, err)
 
 	pw, err := key.Open(sealed)
@@ -792,4 +792,68 @@ func TestFleetJobsRunQueuesARow(t *testing.T) {
 	require.Len(t, queued, 1, "only the accepted kind was queued")
 	require.Equal(t, "test-restore", queued[0].Kind)
 	require.Empty(t, queued[0].AgentID)
+}
+
+// One Fleet process per state directory, enforced rather than merely claimed.
+// `server start` used to log a warning and serve anyway when the lock was
+// already held, which made the flock a one-way signal: it let the offline
+// `fleet rotate-passphrase` detect a running Fleet, but nothing stopped a
+// second server. Two schedulers would then maintain the same device
+// repositories through their own scratch configs, which Kopia's .mlock cannot
+// prevent because it is keyed to the config file (fleet/jobs/repo.go says so
+// and rests the maintenance-exclusion argument on this lock).
+func TestServerStartRefusesWhenTheStateDirIsLocked(t *testing.T) {
+	runner := testenv.NewInProcRunner(t)
+	e := testenv.NewCLITest(t, nil, runner)
+
+	stateDir := fleet.StateDirFor(fleetConfigFile(e))
+
+	e.RunAndExpectSuccess(t, "fleet", "activate",
+		"--email", "hody@hody.dev", "--admin-password", "pw12345678", "--passphrase", "seal-me-please")
+
+	// Stand in for the other Fleet. flock is per open file description, so a
+	// second Flock on the same path conflicts even from this process.
+	held, err := fleet.TryLock(stateDir)
+	require.NoError(t, err)
+
+	defer held.Unlock() //nolint:errcheck // test cleanup
+
+	var (
+		mu     sync.Mutex
+		stderr []string
+		sp     testutil.ServerParameters
+	)
+
+	// Same fast-fail shape as TestServerStartRefusesUnresolvedPendingSealKey:
+	// if the refusal regresses the server serves forever, and wait() would hang
+	// the package instead of failing the test.
+	wait, kill := e.RunAndProcessStderr(t, func(line string) bool {
+		mu.Lock()
+		defer mu.Unlock()
+
+		stderr = append(stderr, line)
+
+		return sp.ProcessOutput(line)
+	}, "server", "start",
+		"--insecure", "--without-password", "--no-ui", "--no-grpc",
+		"--address=127.0.0.1:0", "--server-control-password=admin-pwd")
+
+	done := make(chan error, 1)
+
+	go func() { done <- wait() }()
+
+	select {
+	case err := <-done:
+		require.Error(t, err, "server start must refuse while another Fleet holds the state dir")
+	case <-time.After(30 * time.Second):
+		kill()
+		t.Fatal("server start did not refuse; two Fleet processes are serving one state directory")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	joined := strings.Join(stderr, "\n")
+	require.Contains(t, joined, "already serving", "the message must say what is wrong")
+	require.Contains(t, joined, fleet.PathsFor(stateDir).LockFile, "and name the lock file")
 }
