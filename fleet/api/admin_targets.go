@@ -466,6 +466,25 @@ func s3ConnInfo(bucket, region, endpoint, keyID, key string) blob.ConnectionInfo
 	}}
 }
 
+// cloudStoreForJob is cloudStoreFor with the rotation read lock held. It is the
+// seam the job scheduler is handed, for the same reason s.unseal exists: a job
+// runs with no lock of its own, so unsealing the target's admin credentials
+// would otherwise race a passphrase rotation with nothing serialising it.
+//
+// The lock is taken HERE rather than inside cloudStoreFor because enrollment
+// reaches that function from inside sealHeld (handleEnroll -> newProvisioner ->
+// targetStore -> cloudStoreFor), and taking sync.RWMutex.RLock a second time
+// while a rotation is waiting on the write lock deadlocks. The span is bounded
+// and does no I/O -- cloudStoreFor unseals the stored credentials and
+// constructs a client, nothing more -- so holding the lock across it costs a
+// rotation nothing measurable.
+func (s *Server) cloudStoreForJob(ctx context.Context, t *store.Target) (gateway.ObjectStore, error) {
+	s.sealMu.RLock()
+	defer s.sealMu.RUnlock()
+
+	return s.cloudStoreFor(ctx, t)
+}
+
 // cloudStoreFor opens the write-through backend for a cloud-direct target. It
 // is what the gateway's per-target store cache calls for storage_mode "cloud",
 // the way NewLocal is called for "disk".

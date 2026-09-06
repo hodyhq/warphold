@@ -43,6 +43,16 @@ func (s *Server) FleetRepoPassword(ctx context.Context) (string, error) {
 	s.setupMu.Lock()
 	defer s.setupMu.Unlock()
 
+	// The rotation read lock, for the same reason every sealing route takes it
+	// through sealHeld: below is a seal-then-write span, and a rotation
+	// committing between the Seal and the SetSetting would store the password
+	// under the retired key after Reseal had already swept the settings table.
+	// This is not an HTTP handler -- `server start` and OnActivated call it --
+	// so nothing above it holds the lock already. Order is setupMu -> sealMu,
+	// and it is the only place the two meet.
+	s.sealMu.RLock()
+	defer s.sealMu.RUnlock()
+
 	raw, err := st.Setting(ctx, fleetRepoPasswordSetting)
 	if err != nil {
 		return "", err

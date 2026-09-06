@@ -34,17 +34,13 @@ func (c *commandFleet) setup(svc advancedAppServices, parent commandParent) {
 	registerFleetHandlersOnce.Do(func() {
 		RegisterServerHandlers(func(ctx context.Context, srv *server.Server, m *mux.Router, configFile string) error {
 			stateDir := fleet.StateDirFor(configFile)
-			fs := api.New(stateDir)
 
-			// State that cannot be used safely is fatal here, not a warning:
-			// serving Fleet on a key that may no longer open its own store
-			// would seal every new secret into a store nothing can read back.
-			if err := fs.StateError(); err != nil {
-				fs.Close() //nolint:errcheck
-
-				return errors.Join(errors.New("fleet state in "+stateDir+" cannot be used"), err)
-			}
-
+			// The lock comes FIRST, before api.New touches the state
+			// directory at all. api.New opens the database, which runs the
+			// migrations and can start the scheduler, so taking the lock after
+			// it would let a second server migrate and begin claiming jobs in
+			// the moment before it discovered it was not allowed to run.
+			//
 			// Held for as long as this server serves. Failing to take it is
 			// fatal either way, and ErrLocked most of all: one Fleet process
 			// per state directory is a real invariant, not a nicety. Two
@@ -53,12 +49,9 @@ func (c *commandFleet) setup(svc advancedAppServices, parent commandParent) {
 			// configs -- Kopia's .mlock is keyed to the config file, so it
 			// would not keep them apart (see fleet/jobs/repo.go). It is also
 			// what lets the offline `fleet rotate-passphrase` tell a running
-			// Fleet from a stopped one. Warning and serving anyway made the
-			// lock a one-way signal and left both claims untrue.
+			// Fleet from a stopped one.
 			lock, lockErr := fleet.TryLock(stateDir)
 			if lockErr != nil {
-				fs.Close() //nolint:errcheck
-
 				if errors.Is(lockErr, fleet.ErrLocked) {
 					return errors.New("another WarpHold Fleet is already serving " + stateDir +
 						" (it holds " + fleet.PathsFor(stateDir).LockFile +
@@ -66,6 +59,18 @@ func (c *commandFleet) setup(svc advancedAppServices, parent commandParent) {
 				}
 
 				return errors.Join(errors.New("cannot hold "+fleet.PathsFor(stateDir).LockFile), lockErr)
+			}
+
+			fs := api.New(stateDir)
+
+			// State that cannot be used safely is fatal here, not a warning:
+			// serving Fleet on a key that may no longer open its own store
+			// would seal every new secret into a store nothing can read back.
+			if err := fs.StateError(); err != nil {
+				fs.Close()    //nolint:errcheck
+				lock.Unlock() //nolint:errcheck // refusing to start; nothing holds it after this
+
+				return errors.Join(errors.New("fleet state in "+stateDir+" cannot be used"), err)
 			}
 
 			fs.Mount(m)

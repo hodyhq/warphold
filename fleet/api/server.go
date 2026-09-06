@@ -243,12 +243,14 @@ func (s *Server) startJobs() {
 	}
 	old := s.sched
 	// Both arguments are method values on s, never captured state: s.unseal
-	// reads the CURRENT sealing key on every call, and s.cloudStoreFor opens a
-	// cloud-direct hosted repository the same way the gateway does. Handing
-	// jobs.Runners a seal.Key here instead would freeze a copy -- Key is
-	// [32]byte -- and a passphrase rotation would leave the scheduler unsealing
-	// with a retired key while every ciphertext in the store had moved on.
-	s.sched = jobs.NewScheduler(s.st, jobs.Runners(s.st, s.unseal, s.cloudStoreFor), jobs.DefaultTick)
+	// reads the CURRENT sealing key on every call, and s.cloudStoreForJob
+	// opens a cloud-direct hosted repository the same way the gateway does.
+	// Handing jobs.Runners a seal.Key here instead would freeze a copy -- Key
+	// is [32]byte -- and a passphrase rotation would leave the scheduler
+	// unsealing with a retired key while every ciphertext in the store had
+	// moved on. Both take the rotation read lock around their unseal and
+	// nothing wider, so neither can hold it across a job.
+	s.sched = jobs.NewScheduler(s.st, jobs.Runners(s.st, s.unseal, s.cloudStoreForJob), jobs.DefaultTick)
 	s.sched.Start(context.Background())
 	if old != nil {
 		// In a goroutine: Stop waits for the running job, which must not
