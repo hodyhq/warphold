@@ -36,7 +36,16 @@ func (c *commandAppStatus) run(ctx context.Context) error {
 			var st serverapi.StatusResponse
 
 			if err := api.Get(ctx, "repo/status", nil, &st); err == nil && !st.Connected {
-				c.out.printStdout("no backups configured yet - open the app to set one up:\n    warphold app url\n")
+				// InitRepoTaskID is non-empty while a configured repository is
+				// still being opened/connected: that is not "unconfigured",
+				// and falling through to commandAgentStatus below would only
+				// trade this message for /sources' NOT_CONNECTED error, which
+				// reads as "the engine is down" when it plainly is not.
+				if st.InitRepoTaskID != "" {
+					c.out.printStdout("still connecting to the repository - try again shortly\n")
+				} else {
+					c.out.printStdout("no backups configured yet - open the app to set one up:\n    warphold app url\n")
+				}
 
 				return nil
 			}
