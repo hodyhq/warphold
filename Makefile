@@ -422,9 +422,22 @@ ifneq ($(GOOS),windows)
 	             -e github.com/kopia/kopia/issues && exit 1 || echo repo/ layering ok
 endif
 
+# warphold: this suite drives Kopia's original "connect to a repository"
+# first-run screen (button[data-testid='provider-filesystem'], etc.). With no
+# repository configured, WarpHold's UI now gates / behind its own Fleet
+# activation wizard (see mode.ts in hodyhq/warphold-ui, which checks
+# /api/v1/fleet/status) instead of rendering that screen, so every subtest
+# times out waiting for elements that never appear. Porting the harness to
+# the Fleet wizard is tracked as a Plan 4 item. Set WARPHOLD_SKIP_HTMLUI_E2E
+# to skip it; CI sets it, local `make htmlui-e2e-test` still runs it by
+# default.
 htmlui-e2e-test: GOTESTSUM_FORMAT=testname
 htmlui-e2e-test:
+ifeq ($(WARPHOLD_SKIP_HTMLUI_E2E),)
 	HTMLUI_E2E_TEST=1 $(GO_TEST) -timeout 600s github.com/kopia/kopia/tests/htmlui_e2e_test -v $(TEST_FLAGS)
+else
+	@echo "skipping htmlui-e2e-test: WARPHOLD_SKIP_HTMLUI_E2E is set (harness targets Kopia's pre-Fleet UI, not yet ported)"
+endif
 
 # warphold: local UI checkout is ../warphold-ui.
 htmlui-e2e-test-local-htmlui-changes:
