@@ -129,6 +129,10 @@ func Load(ctx context.Context, st *store.Store, open seal.Opener) (Config, error
 // PasswordSet reports whether a sealed password is stored, without unsealing
 // it: the settings GET says "set" or "not set" and never the value.
 func PasswordSet(ctx context.Context, st *store.Store) (bool, error) {
+	if st == nil {
+		return false, errors.New("fleet is not activated")
+	}
+
 	v, err := st.Setting(ctx, PasswordKey)
 	return v != "", err
 }

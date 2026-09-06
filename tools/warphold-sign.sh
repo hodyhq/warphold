@@ -12,6 +12,10 @@ set -euo pipefail
 
 gpg_sign_cmd='%{__gpg} gpg --batch --pinentry-mode loopback --passphrase-fd 3 --no-verbose --no-armor -u "%{_gpg_name}" -sbo %{__signature_filename} %{__plaintext_filename}'
 
+# nullglob: a release with no RPMs would otherwise iterate once over the
+# literal "dist/*rpm" and fail the whole signing step under set -e.
+shopt -s nullglob
+
 for f in dist/*rpm; do
   # add signature to RPMs, using the WarpHold key instead of upstream's "Kopia Builder"
   rpm --define "%_gpg_name ${WARPHOLD_SIGNING_KEY_ID}" \
@@ -20,8 +24,19 @@ for f in dist/*rpm; do
 done
 
 # before signing checksums.txt, regenerate it since we've just signed some RPMs.
-filenames=$(cut -f 2- -d " " dist/checksums.txt)
-(cd dist && sha256sum $filenames > checksums.txt)
+# Read line by line rather than word-splitting one string: an artifact name
+# containing a space would otherwise be checksummed as two missing files.
+(
+  cd dist
+  cut -f 2- -d " " checksums.txt > .names
+  : > checksums.new
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    sha256sum -- "$name" >> checksums.new
+  done < .names
+  mv checksums.new checksums.txt
+  rm -f .names
+)
 
 gpg --batch --pinentry-mode loopback --passphrase-fd 0 \
     --local-user "$WARPHOLD_SIGNING_KEY_ID" \

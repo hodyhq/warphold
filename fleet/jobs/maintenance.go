@@ -37,6 +37,11 @@ func maintainRepo(ctx context.Context, rep repo.Repository, _ store.Agent) error
 	}
 
 	if p.Owner != me {
+		// Read before the closure runs: it sets p.Owner = me, so reporting
+		// p.Owner afterwards would print the NEW owner as the old one and both
+		// messages would lose the one fact they exist to record.
+		prev := p.Owner
+
 		// Provisioning stamps the Fleet as the owner, but the string embeds a
 		// hostname, and a Fleet that moved (or a repository provisioned before
 		// public_url was set) would otherwise never be maintained again. Taking
@@ -47,10 +52,10 @@ func maintainRepo(ctx context.Context, rep repo.Repository, _ store.Agent) error
 
 				return maintenance.SetParams(ctx, w, p)
 			}); err != nil {
-			return fmt.Errorf("taking maintenance ownership from %q: %w", p.Owner, err)
+			return fmt.Errorf("taking maintenance ownership from %q: %w", prev, err)
 		}
 
-		logf("maintenance owner of a device repository moved from %q to %q", p.Owner, me)
+		logf("maintenance owner of a device repository moved from %q to %q", prev, me)
 	}
 
 	return repo.DirectWriteSession(ctx, dr, repo.WriteSessionOptions{Purpose: "fleet-maintenance"},

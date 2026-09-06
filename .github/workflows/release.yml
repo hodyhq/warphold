@@ -60,13 +60,22 @@ jobs:
         id: signing
         env:
           HAS_KEY: ${{ secrets.WARPHOLD_SIGNING_KEY != '' && secrets.WARPHOLD_SIGNING_PASSPHRASE != '' }}
+          ALLOW_UNSIGNED: ${{ vars.WARPHOLD_ALLOW_UNSIGNED_RELEASE }}
         run: |
+          # An unsigned release is a silent break of the install contract:
+          # docs/warphold-release-signing.asc is published and both
+          # scripts/install/*.sh verify checksums.txt against it. A missing key
+          # therefore fails the job rather than quietly shipping --skip=sign.
+          # The escape hatch stays, but it has to be set deliberately.
           echo "has_key=$HAS_KEY" >> "$GITHUB_OUTPUT"
           if [ "$HAS_KEY" = "true" ]; then
             echo "extra_args=" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning::WARPHOLD_SIGNING_KEY/WARPHOLD_SIGNING_PASSPHRASE not set — publishing this release with UNSIGNED checksums."
+          elif [ "${ALLOW_UNSIGNED}" = "true" ]; then
+            echo "::warning::WARPHOLD_ALLOW_UNSIGNED_RELEASE is set — publishing this release with UNSIGNED checksums."
             echo "extra_args=--skip=sign" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::WARPHOLD_SIGNING_KEY/WARPHOLD_SIGNING_PASSPHRASE not set — refusing to publish an unsigned release. Set the repository variable WARPHOLD_ALLOW_UNSIGNED_RELEASE=true to override."
+            exit 1
           fi
       - name: Import signing key
         # warphold: imports the release key into a throwaway GNUPGHOME (never

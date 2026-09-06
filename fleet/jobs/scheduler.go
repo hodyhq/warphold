@@ -319,9 +319,15 @@ func intervalFor(ctx context.Context, st *store.Store, iv interval) time.Duratio
 		return iv.def
 	}
 
-	// Clamped at both ends, not just the floor: the API validates writes, but
-	// this also reads rows written before that validation existed, and rows a
-	// human edited in sqlite3.
+	// Clamped at both ends BEFORE the multiply, not just after: the API
+	// validates writes, but this also reads rows written before that validation
+	// existed, and rows a human edited in sqlite3. A merely negative value
+	// would land below iv.min and be floored anyway, but a large negative one
+	// overflows time.Duration and can wrap back above it.
+	if secs < 0 {
+		return iv.min
+	}
+
 	if secs > maxIntervalSeconds {
 		secs = maxIntervalSeconds
 	}

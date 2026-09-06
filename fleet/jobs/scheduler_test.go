@@ -121,7 +121,9 @@ func TestSchedulerRecordsASkippedRunner(t *testing.T) {
 	s.Start(ctx)
 	defer s.Stop()
 
-	eventually(t, func() bool { return jobsOf(t, st, "digest")[0].Status != "pending" })
+	// "skipped", not "!= pending": the scheduler passes through "running", so
+	// waiting for anything-but-pending can release a state too early.
+	eventually(t, func() bool { return jobsOf(t, st, "digest")[0].Status == "skipped" })
 
 	j := jobsOf(t, st, "digest")[0]
 	require.Equal(t, "skipped", j.Status, "a deliberate no-op is not an error")

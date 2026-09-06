@@ -317,6 +317,12 @@ if [ -n "${WARPHOLD_SETUP_PUBLIC_URL:-}" ] && [ -n "${WARPHOLD_SETUP_EMAIL:-}" ]
   WARPHOLD_ADMIN_PASSWORD="$WARPHOLD_SETUP_PASSWORD" \
   WARPHOLD_SEAL_PASSPHRASE="$WARPHOLD_SETUP_PASSPHRASE" \
     as_service_user "$BIN_DIR/warphold" "$@"
+  # Not optional. A var=value prefix is scoped to the call only when the call
+  # is an external command; in front of a SHELL FUNCTION -- which
+  # as_service_user is -- POSIX leaves the assignment in place afterwards. Both
+  # secrets would otherwise stay exported for the rest of the install and be
+  # inherited by every command it runs (systemctl, enable, start).
+  unset WARPHOLD_ADMIN_PASSWORD WARPHOLD_SEAL_PASSPHRASE
   ACTIVATED=1
 fi
 

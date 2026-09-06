@@ -48,18 +48,55 @@ type Data struct {
 //
 // --disable-tls is a verified flag but is never emitted for a hosted target:
 // see the comment in the "hosted" case below.
+// flag renders " --name value", or nothing at all when value is empty: an
+// empty value would print a bare flag and let it swallow the NEXT flag as its
+// argument.
+func flag(name, value string) string {
+	if value == "" {
+		return ""
+	}
+
+	return " --" + name + " " + shellQuote(value)
+}
+
+// shellQuote makes a value safe to paste into a POSIX shell. The kit exists to
+// be pasted, and several of these values are operator-typed rather than
+// server-minted -- a filesystem target's path, a bucket name, a region -- so a
+// space silently connects somewhere else and a metacharacter runs something
+// else entirely.
+//
+// The test is an allowlist, not a list of dangerous characters: a denylist that
+// forgets one prints a command that does something other than what the kit
+// says.
+func shellQuote(v string) string {
+	safe := func(r rune) bool {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			return true
+		default:
+			return strings.ContainsRune("._:/@=+,-", r)
+		}
+	}
+
+	if v != "" && strings.IndexFunc(v, func(r rune) bool { return !safe(r) }) < 0 {
+		return v
+	}
+
+	return "'" + strings.ReplaceAll(v, "'", `'\''`) + "'"
+}
+
 func Commands(d Data) []string {
 	var connect string
 
 	switch d.TargetKind {
 	case "hosted":
 		connect = "kopia repository connect s3" +
-			" --bucket " + d.Bucket +
-			" --prefix " + d.Prefix +
-			" --endpoint " + hostOf(d.Endpoint) +
-			" --access-key " + d.ReadKeyID +
-			" --secret-access-key " + d.ReadKey +
-			" --region " + d.Region
+			flag("bucket", d.Bucket) +
+			flag("prefix", d.Prefix) +
+			flag("endpoint", hostOf(d.Endpoint)) +
+			flag("access-key", d.ReadKeyID) +
+			flag("secret-access-key", d.ReadKey) +
+			flag("region", d.Region)
 		// --disable-tls is never printed here: the gateway's sigv4 verifier
 		// refuses aws-chunked streaming signatures by design
 		// (fleet/gateway/sigv4.go, ErrStreamingUnsupported), and minio-go's S3
@@ -70,13 +107,13 @@ func Commands(d Data) []string {
 
 	case "b2":
 		connect = "kopia repository connect b2" +
-			" --bucket " + d.Bucket +
-			" --prefix " + d.Prefix +
-			" --key-id " + d.ReadKeyID +
-			" --key " + d.ReadKey
+			flag("bucket", d.Bucket) +
+			flag("prefix", d.Prefix) +
+			flag("key-id", d.ReadKeyID) +
+			flag("key", d.ReadKey)
 
 	case "filesystem":
-		connect = "kopia repository connect filesystem --path " + d.Path
+		connect = "kopia repository connect filesystem" + flag("path", d.Path)
 
 	default:
 		return nil

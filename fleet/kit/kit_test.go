@@ -113,3 +113,36 @@ func TestRenderEscapesDeviceName(t *testing.T) {
 	require.NotContains(t, strings.ToLower(out), "<script")
 	require.Contains(t, out, "&lt;script&gt;")
 }
+
+// The kit is meant to be pasted into a shell, and a filesystem target's path,
+// a bucket name and a region are all operator-typed. An unquoted space
+// silently connects somewhere else; an unquoted metacharacter runs something
+// else entirely.
+func TestCommandsQuoteValuesForTheShell(t *testing.T) {
+	c := kit.Commands(kit.Data{
+		TargetKind: "filesystem",
+		Path:       "/srv/backups/Hody's Laptop; rm -rf /",
+	})
+	require.Equal(t,
+		`kopia repository connect filesystem --path '/srv/backups/Hody'\''s Laptop; rm -rf /'`,
+		c[0])
+
+	// A value with nothing special in it stays bare, so the common kit is still
+	// the plain command an operator can read at a glance.
+	c = kit.Commands(kit.Data{
+		TargetKind: "b2", Bucket: "warphold-offsite", Prefix: "agents/ag_1/",
+		ReadKeyID: "b2kid", ReadKey: "b2secret",
+	})
+	require.Equal(t,
+		"kopia repository connect b2 --bucket warphold-offsite --prefix agents/ag_1/ --key-id b2kid --key b2secret",
+		c[0])
+
+	// An empty value prints no flag at all: a bare "--region" would swallow
+	// whatever flag came next as its argument.
+	c = kit.Commands(kit.Data{
+		TargetKind: "hosted", Bucket: "warphold", Prefix: "ag_1/",
+		Endpoint: "https://fleet.example.com", ReadKeyID: "k", ReadKey: "s",
+	})
+	require.NotContains(t, c[0], "--region")
+	require.Contains(t, c[0], "--endpoint fleet.example.com")
+}

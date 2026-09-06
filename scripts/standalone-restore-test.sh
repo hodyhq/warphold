@@ -117,6 +117,10 @@ fetch_upstream_kopia() {
     return
   fi
 
+  # A $dir.tmp left by an interrupted run must not be promoted into the cache
+  # by the mv below: a truncated extract would then be trusted as the pinned,
+  # verified binary on every later run.
+  rm -rf "$dir" "$dir.tmp"
   mkdir -p "$dir.tmp"
   tgz="$dir.tmp/kopia.tar.gz"
   curl -fsSL --retry 3 -o "$tgz" \

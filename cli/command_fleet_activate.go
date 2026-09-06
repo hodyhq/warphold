@@ -151,11 +151,19 @@ func (c *commandFleetActivate) run(ctx context.Context) error {
 	// leaves an activated Fleet with public_url set to a URL that does not
 	// work yet - which is exactly what has to be fixed in the proxy, and the
 	// dashboard's Settings page can re-test and change it.
+	//
+	// A failure is NOT returned here. Setup below is what makes the fleet
+	// usable -- the first target, template, group and the enrollment
+	// one-liner -- and skipping it would leave an activated fleet that cannot
+	// enroll anything, while the error text says only that the proxy needs
+	// fixing. The probe result is carried to the end of the function instead,
+	// so the operator gets the whole setup AND a non-zero exit.
+	var verifyErr error
+
 	if c.verifyURL {
-		if err := s.VerifyPublicURL(ctx, c.publicURL); err != nil {
-			return errors.Wrapf(err, "fleet is activated and %s is stored as its public URL, but nothing there answers as this Fleet; fix the proxy and re-test the URL in Settings (or change it there)", c.publicURL)
+		if verifyErr = s.VerifyPublicURL(ctx, c.publicURL); verifyErr == nil {
+			fmt.Fprintf(c.out.stdout(), "Public URL %s answers as this Fleet.\n", c.publicURL) //nolint:errcheck
 		}
-		fmt.Fprintf(c.out.stdout(), "Public URL %s answers as this Fleet.\n", c.publicURL) //nolint:errcheck
 	} else if c.publicURL != "" {
 		fmt.Fprintf(c.out.stdout(), "Public URL: %s\n", c.publicURL) //nolint:errcheck
 	}
@@ -174,6 +182,13 @@ func (c *commandFleetActivate) run(ctx context.Context) error {
 	}
 
 	fmt.Fprintln(c.out.stdout(), "Start the server with 'warphold server start' and sign in at /api/v1/fleet/session.") //nolint:errcheck
+
+	// Last, so everything above has already happened and been printed: the
+	// fleet is activated and fully set up, and only the public URL does not
+	// answer yet.
+	if verifyErr != nil {
+		return errors.Wrapf(verifyErr, "fleet is activated and set up, and %s is stored as its public URL, but nothing there answers as this Fleet; fix the proxy and re-test the URL in Settings (or change it there)", c.publicURL)
+	}
 
 	return nil
 }

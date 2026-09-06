@@ -857,3 +857,45 @@ func TestServerStartRefusesWhenTheStateDirIsLocked(t *testing.T) {
 	require.Contains(t, joined, "already serving", "the message must say what is wrong")
 	require.Contains(t, joined, fleet.PathsFor(stateDir).LockFile, "and name the lock file")
 }
+
+// A failing --verify-public-url used to return before SetupDefaults, so a
+// fleet behind a not-yet-working proxy came out activated but with no target,
+// no template, no group and no enrollment one-liner -- while the error text
+// said only that the proxy needed fixing. The command still fails, but the
+// setup it was in the middle of now completes first.
+func TestFleetActivateStillCreatesDefaultsWhenTheProbeFails(t *testing.T) {
+	notFleet := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"activated":false}`)) //nolint:errcheck
+	}))
+	defer notFleet.Close()
+
+	runner := testenv.NewInProcRunner(t)
+	e := testenv.NewCLITest(t, nil, runner)
+
+	stdout, stderr := e.RunAndExpectFailure(t, "fleet", "activate",
+		"--email", "hody@hody.dev",
+		"--admin-password", "pw12345678",
+		"--passphrase", "seal-me-please",
+		"--public-url", notFleet.URL,
+		"--verify-public-url")
+
+	require.Contains(t, strings.Join(stderr, "\n"), "did not answer as an activated WarpHold Fleet",
+		"the probe failure is still what fails the command")
+
+	// The one-liner is the proof that setup ran to the end.
+	require.Contains(t, strings.Join(stdout, "\n"), "Enrollment token (paste when prompted): wh_")
+
+	st, err := store.Open(filepath.Join(fleet.StateDirFor(fleetConfigFile(e)), "fleet.db"))
+	require.NoError(t, err)
+
+	defer st.Close() //nolint:errcheck // test cleanup
+
+	targets, err := st.Targets(t.Context())
+	require.NoError(t, err)
+	require.Len(t, targets, 1, "the first target exists even though the proxy does not answer")
+
+	groups, err := st.Groups(t.Context())
+	require.NoError(t, err)
+	require.Len(t, groups, 1)
+}

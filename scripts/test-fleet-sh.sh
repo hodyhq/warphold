@@ -60,7 +60,7 @@ sed "s/^[0-9a-f]\{64\}/$(printf 'f%.0s' $(seq 64))/" \
   "$WORK/rel/download/v$VER/checksums.txt" > "$WORK/rel/download/v$VER-bad/checksums.txt"
 
 PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
-python3 -m http.server "$PORT" --directory "$WORK/rel" >"$WORK/http.log" 2>&1 &
+python3 -m http.server "$PORT" --bind 127.0.0.1 --directory "$WORK/rel" >"$WORK/http.log" 2>&1 &
 SERVER_PID=$!
 for _ in $(seq 50); do
   curl -fsS "http://127.0.0.1:$PORT/download/v$VER/checksums.txt" >/dev/null 2>&1 && break
