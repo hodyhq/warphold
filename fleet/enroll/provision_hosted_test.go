@@ -195,6 +195,43 @@ func TestProvisionHostedDisablesTheKeyWhenTheRepositoryFails(t *testing.T) {
 	require.ErrorIs(t, err, store.ErrNotFound)
 }
 
+// A cloud-direct target has nothing on disk for rollback to clean up -
+// RemoveHostedRepository no-ops without a HostedRoot - so the only thing left
+// to unwind is the device key, exactly as for a disk target.
+func TestProvisionCloudDirectDisablesTheKeyWhenTheRepositoryFails(t *testing.T) {
+	ctx := context.Background()
+	st := seedAgent(t, "ag_c1")
+
+	const adminSecret = "admin-secret-do-not-leak"
+
+	objs, err := gateway.NewCloud(ctx, blob.ConnectionInfo{Type: "s3", Config: &s3.Options{
+		BucketName: "customer-bucket", Region: "us-east-1", Endpoint: "s3.example.invalid",
+		AccessKeyID: "AKIDADMINADMINADMIN", SecretAccessKey: adminSecret,
+	}}, "")
+	require.NoError(t, err)
+
+	boom := errors.New("bucket is on fire")
+	p := &enroll.Provisioner{
+		Owner: "fleet@" + publicHost, Store: st, SealKey: sealKey,
+		HostedCloudStore:     func(ctx context.Context) (gateway.ObjectStore, error) { return objs, nil },
+		InitializeForTesting: func(ctx context.Context, ci blob.ConnectionInfo, password string) error { return boom },
+	}
+
+	spec := enroll.TargetSpec{Kind: "hosted", StorageMode: "cloud", PublicHost: publicHost, TLS: true}
+	_, err = p.Provision(ctx, spec, "ag_c1")
+	require.ErrorIs(t, err, boom)
+	require.NotContains(t, err.Error(), adminSecret, "the admin secret must never reach an error string")
+	require.NotContains(t, err.Error(), "AKIDADMINADMINADMIN", "the admin key id must never reach an error string")
+
+	keys, err := st.DeviceKeysForAgent(ctx, "ag_c1")
+	require.NoError(t, err)
+	require.Len(t, keys, 1, "the row is kept, disabled - never deleted, so the id is not reissued")
+	require.NotNil(t, keys[0].DisabledAt, "an orphaned gateway key must not stay usable")
+
+	_, err = st.DeviceKey(ctx, keys[0].AccessKeyID)
+	require.ErrorIs(t, err, store.ErrNotFound)
+}
+
 func TestProvisionHostedRejectsAnIncompleteTarget(t *testing.T) {
 	ctx := context.Background()
 	st := seedAgent(t, "ag_h1")

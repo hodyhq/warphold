@@ -31,10 +31,11 @@ type testMirror struct {
 }
 
 type mirrorCounters struct {
-	mu      sync.Mutex
-	deletes int
-	puts    []string
-	putErr  func(key string) error
+	mu         sync.Mutex
+	deletes    int
+	puts       []string
+	overwrites []bool
+	putErr     func(key string) error
 }
 
 func (m *testMirror) Delete(ctx context.Context, key string) error {
@@ -48,6 +49,7 @@ func (m *testMirror) Delete(ctx context.Context, key string) error {
 func (m *testMirror) Put(ctx context.Context, key string, r io.Reader, size int64, overwrite bool) (gateway.ObjectInfo, error) {
 	m.c.mu.Lock()
 	m.c.puts = append(m.c.puts, key)
+	m.c.overwrites = append(m.c.overwrites, overwrite)
 	fail := m.c.putErr
 	m.c.mu.Unlock()
 
@@ -65,6 +67,15 @@ func (c *mirrorCounters) snapshot() (deletes int, puts []string) {
 	defer c.mu.Unlock()
 
 	return c.deletes, append([]string(nil), c.puts...)
+}
+
+// putModes reports the overwrite flag of every upload, which is what decides
+// whether the request carries If-None-Match.
+func (c *mirrorCounters) putModes() []bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return append([]bool(nil), c.overwrites...)
 }
 
 // mirrorFixture is a hosted disk target, its local root and a stand-in mirror.
@@ -242,6 +253,35 @@ func TestMirrorUploadsOnlyWhatIsMissing(t *testing.T) {
 	require.Len(t, puts, 3, "the second run put nothing")
 }
 
+// B2's S3 endpoint refuses If-None-Match outright, so a mirror on it must
+// upload with plain PUTs or every write would 501. The bucket's Object Lock,
+// and this job being the bucket's only writer, are what keep that append-only;
+// a target that never recorded the answer keeps the conditional write.
+func TestMirrorUsesPlainPutsWithoutConditionalWrites(t *testing.T) {
+	for name, tc := range map[string]struct {
+		cond *bool
+		want bool
+	}{
+		"provider has no conditional write": {cond: new(bool), want: true},
+		"provider enforces it":              {cond: ptrTo(true), want: false},
+		"never probed":                      {cond: nil, want: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newMirrorFixture(t, func(tg *store.Target) { tg.MirrorConditionalPut = tc.cond })
+			seedAgents(t, f.st, "dev1")
+
+			f.write(t, f.dir, "dev1/p001", "pack one")
+
+			_, err := f.run(t)
+			require.NoError(t, err)
+			require.Equal(t, []bool{tc.want}, f.counters.putModes())
+			require.Equal(t, contents(t, f.dir), contents(t, f.mirror))
+		})
+	}
+}
+
+func ptrTo[T any](v T) *T { return &v }
+
 func TestMirrorRecordsPerDeviceProgress(t *testing.T) {
 	f := newMirrorFixture(t, nil)
 	seedAgents(t, f.st, "dev1", "dev2")
@@ -330,19 +370,39 @@ func TestMirrorContinuesAfterADeviceFails(t *testing.T) {
 	require.ErrorIs(t, err, store.ErrNotFound)
 }
 
+// A key the mirror already has is treated as mirrored two different ways:
+// the pre-upload listing catches most of them, but a key uploaded by a
+// racing run between that listing and this one's own Put is caught by Put
+// itself returning ErrExists. Both must count as skipped, and neither must
+// ever reach Delete.
 func TestMirrorTreatsAnExistingKeyAsMirrored(t *testing.T) {
 	f := newMirrorFixture(t, nil)
 	seedAgents(t, f.st, "dev1")
 
-	f.write(t, f.dir, "dev1/p001", "raced")
-	// Written behind the listing's back, the way a racing run would.
-	f.write(t, f.mirror, "dev1/p001", "raced")
-
-	f.counters.putErr = func(string) error { return gateway.ErrExists }
+	f.write(t, f.dir, "dev1/p001", "first")
 
 	detail, err := f.run(t)
 	require.NoError(t, err)
-	require.Equal(t, "0 objects, 0 bytes, 1 skipped", detail)
+	require.Equal(t, "1 objects, 5 bytes, 0 skipped", detail)
+
+	deletes, _ := f.counters.snapshot()
+	require.Zero(t, deletes)
+
+	// A second local object appears. Nothing pre-seeds the mirror with it, so
+	// the listing does not know about it either -- upload is attempted, and
+	// Put itself fails with ErrExists, the way it would if another run's
+	// upload landed the key first.
+	f.write(t, f.dir, "dev1/p002", "second")
+	f.counters.putErr = func(string) error { return gateway.ErrExists }
+
+	detail, err = f.run(t)
+	require.NoError(t, err)
+	// p001 is skipped via the pre-upload listing (the first run's real Put
+	// left it in the mirror); p002 is skipped via Put's ErrExists.
+	require.Equal(t, "0 objects, 0 bytes, 2 skipped", detail)
+
+	deletes, _ = f.counters.snapshot()
+	require.Zero(t, deletes, "the mirror job must never delete")
 }
 
 func TestMirrorIgnoresTargetsWithoutADiskMirror(t *testing.T) {

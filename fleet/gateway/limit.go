@@ -141,7 +141,12 @@ func ClientIP(r *http.Request, trusted []net.IPNet) string {
 		return peer
 	}
 
-	hops := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
+	// Header.Get returns only the first header line; a proxy that appends
+	// its hop as a separate line (net/http/httputil.ReverseProxy does, via
+	// Header.Add) rather than extending one comma-joined line would
+	// otherwise have that hop silently invisible here. Values() collects
+	// every line, joined in order, before splitting on commas.
+	hops := strings.Split(strings.Join(r.Header.Values("X-Forwarded-For"), ","), ",")
 	for i := len(hops) - 1; i >= 0; i-- {
 		ip := net.ParseIP(strings.Trim(strings.TrimSpace(hops[i]), "[]"))
 		if ip == nil {

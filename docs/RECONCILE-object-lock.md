@@ -9,10 +9,11 @@
 - **Headline result: claim 2 fails.** B2's S3 endpoint does not merely *not enforce*
   `If-None-Match: *` (the "200 twice" case this file anticipated) — it refuses the header
   outright with `501 NotImplemented` on the very first PUT. Object Lock itself (claims 1
-  and 3) is genuinely enabled and correctly reported by both APIs. Net effect: this bucket
-  cannot back a cloud-direct target *or* a disk+mirror target through Fleet's current
-  `verifyBucket`, because that path requires the conditional-write probe to pass
-  unconditionally, for both target shapes.
+  and 3) is genuinely enabled and correctly reported by both APIs. Net effect *as measured*:
+  this bucket could back neither a cloud-direct target nor a disk+mirror target, because
+  `verifyBucket` then required the conditional-write probe unconditionally for both target
+  shapes. **That has since been changed for mirrors only — see "What WarpHold does about
+  it" below.**
 - **Answers:** spec §14.5 (Object Lock verification per provider) and the second half of
   §14 note 00 (whether B2's S3 endpoint really enforces `If-None-Match: *`).
 - **Consumed by:** Task 12 (mirror and cloud-direct verification), Task 13 (the mirror job),
@@ -189,15 +190,44 @@ call. A plain PUT (no conditional header, but with `Content-MD5` — required on
 is on, discovered live: without it B2 answers `400 InvalidRequest`) succeeds normally and
 returns a version ID, so the bucket and key are otherwise fully writable.
 
-> A `200` on the second PUT (B2 silently not enforcing the precondition) would have meant one
-> thing; a `501` on the *first* PUT (B2 rejecting conditional writes as a feature) means
-> another, but the consequence is the same either way: `ProbeConditionalPut` returns a non-nil
-> error, target creation answers `400 …`, and B2 is **off the table** for both cloud-direct
-> *and* disk+mirror hosted targets under Fleet's current `verifyBucket` — it requires the
-> conditional-write probe unconditionally for both shapes (`fleet/api/admin_targets.go`
-> `applyHostedDisk`/`applyHostedCloud`, both call `verifyBucket`). Fleet disk **without** a
-> configured mirror remains the only supported shape against this provider today. Raise it
-> with Backblaze if this matters, do not soften the check.
+### What WarpHold does about it
+
+The two failure modes are **not** the same fact about a provider, and the code no longer
+treats them as one:
+
+- A `200` on the second PUT means the bucket *took* the precondition and overwrote anyway.
+  It lies, so nothing may be built on it — `ProbeConditionalPut` returns
+  `ErrNoConditionalPut` and **both** target shapes are still refused.
+- A `501` on the *first* PUT means the provider has no conditional write at all (B2).
+  `ProbeConditionalPut` returns the separate `ErrCondPutNotImplemented`, and verification
+  splits by shape:
+  - **Mirror on a hosted disk target: allowed.** Object Lock is still required. The
+    conditional write is not, because the Fleet server is the mirror bucket's only writer
+    and `fleet/jobs/mirror.go` lists the mirror before it uploads and skips what is already
+    there; a superseded version is retained by Object Lock — so `If-None-Match` buys nothing
+    there that Object Lock does not already give. The answer is
+    *recorded*, not required: `targets.mirror_conditional_put` (NULL = never probed) and
+    `mirror_conditional_put` on the API's target row and 201 body, so the Targets screen can
+    say "offsite: locked, no conditional writes" rather than imply the stronger guarantee.
+    The mirror job then uploads with a plain PUT on such a provider, since a conditional one
+    would 501 on the header itself. A mirror configured before that column existed reads
+    NULL, which keeps the conditional write; re-PUTting `/api/v1/fleet/targets/{id}/mirror`
+    re-verifies the bucket and records the answer.
+  - **Cloud-direct: still refused.** There the *devices* write to the bucket themselves, and
+    nothing but the provider can stop two writers clobbering one key. The 400 now says so
+    and names S3-compatible providers that do implement it (AWS S3, Cloudflare R2, MinIO).
+
+Every other outcome — a network error, a 5xx that is not 501 — says nothing about the bucket
+and stays a plain error, for both shapes.
+
+Two further consequences of the live run are also in the code: a bucket with Object Lock on
+requires `Content-MD5` on every PUT, which the cloud backend already sends on both the
+conditional and the overwrite path (including the >8 MiB spooled path, hashed off the spool
+file rather than buffered), and a mirror can now be attached or replaced on an existing
+target through `PUT /api/v1/fleet/targets/{id}/mirror` instead of only at create time.
+
+Still worth raising with Backblaze; a provider-side `If-None-Match` would let the same bucket
+back a cloud-direct target too.
 
 ### 2.4 End to end, through Fleet
 
@@ -235,10 +265,12 @@ rejection is the conditional-write probe alone, exactly matching the raw SigV4 r
 §2.3. No unlocked bucket was available to exercise the "does not have Object Lock enabled"
 branch this run.
 
-**Consequence for Task 15 (attach a mirror to the live hosted target):** blocked by design,
-not by a config mistake. `hosted-disk` (target id 2) still has no mirror configured. No
-workaround target was created and no source was changed, per instructions — this file's own
-guidance is to raise the finding, not soften the check. The scheduler's periodic `mirror` job
+**Consequence for Task 15 (attach a mirror to the live hosted target):** blocked at the time
+by design, not by a config mistake — `hosted-disk` (target id 2) still had no mirror
+configured, no workaround target was created and no source was changed on that run. The
+verification rule and the missing attach route have since been changed (see "What WarpHold
+does about it"), so re-running this against the same bucket should now answer `200` with
+`mirror_conditional_put: false`. The scheduler's periodic `mirror` job
 (no manual enqueue route/CLI exists either — see Task 15 report) still runs on its own
 interval regardless of whether any target has a mirror configured, and it did: job id 1,
 `2026-09-03T10:57:50Z`, status `ok`, detail `"0 objects, 0 bytes, 0 skipped"` — the correct

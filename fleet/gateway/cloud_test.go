@@ -36,8 +36,18 @@ type fakeS3 struct {
 	times map[string]time.Time
 
 	// ignorePrecondition makes the server accept a second conditional PUT, the
-	// way a store that does not implement If-None-Match would.
+	// way a store that takes the header and does not honour it would.
 	ignorePrecondition bool
+
+	// condPutUnsupported is Backblaze B2's S3 endpoint: a PUT that carries
+	// If-None-Match at all is refused with 501 NotImplemented, on the first
+	// write, before anything is stored (RECONCILE-object-lock.md §2.3).
+	condPutUnsupported bool
+
+	// locked is a bucket with Object Lock turned on, which on B2 makes
+	// Content-MD5 mandatory on every PUT: without it the write is refused with
+	// 400 InvalidRequest (RECONCILE-object-lock.md §2.3, "bonus finding").
+	locked bool
 
 	// conditionalPuts counts the PUTs that carried If-None-Match: *.
 	conditionalPuts int
@@ -145,6 +155,17 @@ func (f *fakeS3) put(w http.ResponseWriter, r *http.Request, key string) {
 
 	if r.Header.Get("Content-Md5") == "" {
 		f.putsWithoutMD5++
+
+		if f.locked {
+			w.WriteHeader(http.StatusBadRequest)
+			fakeXML(w, struct {
+				XMLName xml.Name `xml:"Error"`
+				Code    string
+				Message string
+			}{Code: "InvalidRequest", Message: "Content-MD5 is required for buckets with Object Lock enabled"})
+
+			return
+		}
 	}
 
 	if inm := r.Header.Get("If-None-Match"); inm != "" {
@@ -155,6 +176,17 @@ func (f *fakeS3) put(w http.ResponseWriter, r *http.Request, key string) {
 		}
 
 		f.conditionalPuts++
+
+		if f.condPutUnsupported {
+			w.WriteHeader(http.StatusNotImplemented)
+			fakeXML(w, struct {
+				XMLName xml.Name `xml:"Error"`
+				Code    string
+				Message string
+			}{Code: "NotImplemented", Message: "A header you provided implies functionality that is not implemented"})
+
+			return
+		}
 
 		if _, ok := f.objs[key]; ok && !f.ignorePrecondition {
 			// The real S3 error body, so the client's XML branch is what maps
@@ -750,6 +782,46 @@ func TestProbeConditionalPut(t *testing.T) {
 	ignoring := &fakeS3{ignorePrecondition: true}
 	require.ErrorIs(t, ProbeConditionalPut(t.Context(), testCI(t, ignoring), testPrefix), ErrNoConditionalPut)
 	require.Empty(t, ignoring.stored(), "the probe object is deleted even when the check fails")
+}
+
+// B2's S3 endpoint answers 501 to the *first* conditional PUT. That is a
+// different verdict from "took the header and overwrote anyway": a mirror-only
+// target may be built on it, so it must not collapse into ErrNoConditionalPut
+// or into a generic transport error.
+func TestProbeConditionalPutNotImplemented(t *testing.T) {
+	f := &fakeS3{condPutUnsupported: true, objectLock: "Enabled", locked: true}
+
+	err := ProbeConditionalPut(t.Context(), testCI(t, f), testPrefix)
+	require.ErrorIs(t, err, ErrCondPutNotImplemented)
+	require.NotErrorIs(t, err, ErrNoConditionalPut)
+	require.Empty(t, f.stored(), "nothing is left behind by a refused probe")
+
+	cond, noMD5, _ := f.counts()
+	require.Equal(t, 1, cond, "the probe stops at the first refusal")
+	require.Zero(t, noMD5, "even the probe carries Content-MD5, which a locked bucket requires")
+}
+
+// A bucket with Object Lock on refuses any PUT without Content-MD5 (B2 does).
+// Every write this backend makes must carry one - including the spooled path,
+// where the body is bigger than spoolAbove and never fully held in memory.
+func TestCloudPutSendsContentMD5ToALockedBucket(t *testing.T) {
+	s, f := newStore(t, &fakeS3{locked: true, objectLock: "Enabled"})
+
+	_, err := put(t, s, "dev1/small", "warphold", false)
+	require.NoError(t, err)
+
+	big := strings.Repeat("w", spoolAbove+1024)
+	_, err = put(t, s, "dev1/spooled", big, false)
+	require.NoError(t, err)
+
+	// An overwrite is a different PutObjectOptions; it needs the header too.
+	_, err = put(t, s, "dev1/small", "warphold2", true)
+	require.NoError(t, err)
+
+	_, noMD5, multipart := f.counts()
+	require.Zero(t, noMD5, "a locked bucket refuses a PUT without Content-MD5")
+	require.Zero(t, multipart)
+	require.Equal(t, big, string(f.stored()[testPrefix+"dev1/spooled"]))
 }
 
 func TestProbeObjectLock(t *testing.T) {

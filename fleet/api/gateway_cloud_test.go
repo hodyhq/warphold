@@ -44,6 +44,11 @@ type fakeBucket struct {
 	// If-None-Match: *. The second must stay zero: that precondition is the
 	// append-only guarantee the hosted gateway relies on.
 	conditional, unconditional int
+
+	// rejectPUTStatus, when non-zero, fails every PUT with this status before
+	// touching objs - simulating a bucket that never accepts the write, so a
+	// caller can pin what a mid-provisioning failure leaves behind.
+	rejectPUTStatus int
 }
 
 // putCounts reports how many PUTs carried the append-only precondition, and
@@ -83,6 +88,11 @@ func (f *fakeBucket) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodPut:
+		if f.rejectPUTStatus != 0 {
+			http.Error(w, "", f.rejectPUTStatus)
+			return
+		}
+
 		if r.Header.Get("If-None-Match") == "*" {
 			f.conditional++
 
