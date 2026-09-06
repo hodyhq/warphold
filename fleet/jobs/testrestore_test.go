@@ -81,7 +81,10 @@ func TestTestRestoreIsFineWithAnAgentThatHasNoSnapshots(t *testing.T) {
 	fx.provision(t, "ag_new")
 
 	detail, err := TestRestore(fx.st, fx.key.Open, nil)(ctx, store.Job{Kind: "test-restore"})
-	require.Error(t, err)
+	// ErrSkipped, not a bare error: the scheduler maps it to status "skipped",
+	// so a fleet whose devices have not snapshotted yet is not escalated as a
+	// failing job by the digest.
+	require.ErrorIs(t, err, ErrSkipped)
 	require.Contains(t, detail, "restored 0/1 ok; 0 failed; 1 skipped")
 	require.Contains(t, detail, "ag_new: no finished snapshot yet")
 }

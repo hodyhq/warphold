@@ -318,11 +318,20 @@ func (s *sweep) detail() string {
 }
 
 func (s *sweep) err() error {
-	if len(s.errs) == 0 && s.skipped == 0 {
-		return nil
+	switch {
+	case len(s.errs) > 0:
+		return errors.New(s.verb + " did not complete for every device")
+	case s.skipped > 0:
+		// Non-ok, but not a failure: nothing was verified for those devices
+		// and the digest has to say so, yet the scheduler already models this
+		// (ErrSkipped -> status "skipped"). Returning a bare error instead
+		// would record a fresh fleet - every device still waiting on its
+		// first snapshot - as a failed job, which digest's failingFor then
+		// escalates.
+		return fmt.Errorf("%s verified no device: %w", s.verb, ErrSkipped)
 	}
 
-	return errors.New(s.verb + " did not complete for every device")
+	return nil
 }
 
 // perAgent is the shape all three repository jobs share: open each agent's
