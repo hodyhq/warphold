@@ -6,7 +6,7 @@
 
 **Architecture:** Part A adds the missing release/ops pieces to the Go code (NOTICE, README, `/dl/` route, server-side sessions + admin management, an engine info file + local session handoff for the tray). Part B deploys: clone the cloud-init template, one Traefik route file, `warphold server start` as a systemd service, activation, targets, enrollment of the laptop. Part C forks `kopia/htmlui` into `hodyhq/warphold-ui` (source + committed `build/` + a one-function Go module), swaps the one import line in the server, and builds the screens from the approved prototype. Part D is the tray and the agent-mode page served by the agent's own engine.
 
-**Tech Stack:** Go 1.26 (mise), React 19 + Vite 7 + TypeScript for new code, Tailwind v4, self-hosted OFL fonts (Unbounded, Space Grotesk, Space Mono), `fyne.io/systray` (pure Go on Linux via D-Bus), Proxmox (`qm` over `ssh pve1`), Traefik conf.d, systemd.
+**Tech Stack:** Go 1.26 (mise), React 19 + Vite 7 + TypeScript for new code, Tailwind v4, self-hosted OFL fonts (Unbounded, Space Grotesk, Space Mono), `fyne.io/systray` (pure Go on Linux via D-Bus), Proxmox (`qm` over `ssh <PVE_HOST>`), Traefik conf.d, systemd.
 
 **Spec:** `docs/superpowers/specs/2026-09-01-warphold-core-fleet-design.md` (§3.1 repos/binaries, §3.4 agent + tray, §7 security, §9 UI, §13 milestones M4/M5/M8). **Visual reference (binding for layout, copy, tokens):** `docs/superpowers/design/*.dc.html` + `docs/superpowers/design/README.md`. **Ledger of Plan 1:** carried items are listed in "Carried from Plan 1" below.
 
@@ -345,10 +345,10 @@ Conventions (from `Homelab/99-Reference/VM-Cloud-Init-Template.md` and the live 
 
 **Files (vault):** `Homelab/WarpHold/WarpHold-Full-Dev-Guide.md` (build log), `Homelab/Planning/Claude-Project-Info.md` (+ row), `Homelab/00-Index/00-Homelab-Index.md` (+ entry)
 
-- [ ] **Step 1: Clone and configure (on pve1)**
+- [ ] **Step 1: Clone and configure (on the Proxmox host)**
 
 ```bash
-ssh pve1 '
+ssh <PVE_HOST> '
 qm clone 9000 140 --name fleet --full --storage tank &&
 qm set 140 --memory 4096 --cores 2 --onboot 1 &&
 qm resize 140 scsi0 +28G &&
@@ -416,7 +416,7 @@ Expected: `{"activated":true}`. Store `admin_password` in the same 1Password ite
 Write `/etc/traefik/conf.d/fleet.yml` on CT 101 by copying `plane.yml`'s shape exactly (router `fleet`, `Host(\`<FLEET_HOST>\`)`, `websecure`, `certResolver: letsencrypt`, service url `http://<FLEET_IP>:51515`, `passHostHeader: true`). Write it with `pct push` of a file created locally with the Write tool — never a shell heredoc (the vault's YAML-escaping incident). Then:
 
 ```bash
-ssh pve1 'pct exec 101 -- sh -c "sleep 3; curl -s -o /dev/null -w %{http_code} http://127.0.0.1:8080/api/http/routers/plane@file; echo; curl -s http://127.0.0.1:8080/api/http/routers/fleet@file | head -c 300"'
+ssh <PVE_HOST> 'pct exec 101 -- sh -c "sleep 3; curl -s -o /dev/null -w %{http_code} http://127.0.0.1:8080/api/http/routers/plane@file; echo; curl -s http://127.0.0.1:8080/api/http/routers/fleet@file | head -c 300"'
 curl -s https://<FLEET_HOST>/api/v1/fleet/status
 ```
 Expected: plane router still 200 (proves the file provider did not drop everything), fleet router present, HTTPS status returns `{"activated":true}` with a valid LE cert.
@@ -440,7 +440,7 @@ Expected: plane router still 200 (proves the file provider did not drop everythi
 ### Task 8: Monitoring and backups of the Fleet server
 
 - [ ] Uptime Kuma (`ssh monitor`): add an HTTPS keyword monitor for `https://<FLEET_HOST>/api/v1/fleet/status` expecting `"activated":true`, 2-minute interval, notify like the other monitors.
-- [ ] PBS: confirm VM 140 is included in the nightly backup job (`ssh pve1 'cat /etc/pve/jobs.cfg'`; if the job enumerates VMIDs, add 140); note that `/srv/warphold/repos` lives on the VM's data disk and is therefore in the PBS backup (Kopia repos are dedup-friendly but large; watch datastore growth).
+- [ ] PBS: confirm VM 140 is included in the nightly backup job (`ssh <PVE_HOST> 'cat /etc/pve/jobs.cfg'`; if the job enumerates VMIDs, add 140); note that `/srv/warphold/repos` lives on the VM's data disk and is therefore in the PBS backup (Kopia repos are dedup-friendly but large; watch datastore growth).
 - [ ] homelab dashboard card: follow `homelab-dashboard-homepage` memory (diff against the live page before pushing).
 - [ ] Vault: Admin-Overview "Backup/restore of the Fleet server itself" (PBS restore of VM 140 restores both state and repos; the sealing key file is inside `/var/lib/warphold/fleet/`), `INGEST` line.
 
