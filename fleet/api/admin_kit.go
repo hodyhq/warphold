@@ -80,6 +80,21 @@ func (s *Server) handleAgentKitRegenerate(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Only a hosted target has a per-device read-only key to invalidate. A
+	// filesystem or b2 kit carries the target's own reader credential, which
+	// this cannot rotate, so answering 204 would tell an admin who just lost a
+	// printed kit that it had been retired when nothing had happened.
+	t, err := s.targetForAgent(ctx, *a)
+	if err != nil {
+		adminFailed(w, "read the device's target", err)
+		return
+	}
+
+	if t.Kind != "hosted" {
+		writeErr(w, http.StatusConflict, "only devices on a hosted target have a kit key to regenerate")
+		return
+	}
+
 	if _, err := s.kitData(ctx, a, true); err != nil {
 		adminFailed(w, "regenerate recovery kit key", err)
 		return
@@ -109,12 +124,7 @@ func (s *Server) handleAgentKitAck(w http.ResponseWriter, r *http.Request) {
 // kitData assembles the page's contents from the agent's sealed bundle and its
 // target. rotate forces a fresh read-only key for a hosted target.
 func (s *Server) kitData(ctx context.Context, a *store.Agent, rotate bool) (kit.Data, error) {
-	g, err := s.store().Group(ctx, a.GroupID)
-	if err != nil {
-		return kit.Data{}, err
-	}
-
-	t, err := s.store().Target(ctx, g.TargetID)
+	t, err := s.targetForAgent(ctx, *a)
 	if err != nil {
 		return kit.Data{}, err
 	}

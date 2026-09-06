@@ -218,3 +218,22 @@ func TestRecoveryKitForFilesystemTarget(t *testing.T) {
 	require.Contains(t, page, password)
 	require.NotRegexp(t, kitCreds, page, "a filesystem kit has no gateway credentials")
 }
+
+// A filesystem or b2 kit carries the target's own reader credential, which
+// regenerate cannot rotate. It used to answer 204 anyway, which told an admin
+// chasing a printed kit that had walked out that the key was retired when
+// nothing had changed. It refuses now.
+func TestRecoveryKitRegenerateRefusesANonHostedTarget(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+	id, _ := enrollInto(t, h, mirrorGroup(t, h), "laptop-1")
+
+	resp, body := h.do("POST", "/api/v1/fleet/agents/"+id+"/kit/regenerate", nil)
+	require.Equal(t, 409, resp.StatusCode)
+	require.Contains(t, body["error"], "hosted target")
+
+	// The kit itself is still served -- only the rotation is refused.
+	res, page := h.getRaw("/api/v1/fleet/agents/" + id + "/kit")
+	require.Equal(t, 200, res.StatusCode)
+	require.NotEmpty(t, page)
+}

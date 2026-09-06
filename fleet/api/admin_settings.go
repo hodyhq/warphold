@@ -60,6 +60,14 @@ type settingsOut struct {
 	// SMTPPasswordSet is all the UI ever learns about the password: the
 	// value itself is sealed at rest and never leaves the server.
 	SMTPPasswordSet bool `json:"smtp_password_set"`
+
+	// JobIntervals is every scheduled job's cadence in seconds, keyed by the
+	// setting name the scheduler reads it from, and carrying the default for
+	// a kind nobody has configured. It is one object rather than a field per
+	// kind on purpose: it is generated from fleet/jobs' own interval table, so
+	// a job added there shows up here - and becomes writable below - with no
+	// second edit that could be forgotten.
+	JobIntervals map[string]int `json:"job_intervals"`
 }
 
 func (s *Server) currentSettings(ctx context.Context) (settingsOut, error) {
@@ -107,6 +115,7 @@ func (s *Server) currentSettings(ctx context.Context) (settingsOut, error) {
 		SMTPFrom:             sm.From,
 		SMTPTLS:              sm.TLS,
 		SMTPPasswordSet:      pwSet,
+		JobIntervals:         jobs.IntervalSeconds(ctx, s.store()),
 	}, nil
 }
 
@@ -306,6 +315,27 @@ func (s *Server) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 			}
 			writes[mail.PasswordKey] = ""
 		default:
+			if iv, isInterval := jobs.IntervalSettings()[key]; isInterval {
+				var secs int
+				if err := json.Unmarshal(raw, &secs); err != nil {
+					writeErr(w, http.StatusBadRequest, key+" must be a whole number of seconds")
+					return
+				}
+
+				// The scheduler's own floor, not a second opinion: a value it
+				// would silently clamp is rejected here instead, so the number
+				// the settings screen shows back is the number that runs.
+				if secs < iv.MinSeconds || secs > iv.MaxSeconds {
+					writeErr(w, http.StatusBadRequest,
+						key+" must be between "+strconv.Itoa(iv.MinSeconds)+" and "+strconv.Itoa(iv.MaxSeconds)+" seconds")
+					return
+				}
+
+				writes[key] = strconv.Itoa(secs)
+
+				continue
+			}
+
 			spec, isRate := rateSettings[key]
 			if !isRate {
 				writeErr(w, http.StatusBadRequest, "unknown setting: "+key)

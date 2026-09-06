@@ -23,6 +23,18 @@ type mirrorOut struct {
 	Stale         bool       `json:"stale"`
 }
 
+// targetForAgent resolves a device to the target its backups live on:
+// agent -> group -> target. Both hops fail loudly; a device whose group or
+// target has gone is a broken fleet, not an empty answer.
+func (s *Server) targetForAgent(ctx context.Context, a store.Agent) (*store.Target, error) {
+	g, err := s.store().Group(ctx, a.GroupID)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.store().Target(ctx, g.TargetID)
+}
+
 // mirrorFor resolves a device's offsite state through its group's target, or
 // nil when that target keeps no mirror.
 //

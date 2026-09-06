@@ -63,6 +63,56 @@ var intervals = map[string]interval{
 
 const day = 24 * time.Hour
 
+// maxIntervalSeconds is the ceiling on a stored cadence. It exists to stop an
+// absurd value (a hand-edited row, a fat-fingered API call) from overflowing
+// time.Duration into a negative interval, which would make the scheduler
+// enqueue that kind on every tick forever.
+const maxIntervalSeconds = 365 * 24 * 60 * 60
+
+// IntervalSetting is one scheduled kind's cadence contract: which job it
+// drives, and the bounds the scheduler clamps it to. Seconds, because that is
+// the convention the settings table stores intervals in.
+type IntervalSetting struct {
+	Kind           string `json:"kind"`
+	DefaultSeconds int    `json:"default_seconds"`
+	MinSeconds     int    `json:"min_seconds"`
+	MaxSeconds     int    `json:"max_seconds"`
+}
+
+// IntervalSettings is every cadence the scheduler keeps enqueued, keyed by the
+// setting name it is stored under. It is derived from the same `intervals` map
+// enqueueIntervals reads, so the settings API cannot come to accept a
+// different set of keys - or different bounds - from the ones the scheduler
+// actually applies, and a kind added here needs no second edit over there.
+func IntervalSettings() map[string]IntervalSetting {
+	out := make(map[string]IntervalSetting, len(intervals))
+
+	for kind, iv := range intervals {
+		out[iv.setting] = IntervalSetting{
+			Kind:           kind,
+			DefaultSeconds: int(iv.def / time.Second),
+			MinSeconds:     int(iv.min / time.Second),
+			MaxSeconds:     maxIntervalSeconds,
+		}
+	}
+
+	return out
+}
+
+// IntervalSeconds is the cadence every interval setting is actually running
+// at: the stored value where one is set and in range, the default otherwise.
+// It reads through intervalFor, so what the settings screen shows is what the
+// next tick will use.
+func IntervalSeconds(ctx context.Context, st *store.Store) map[string]int {
+	out := make(map[string]int, len(intervals))
+
+	for _, iv := range intervals {
+		out[iv.setting] = int(intervalFor(ctx, st, iv) / time.Second)
+	}
+
+	return out
+}
+
 // Scheduler runs due jobs, one at a time.
 //
 // ponytail: one job at a time, one goroutine; parallelise per-kind only if a
@@ -267,6 +317,13 @@ func intervalFor(ctx context.Context, st *store.Store, iv interval) time.Duratio
 	secs, err := strconv.Atoi(v)
 	if err != nil {
 		return iv.def
+	}
+
+	// Clamped at both ends, not just the floor: the API validates writes, but
+	// this also reads rows written before that validation existed, and rows a
+	// human edited in sqlite3.
+	if secs > maxIntervalSeconds {
+		secs = maxIntervalSeconds
 	}
 
 	if d := time.Duration(secs) * time.Second; d >= iv.min {
