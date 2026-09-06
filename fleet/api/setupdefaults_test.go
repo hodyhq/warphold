@@ -19,7 +19,7 @@ func TestSetupDefaultsLeavesAFleetThatCanEnroll(t *testing.T) {
 	h := newHarness(t)
 	h.activateAndLogin()
 
-	hostedRoot := filepath.Join(t.TempDir(), "hosted")
+	hostedRoot := filepath.Join(h.hostedDir(t), "hosted")
 
 	oneLiner, token, err := h.s.SetupDefaults(t.Context(), h.srv.URL, "disk", hostedRoot)
 	require.NoError(t, err)
@@ -97,7 +97,7 @@ func TestSetupDefaultsRepairsAPartialRun(t *testing.T) {
 	resp, _ := h.do("POST", "/api/v1/fleet/targets", map[string]any{"name": "Fleet disk", "kind": "filesystem", "path": t.TempDir()})
 	require.Equal(t, 201, resp.StatusCode)
 
-	oneLiner, token, err := h.s.SetupDefaults(t.Context(), "", "disk", filepath.Join(t.TempDir(), "hosted"))
+	oneLiner, token, err := h.s.SetupDefaults(t.Context(), "", "disk", filepath.Join(h.hostedDir(t), "hosted"))
 	require.NoError(t, err)
 	require.True(t, strings.HasPrefix(token, "wh_"), "the missing group was created and can enroll")
 	require.Contains(t, oneLiner, "/enroll.sh")

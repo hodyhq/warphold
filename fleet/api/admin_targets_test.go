@@ -26,7 +26,7 @@ func TestHostedTargetDiskMode(t *testing.T) {
 	h := newHarness(t)
 	h.activateAndLogin()
 
-	root := t.TempDir()
+	root := h.hostedDir(t)
 
 	resp, body := h.do("POST", "/api/v1/fleet/targets", map[string]any{
 		"name": "hosted", "kind": "hosted", "storage_mode": "disk", "path": root,
@@ -55,7 +55,7 @@ func TestHostedTargetMirrorIsSealedAndVerified(t *testing.T) {
 	c := verifiedFakes(h)
 
 	resp, _ := h.do("POST", "/api/v1/fleet/targets", map[string]any{
-		"name": "hosted", "kind": "hosted", "storage_mode": "disk", "path": t.TempDir(),
+		"name": "hosted", "kind": "hosted", "storage_mode": "disk", "path": h.hostedDir(t),
 		"mirror_kind": "b2", "mirror_bucket": "hody-offsite", "mirror_region": "us-west-004",
 		"mirror_key_id": "k", "mirror_key": "s",
 	})
@@ -110,7 +110,7 @@ func TestHostedTargetMirrorRequiresLockAndConditionalWrites(t *testing.T) {
 			h.s.SetCloudForTesting(&fakeCloud{lock: tc.lock, cond: tc.cond})
 
 			resp, body := h.do("POST", "/api/v1/fleet/targets", map[string]any{
-				"name": "hosted", "kind": "hosted", "storage_mode": "disk", "path": t.TempDir(),
+				"name": "hosted", "kind": "hosted", "storage_mode": "disk", "path": h.hostedDir(t),
 				"mirror_kind": tc.kind, "mirror_bucket": "hody-offsite", "mirror_region": "us-west-004",
 				"mirror_key_id": "k", "mirror_key": "s",
 			})
@@ -134,7 +134,7 @@ func TestHostedTargetMirrorReportsAnUnverifiableB2Key(t *testing.T) {
 	h.s.SetCloudForTesting(&fakeCloud{lock: true, cond: true})
 
 	resp, body := h.do("POST", "/api/v1/fleet/targets", map[string]any{
-		"name": "hosted", "kind": "hosted", "storage_mode": "disk", "path": t.TempDir(),
+		"name": "hosted", "kind": "hosted", "storage_mode": "disk", "path": h.hostedDir(t),
 		"mirror_kind": "b2", "mirror_bucket": "hody-offsite", "mirror_region": "us-west-004",
 		"mirror_key_id": "k", "mirror_key": "s",
 	})
@@ -154,7 +154,7 @@ func TestHostedTargetS3MirrorIsVerifiedOverS3(t *testing.T) {
 	c := verifiedFakes(h)
 
 	resp, _ := h.do("POST", "/api/v1/fleet/targets", map[string]any{
-		"name": "hosted", "kind": "hosted", "storage_mode": "disk", "path": t.TempDir(),
+		"name": "hosted", "kind": "hosted", "storage_mode": "disk", "path": h.hostedDir(t),
 		"mirror_kind": "s3", "mirror_bucket": "hody-offsite", "mirror_region": "us-east-1",
 		"mirror_key_id": "k", "mirror_key": "s",
 	})
@@ -185,7 +185,7 @@ func TestHostedTargetB2MirrorVerifiedWithoutConditionalPut(t *testing.T) {
 	h.s.SetCloudForTesting(&fakeCloud{lock: true, condUnsupported: true})
 
 	resp, body := h.do("POST", "/api/v1/fleet/targets", map[string]any{
-		"name": "hosted", "kind": "hosted", "storage_mode": "disk", "path": t.TempDir(),
+		"name": "hosted", "kind": "hosted", "storage_mode": "disk", "path": h.hostedDir(t),
 		"mirror_kind": "b2", "mirror_bucket": "hody-offsite", "mirror_region": "us-west-004",
 		"mirror_key_id": "k", "mirror_key": "s",
 	})
@@ -316,7 +316,7 @@ func TestTargetMirrorAttachAndReplace(t *testing.T) {
 	h.s.SetCloudForTesting(c)
 
 	resp, body := h.do("POST", "/api/v1/fleet/targets", map[string]any{
-		"name": "hosted", "kind": "hosted", "storage_mode": "disk", "path": t.TempDir(),
+		"name": "hosted", "kind": "hosted", "storage_mode": "disk", "path": h.hostedDir(t),
 	})
 	require.Equal(t, 201, resp.StatusCode)
 
@@ -371,7 +371,7 @@ func TestTargetMirrorRefusals(t *testing.T) {
 	cloudID := int64(body["id"].(float64))
 
 	resp, body = h.do("POST", "/api/v1/fleet/targets", map[string]any{
-		"name": "hosted", "kind": "hosted", "storage_mode": "disk", "path": t.TempDir(),
+		"name": "hosted", "kind": "hosted", "storage_mode": "disk", "path": h.hostedDir(t),
 	})
 	require.Equal(t, 201, resp.StatusCode)
 

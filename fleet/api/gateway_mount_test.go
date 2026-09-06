@@ -66,7 +66,7 @@ func TestGatewayLimitSettings(t *testing.T) {
 	require.EqualValues(t, gateway.DefaultIPRateBurst, body["gateway_ip_burst"])
 	require.EqualValues(t, gateway.DefaultRatePerSecond, body["gateway_device_rate"])
 	require.EqualValues(t, gateway.DefaultRateBurst, body["gateway_device_burst"])
-	require.Empty(t, body["trusted_proxies"])
+	require.Equal(t, "", body["trusted_proxies"])
 
 	_, body = h.do("PUT", "/api/v1/fleet/settings", map[string]any{
 		"trusted_proxies":     "10.0.0.0/8, 192.168.1.7",

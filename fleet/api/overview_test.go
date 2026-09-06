@@ -53,7 +53,7 @@ func TestOverviewRequiresAdminAndStartsEmpty(t *testing.T) {
 
 	resp, body := h.do("GET", "/api/v1/fleet/overview", nil)
 	require.Equal(t, 200, resp.StatusCode)
-	require.Empty(t, body["fleet_name"], "no fleet name set yet")
+	require.Equal(t, "", body["fleet_name"], "no fleet name set yet")
 	require.Equal(t, float64(0), body["counts"].(map[string]any)["agents"])
 	require.Equal(t, float64(0), body["counts"].(map[string]any)["targets"])
 	require.Empty(t, body["devices"])

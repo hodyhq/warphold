@@ -26,8 +26,8 @@ func TestSettingsRequiresAdminAndRoundTrips(t *testing.T) {
 
 	resp, body := h.do("GET", "/api/v1/fleet/settings", nil)
 	require.Equal(t, 200, resp.StatusCode)
-	require.Empty(t, body["fleet_name"], "no fleet name set yet")
-	require.Empty(t, body["public_url"], "no public URL set yet")
+	require.Equal(t, "", body["fleet_name"], "no fleet name set yet")
+	require.Equal(t, "", body["public_url"], "no public URL set yet")
 	require.Equal(t, float64(300), body["poll_interval"], "the agent default")
 
 	// A partial write leaves the key it does not mention alone.
