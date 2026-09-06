@@ -170,6 +170,17 @@ not use its name or logo as branding.
   to those too.
 - **The Electron desktop app (`app/`)** is upstream KopiaUI packaging. WarpHold
   neither builds nor ships it; `warphold agent tray` replaces it on Linux.
+- **Enrolling a machine that already runs the standalone app replaces its
+  service.** `warphold agent install` detects an existing user-scope
+  `warphold-app.service` and stops + disables it, since a device should run
+  one engine, not two — it prints that it did so. Nothing on disk is touched:
+  the app's repository and backups stay exactly where they were, and the
+  agent's tray replaces the app's. This only happens automatically when both
+  run as the same user; a system-scope agent install never touches a
+  user-scope app service (it can't safely guess whose session to stop) and
+  prints a warning naming both instead — disable the app yourself with
+  `systemctl --user disable --now warphold-app` if you want only one engine
+  running.
 
 ## Building and contributing
 

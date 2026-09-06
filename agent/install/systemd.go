@@ -134,6 +134,59 @@ func AppUnitPath(dir string) string {
 	return filepath.Join(dir, "systemd", "user", appUnitName)
 }
 
+// AppUnitStatus is what ResolveAppUnit found about the standalone app's unit
+// on this machine.
+type AppUnitStatus int
+
+const (
+	// AppUnitAbsent means the app was never installed here: nothing to do.
+	AppUnitAbsent AppUnitStatus = iota
+	// AppUnitSuperseded means the app unit is installed at the same (user)
+	// scope as the agent being installed, and has been added to the plan's
+	// commands to be stopped and disabled.
+	AppUnitSuperseded
+	// AppUnitOtherScope means the agent is installing at system scope, which
+	// runs as root and cannot see into any user's session: it can neither
+	// confirm nor rule out a user-scope app unit on this machine, so this is
+	// left to the caller to warn about instead of guessing.
+	AppUnitOtherScope
+)
+
+// ResolveAppUnit checks whether the standalone app's unit - always installed
+// at user scope - is present, and prepends the commands to stop and disable
+// it to p.Commands when agentScope matches (enrollment supersedes the
+// standalone app on the same user): the app is stopped before the agent's own
+// enable/start command runs, so the two engines never run at once. Only the
+// unit is touched: its state directory and repository are left on disk, so
+// existing local backups stay recoverable.
+//
+// A system-scope install runs as root, so checking root's own config
+// directory cannot tell us anything about a real user's app unit: it always
+// reports AppUnitOtherScope without probing the filesystem, rather than
+// risking a false AppUnitAbsent that would let two engines run undetected.
+func ResolveAppUnit(p *Plan, agentScope string) (AppUnitStatus, error) {
+	if agentScope != state.ScopeUser {
+		return AppUnitOtherScope, nil
+	}
+
+	cfg, err := UserConfigDir()
+	if err != nil {
+		return AppUnitAbsent, err
+	}
+
+	if _, err := os.Stat(AppUnitPath(cfg)); err != nil {
+		if os.IsNotExist(err) {
+			return AppUnitAbsent, nil
+		}
+
+		return AppUnitAbsent, err
+	}
+
+	p.Commands = append([][]string{{"systemctl", "--user", "disable", "--now", AppUnitName}}, p.Commands...)
+
+	return AppUnitSuperseded, nil
+}
+
 // UserConfigDir resolves the user's config directory for a user-scope
 // install: XDG_CONFIG_HOME when set, otherwise ~/.config. An unresolvable or
 // relative directory is an error rather than a unit written somewhere
