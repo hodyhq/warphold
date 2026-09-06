@@ -60,7 +60,7 @@ func signedIn(t *testing.T, region, method, uri, payloadHash string, body []byte
 		rc = bytes.NewReader(body)
 	}
 
-	req, err := http.NewRequest(method, uri, rc)
+	req, err := http.NewRequestWithContext(t.Context(), method, uri, rc)
 	require.NoError(t, err)
 
 	req.Header.Set("X-Amz-Content-Sha256", payloadHash)

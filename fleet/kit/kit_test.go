@@ -24,8 +24,10 @@ func hostedData() kit.Data {
 
 func render(t *testing.T, d kit.Data) string {
 	t.Helper()
+
 	var b bytes.Buffer
 	require.NoError(t, kit.Render(&b, d))
+
 	return b.String()
 }
 
@@ -51,6 +53,7 @@ func TestRenderIsSelfContainedAndPrintsEverything(t *testing.T) {
 	// The commands are printed verbatim; the page is HTML, so the placeholder's
 	// angle brackets appear escaped in the source and unescaped on paper.
 	require.Len(t, kit.Commands(d), 3)
+
 	for _, c := range kit.Commands(d) {
 		require.Contains(t, out, html.EscapeString(c))
 	}

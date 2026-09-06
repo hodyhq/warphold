@@ -62,7 +62,9 @@ func isLoopbackHost(host string) bool {
 	if strings.EqualFold(host, "localhost") {
 		return true
 	}
+
 	ip := net.ParseIP(strings.Trim(host, "[]"))
+
 	return ip != nil && ip.IsLoopback()
 }
 
@@ -71,6 +73,7 @@ func hostOnly(host string) string {
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		return h
 	}
+
 	return strings.Trim(host, "[]")
 }
 
@@ -84,9 +87,11 @@ func parsePublicURL(raw string) (*url.URL, error) {
 	if err != nil {
 		return nil, errors.New("public_url is not a URL")
 	}
+
 	if u.Host == "" || u.Opaque != "" {
 		return nil, errors.New("public_url must be absolute, like https://fleet.example.com")
 	}
+
 	if u.User != nil {
 		return nil, errors.New("public_url must not contain credentials")
 	}
@@ -98,6 +103,7 @@ func parsePublicURL(raw string) (*url.URL, error) {
 			return nil, errors.New("public_url must use the punycode form of an internationalized host name")
 		}
 	}
+
 	u.Host = strings.ToLower(u.Host)
 	switch u.Scheme {
 	case "https":
@@ -108,6 +114,7 @@ func parsePublicURL(raw string) (*url.URL, error) {
 	default:
 		return nil, errors.New("public_url must start with https://")
 	}
+
 	if strings.Trim(u.Path, "/") != "" || u.RawQuery != "" || u.Fragment != "" {
 		return nil, errors.New("public_url must have no path, query or fragment")
 	}
@@ -120,7 +127,9 @@ func parsePublicURL(raw string) (*url.URL, error) {
 			u.Host = "[" + u.Host + "]" // an IPv6 literal keeps its brackets
 		}
 	}
+
 	u.Path, u.RawPath, u.RawQuery, u.ForceQuery, u.Fragment, u.RawFragment = "", "", "", false, "", ""
+
 	return u, nil
 }
 
@@ -133,14 +142,17 @@ func (s *Server) PublicURL(ctx context.Context) (*url.URL, bool) {
 	if st == nil {
 		return nil, false
 	}
+
 	raw, err := st.Setting(ctx, publicURLSetting)
 	if err != nil || raw == "" {
 		return nil, false
 	}
+
 	u, err := parsePublicURL(raw)
 	if err != nil {
 		return nil, false
 	}
+
 	return u, true
 }
 
@@ -152,10 +164,12 @@ func (s *Server) SetPublicURL(ctx context.Context, raw string) error {
 	if st == nil {
 		return errors.New("fleet is not activated")
 	}
+
 	u, err := parsePublicURL(raw)
 	if err != nil {
 		return err
 	}
+
 	return st.SetSetting(ctx, publicURLSetting, u.String())
 }
 
@@ -166,22 +180,28 @@ func (s *Server) instanceID(ctx context.Context) (string, error) {
 	if st == nil {
 		return "", errors.New("fleet is not activated")
 	}
+
 	s.instanceMu.Lock()
 	defer s.instanceMu.Unlock()
+
 	id, err := st.Setting(ctx, instanceIDSetting)
 	if err != nil {
 		return "", err
 	}
+
 	if id != "" {
 		return id, nil
 	}
+
 	id, err = randomHex(instanceIDBytes)
 	if err != nil {
 		return "", err
 	}
+
 	if err := st.SetSetting(ctx, instanceIDSetting, id); err != nil {
 		return "", err
 	}
+
 	return id, nil
 }
 
@@ -191,6 +211,7 @@ func randomHex(n int) (string, error) {
 	if _, err := io.ReadFull(rand.Reader, b); err != nil {
 		return "", err
 	}
+
 	return hex.EncodeToString(b), nil
 }
 
@@ -204,6 +225,7 @@ func (s *Server) verifyPublicURL(ctx context.Context, u *url.URL) error {
 	if err != nil {
 		return err
 	}
+
 	hc := &http.Client{
 		Timeout: publicURLProbeTimeout,
 		// Redirects are not followed: a proxy that redirects the status
@@ -211,6 +233,7 @@ func (s *Server) verifyPublicURL(ctx context.Context, u *url.URL) error {
 		// would be told an origin that is not the one that answers.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
+
 	return probePublicURL(ctx, hc, u, want)
 }
 
@@ -225,10 +248,11 @@ func probePublicURL(ctx context.Context, hc *http.Client, u *url.URL, wantInstan
 	ctx, cancel := context.WithTimeout(ctx, publicURLProbeTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String()+"/api/v1/fleet/status", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String()+"/api/v1/fleet/status", http.NoBody)
 	if err != nil {
 		return &proxyError{"cannot build a request for " + u.String()}
 	}
+
 	resp, err := hc.Do(req)
 	if err != nil {
 		// The admin gets a generic message - the underlying error carries the
@@ -242,6 +266,7 @@ func probePublicURL(ctx context.Context, hc *http.Client, u *url.URL, wantInstan
 	if resp.StatusCode != http.StatusOK {
 		return &proxyError{u.String() + "/api/v1/fleet/status answered HTTP " + strconv.Itoa(resp.StatusCode) + ", not 200 OK"}
 	}
+
 	var st struct {
 		Activated  bool   `json:"activated"`
 		InstanceID string `json:"instance_id"`
@@ -250,11 +275,14 @@ func probePublicURL(ctx context.Context, hc *http.Client, u *url.URL, wantInstan
 		if err != nil {
 			log.Printf("warphold fleet: public_url probe of %s failed: %v", u, err)
 		}
+
 		return &proxyError{u.String() + " did not answer as an activated WarpHold Fleet"}
 	}
+
 	if st.InstanceID != wantInstance {
 		return &proxyError{u.String() + " reached a different WarpHold Fleet, not this one"}
 	}
+
 	return nil
 }
 
@@ -271,6 +299,7 @@ func (s *Server) requireHost(next http.HandlerFunc) http.HandlerFunc {
 		// that has to notice an activation another process performed - the
 		// installer runs `warphold fleet activate` against a running service.
 		s.reloadIfActivated()
+
 		if u, ok := s.PublicURL(r.Context()); ok {
 			got := hostOnly(r.Host)
 			if !strings.EqualFold(got, hostOnly(u.Host)) && !isLoopbackHost(got) {
@@ -280,6 +309,7 @@ func (s *Server) requireHost(next http.HandlerFunc) http.HandlerFunc {
 				return
 			}
 		}
+
 		next(w, r)
 	}
 }
@@ -301,10 +331,12 @@ func (s *Server) VerifyPublicURL(ctx context.Context, raw string) error {
 	if err != nil {
 		return err
 	}
+
 	err = s.verifyPublicURL(ctx, u)
-	var pe *proxyError
-	if errors.As(err, &pe) {
+
+	if pe, ok := errors.AsType[*proxyError](err); ok {
 		return errors.New(pe.Error() + "\nthe reverse proxy in front of it must:\n  - " + strings.Join(proxyRequirements, "\n  - "))
 	}
+
 	return err
 }

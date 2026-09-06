@@ -40,6 +40,7 @@ func TestEnrollHappyPathAndRevoke(t *testing.T) {
 	require.Len(t, list, 1)
 	_, leaks := list[0]["connect_token"]
 	require.False(t, leaks)
+
 	id := list[0]["id"].(string)
 
 	resp, _ = h.do("POST", "/api/v1/fleet/agents/"+id+"/commands", map[string]any{"kind": "snapshot-now", "source": "~"})
@@ -49,6 +50,7 @@ func TestEnrollHappyPathAndRevoke(t *testing.T) {
 
 	resp, _ = h.do("POST", "/api/v1/fleet/agents/"+id+"/revoke", nil)
 	require.Equal(t, 204, resp.StatusCode)
+
 	_, detail := h.do("GET", "/api/v1/fleet/agents/"+id, nil)
 	require.NotNil(t, detail["revoked_at"])
 }
@@ -90,11 +92,14 @@ func TestEnrollShIsServed(t *testing.T) {
 	server := h.setPublicURL()
 	res, err = http.Get(h.srv.URL + "/enroll.sh")
 	require.NoError(t, err)
+
 	defer res.Body.Close()
+
 	require.Equal(t, 200, res.StatusCode)
 	require.Contains(t, res.Header.Get("Content-Type"), "text/x-shellscript")
 	raw, err := io.ReadAll(res.Body)
 	require.NoError(t, err)
+
 	script := string(raw)
 	require.Contains(t, script, `SERVER="`+server+`"`, "the script points at public_url, not the Host header")
 	require.Contains(t, script, "warphold agent enroll")
@@ -156,11 +161,14 @@ func TestEnrollShRejectsUnsafeHost(t *testing.T) {
 	require.NotEmpty(t, body["error"])
 
 	h.setPublicURL()
-	req, err := http.NewRequest(http.MethodGet, h.srv.URL+"/enroll.sh", nil)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, h.srv.URL+"/enroll.sh", http.NoBody)
 	require.NoError(t, err)
+
 	req.Host = "evil.example"
 	res, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
+
 	defer res.Body.Close()
+
 	require.Equal(t, http.StatusMisdirectedRequest, res.StatusCode)
 }

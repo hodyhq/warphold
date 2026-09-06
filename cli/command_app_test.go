@@ -90,5 +90,4 @@ func TestAppUninstallKeepsAnAgentTray(t *testing.T) {
 
 	again := strings.Join(e.RunAndExpectSuccess(t, "app", "uninstall"), "\n")
 	require.NotContains(t, again, "- removed ")
-
 }

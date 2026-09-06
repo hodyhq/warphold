@@ -31,20 +31,25 @@ func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
+
 	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, err
 	}
+
 	db.SetMaxOpenConns(1) // ponytail: single writer; raise with a read pool if the dashboard ever contends
+
 	ctx := context.Background()
 	if _, err := db.ExecContext(ctx, schema); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
+
 	if err := migrate(ctx, db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
+
 	return &Store{db: db}, nil
 }
 
@@ -57,6 +62,7 @@ func tsp(t *time.Time) any {
 	if t == nil {
 		return nil
 	}
+
 	return ts(*t)
 }
 
@@ -68,6 +74,7 @@ func boolp(b *bool) any {
 	if b == nil {
 		return nil
 	}
+
 	return *b
 }
 
@@ -75,7 +82,9 @@ func parseTSP(ns sql.NullString) *time.Time {
 	if !ns.Valid {
 		return nil
 	}
+
 	t := parseTS(ns.String)
+
 	return &t
 }
 
@@ -83,6 +92,7 @@ func notFound(err error) error {
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
+
 	return err
 }
 
@@ -91,5 +101,6 @@ func (s *Store) exec(ctx context.Context, q string, args ...any) (int64, error) 
 	if err != nil {
 		return 0, err
 	}
+
 	return res.LastInsertId()
 }

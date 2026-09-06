@@ -47,9 +47,9 @@ type openedRepo struct {
 }
 
 // close releases the repository and the scratch directory. It takes its own
-// context because the job's may already be cancelled.
+// context because the job's may already be canceled.
 func (o *openedRepo) close(ctx context.Context) {
-	if err := o.Repository.Close(ctx); err != nil {
+	if err := o.Close(ctx); err != nil {
 		logf("closing a device repository: %v", err)
 	}
 

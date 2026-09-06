@@ -35,11 +35,13 @@ func (s *Server) handleAdminList(w http.ResponseWriter, r *http.Request) {
 		adminFailed(w, "list admins", err)
 		return
 	}
+
 	out := make([]adminOut, 0, len(as))
 	for _, a := range as {
 		// a.PWHash is deliberately not copied across.
 		out = append(out, adminOut{ID: a.ID, Email: a.Email, Role: a.Role, CreatedAt: a.CreatedAt})
 	}
+
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -51,13 +53,17 @@ func (s *Server) handleAdminCreate(w http.ResponseWriter, r *http.Request) {
 		Email    string `json:"email"`
 		Password string `json:"password"`
 	}
+
 	err := decode(r, &in)
+
 	in.Email = normalizeEmail(in.Email)
 	if err != nil || !strings.Contains(in.Email, "@") || len(in.Password) < minPasswordLen {
 		writeErr(w, http.StatusBadRequest, "email must be valid and password needs 8+ characters")
 		return
 	}
+
 	st := s.store()
+
 	_, err = st.AdminByEmail(r.Context(), in.Email)
 	switch {
 	case err == nil:
@@ -67,16 +73,19 @@ func (s *Server) handleAdminCreate(w http.ResponseWriter, r *http.Request) {
 		adminFailed(w, "look up admin", err)
 		return
 	}
+
 	hash, err := HashPassword(in.Password)
 	if err != nil {
 		adminFailed(w, "hash password", err)
 		return
 	}
+
 	id, err := st.CreateAdmin(r.Context(), in.Email, hash, s.now())
 	if err != nil {
 		adminFailed(w, "create admin", err)
 		return
 	}
+
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
 }
 
@@ -93,10 +102,12 @@ func (s *Server) handleAdminDelete(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid id")
 		return
 	}
+
 	if id == adminFrom(r) {
 		writeErr(w, http.StatusConflict, "cannot delete your own account")
 		return
 	}
+
 	switch err := s.store().DeleteAdmin(r.Context(), id); {
 	case err == nil:
 		w.WriteHeader(http.StatusNoContent)
@@ -121,33 +132,41 @@ func (s *Server) handleAdminPassword(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "new password needs 8+ characters")
 		return
 	}
+
 	sess := sessionFrom(r)
 	if sess == nil {
 		writeErr(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
+
 	st := s.store()
+
 	a, err := st.AdminByID(r.Context(), sess.AdminID)
 	if err != nil {
 		adminFailed(w, "load admin", err)
 		return
 	}
+
 	if !VerifyPassword(in.Current, a.PWHash) {
 		writeErr(w, http.StatusUnauthorized, "wrong password")
 		return
 	}
+
 	hash, err := HashPassword(in.New)
 	if err != nil {
 		adminFailed(w, "hash password", err)
 		return
 	}
+
 	if err := st.UpdateAdminPassword(r.Context(), a.ID, hash); err != nil {
 		adminFailed(w, "update password", err)
 		return
 	}
+
 	if err := st.RevokeSessionsForAdminExcept(r.Context(), a.ID, sess.ID, s.now()); err != nil {
 		adminFailed(w, "revoke sessions", err)
 		return
 	}
+
 	w.WriteHeader(http.StatusNoContent)
 }

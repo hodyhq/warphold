@@ -34,14 +34,18 @@ type fakeLocal struct {
 func (f *fakeLocal) Apply(_ context.Context, s []poll.Source) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
 	f.applied = append(f.applied, s)
+
 	return nil
 }
 
 func (f *fakeLocal) Snapshot(_ context.Context, p string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
 	f.snapshot = append(f.snapshot, p)
+
 	return nil
 }
 
@@ -51,6 +55,7 @@ func (f *fakeLocal) Resume(context.Context, string) error { return nil }
 func (f *fakeLocal) Verify(context.Context) (poll.Report, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
 	f.verifies++
 
 	return f.verifyRep, f.verifyErr
@@ -59,12 +64,14 @@ func (f *fakeLocal) Verify(context.Context) (poll.Report, error) {
 func (f *fakeLocal) Tasks(context.Context) ([]uitask.Info, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
 	return f.tasks, nil
 }
 
 func (f *fakeLocal) LatestSnapshotID(_ context.Context, path string, notBefore, notAfter time.Time) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
 	f.lookups = append(f.lookups, path+"@"+stamp(notBefore)+".."+stamp(notAfter))
 
 	return f.manifestID, nil
@@ -76,33 +83,44 @@ func (f *fakeLocal) TaskLog(context.Context, string) (string, error) { return "l
 func (f *fakeLocal) Status(context.Context) (string, bool)           { return "idle", true }
 
 func TestPollAppliesOnNewEtagAndRunsCommands(t *testing.T) {
-	var mu sync.Mutex
-	var reports []poll.Report
+	var (
+		mu      sync.Mutex
+		reports []poll.Report
+	)
+
 	polls := 0
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
+
 		switch r.URL.Path {
 		case "/api/v1/fleet/agent/poll":
 			polls++
+
 			var in struct {
 				ETag string `json:"etag"`
 			}
 			json.NewDecoder(r.Body).Decode(&in)
+
 			if in.ETag == "e1" && polls > 1 {
 				w.WriteHeader(http.StatusNotModified)
 				return
 			}
+
 			json.NewEncoder(w).Encode(poll.PolicyDoc{ETag: "e1", Name: "fw13", Sources: []poll.Source{{Path: "/data", Policy: json.RawMessage(`{}`)}}, Commands: []poll.Command{{ID: 7, Kind: "snapshot-now", Source: "/data"}}, PollIntervalSeconds: 300})
 		case "/api/v1/fleet/agent/report":
 			var rep poll.Report
 			json.NewDecoder(r.Body).Decode(&rep)
 			reports = append(reports, rep)
+
 			w.WriteHeader(http.StatusNoContent)
 		}
 	}))
 	defer srv.Close()
+
 	t.Setenv("WARPHOLD_STATE_DIR", t.TempDir())
+
 	st := &state.Config{Server: srv.URL, Bearer: "wa_1", Scope: "user"}
 	fl := &fakeLocal{}
 	l := run.New(run.Deps{Fleet: &poll.Client{Server: srv.URL, Bearer: "wa_1"}, Local: fl, State: st, Now: time.Now, Log: t.Logf})
@@ -115,6 +133,7 @@ func TestPollAppliesOnNewEtagAndRunsCommands(t *testing.T) {
 	require.EqualValues(t, 7, reports[0].CommandID)
 	require.Equal(t, "ok", reports[0].Status)
 	mu.Unlock()
+
 	saved, _ := state.Load("user")
 	require.Equal(t, "e1", saved.ETag)
 
@@ -123,17 +142,22 @@ func TestPollAppliesOnNewEtagAndRunsCommands(t *testing.T) {
 }
 
 func TestWatchReportsFinishedTasksOnce(t *testing.T) {
-	var mu sync.Mutex
-	var reports []poll.Report
+	var (
+		mu      sync.Mutex
+		reports []poll.Report
+	)
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var rep poll.Report
 		json.NewDecoder(r.Body).Decode(&rep)
 		mu.Lock()
+
 		reports = append(reports, rep)
 		mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
+
 	end := clock.Now()
 	fl := &fakeLocal{tasks: []uitask.Info{
 		{TaskID: "t1", Kind: "Snapshot", Description: "Snapshot hody@fw13:/data", StartTime: end.Add(-time.Minute), EndTime: &end, Status: uitask.StatusSuccess},
@@ -155,21 +179,27 @@ func TestWatchReportsFinishedTasksOnce(t *testing.T) {
 	require.NoError(t, l.WatchOnce(context.Background()))
 	mu.Lock()
 	defer mu.Unlock()
+
 	require.Len(t, reports, 3, "already reported")
 }
 
 func TestWatchParsesRealSnapshotDescriptionFormat(t *testing.T) {
-	var mu sync.Mutex
-	var reports []poll.Report
+	var (
+		mu      sync.Mutex
+		reports []poll.Report
+	)
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var rep poll.Report
 		json.NewDecoder(r.Body).Decode(&rep)
 		mu.Lock()
+
 		reports = append(reports, rep)
 		mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
+
 	end := clock.Now()
 	fl := &fakeLocal{tasks: []uitask.Info{
 		{TaskID: "t1", Kind: "Snapshot", Description: "hody@fw13:/data at 2026-09-01T23:00:00.123456789Z", StartTime: end.Add(-time.Minute), EndTime: &end, Status: uitask.StatusSuccess},
@@ -178,6 +208,7 @@ func TestWatchParsesRealSnapshotDescriptionFormat(t *testing.T) {
 	require.NoError(t, l.WatchOnce(context.Background()))
 	mu.Lock()
 	defer mu.Unlock()
+
 	require.Len(t, reports, 1)
 	require.Equal(t, "/data", reports[0].Source)
 }
@@ -189,12 +220,16 @@ func TestWatchParsesRealSnapshotDescriptionFormat(t *testing.T) {
 // again. Two loops (a simulated restart) reporting a task with the same local
 // id must reach Fleet as two distinct reports.
 func TestRestartedAgentReportsUniqueTaskIDs(t *testing.T) {
-	var mu sync.Mutex
-	var reports []poll.Report
+	var (
+		mu      sync.Mutex
+		reports []poll.Report
+	)
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var rep poll.Report
 		json.NewDecoder(r.Body).Decode(&rep) //nolint:errcheck
 		mu.Lock()
+
 		reports = append(reports, rep)
 		mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
@@ -218,6 +253,7 @@ func TestRestartedAgentReportsUniqueTaskIDs(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
+
 	require.Len(t, reports, 2)
 	require.NotEqual(t, reports[0].TaskID, reports[1].TaskID, "wire task id must be unique per engine lifetime")
 	require.Contains(t, reports[0].TaskID, "-1")
@@ -239,6 +275,7 @@ func TestWatchFillsSnapshotID(t *testing.T) {
 
 		json.NewDecoder(r.Body).Decode(&rep) //nolint:errcheck
 		mu.Lock()
+
 		reports = append(reports, rep)
 		mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
@@ -260,6 +297,7 @@ func TestWatchFillsSnapshotID(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
+
 	require.Len(t, reports, 3)
 	require.Equal(t, "k9f1c0de", reports[0].SnapshotID)
 	require.Empty(t, reports[1].SnapshotID, "a failed snapshot wrote no manifest")
@@ -267,6 +305,7 @@ func TestWatchFillsSnapshotID(t *testing.T) {
 
 	fl.mu.Lock()
 	defer fl.mu.Unlock()
+
 	require.Equal(t, []string{"/data@" + stamp(start) + ".." + stamp(end)}, fl.lookups,
 		"looked up once, for the successful snapshot, bounded by its own task window")
 }
@@ -313,6 +352,7 @@ func TestVerifyCommandReportsVerifyKind(t *testing.T) {
 			var reports []poll.Report
 
 			polls := 0
+
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				mu.Lock()
 				defer mu.Unlock()
@@ -320,11 +360,13 @@ func TestVerifyCommandReportsVerifyKind(t *testing.T) {
 				switch r.URL.Path {
 				case "/api/v1/fleet/agent/poll":
 					polls++
+
 					json.NewEncoder(w).Encode(poll.PolicyDoc{ETag: "e1", Commands: []poll.Command{{ID: 42, Kind: "verify"}}}) //nolint:errcheck,errchkjson
 				case "/api/v1/fleet/agent/report":
 					var rep poll.Report
 					json.NewDecoder(r.Body).Decode(&rep) //nolint:errcheck
 					reports = append(reports, rep)
+
 					w.WriteHeader(http.StatusNoContent)
 				}
 			}))

@@ -64,6 +64,7 @@ func New(h *http.Client) *Client {
 	if h == nil {
 		h = &http.Client{Timeout: defaultTimeout}
 	}
+
 	return &Client{http: h, base: "https://api.backblazeb2.com"}
 }
 
@@ -81,15 +82,18 @@ type session struct {
 }
 
 func (c *Client) authorize(ctx context.Context, keyID, key string) (*session, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/b2api/v3/b2_authorize_account", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/b2api/v3/b2_authorize_account", http.NoBody)
 	if err != nil {
 		return nil, err
 	}
+
 	req.SetBasicAuth(keyID, key)
+
 	var s session
 	if err := c.do(req, &s); err != nil {
 		return nil, fmt.Errorf("authorize: %w", err)
 	}
+
 	return &s, nil
 }
 
@@ -98,15 +102,19 @@ func (c *Client) call(ctx context.Context, s *session, op string, body, out any)
 	if err != nil {
 		return err
 	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.APIInfo.StorageAPI.APIURL+"/b2api/v3/"+op, bytes.NewReader(b))
 	if err != nil {
 		return err
 	}
+
 	req.Header.Set("Authorization", s.Token)
 	req.Header.Set("Content-Type", "application/json")
+
 	if err := c.do(req, out); err != nil {
 		return fmt.Errorf("%s: %w", op, err)
 	}
+
 	return nil
 }
 
@@ -116,15 +124,18 @@ func (c *Client) do(req *http.Request, out any) error {
 		return err
 	}
 	defer resp.Body.Close()
+
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode/100 != 2 {
 		// The body is upstream text of unbounded size and goes into logs and
 		// API responses; the first few hundred bytes carry B2's error code.
 		return fmt.Errorf("b2 returned %d: %s", resp.StatusCode, truncate(raw, maxErrBody))
 	}
+
 	if out == nil {
 		return nil
 	}
+
 	return json.Unmarshal(raw, out)
 }
 
@@ -134,6 +145,7 @@ func (c *Client) BucketInfo(ctx context.Context, keyID, key, bucket string) (Buc
 	if err != nil {
 		return BucketInfo{}, err
 	}
+
 	var out struct {
 		Buckets []struct {
 			ID   string `json:"bucketId"`
@@ -149,11 +161,13 @@ func (c *Client) BucketInfo(ctx context.Context, keyID, key, bucket string) (Buc
 	if err := c.call(ctx, s, "b2_list_buckets", map[string]string{"accountId": s.AccountID, "bucketName": bucket}, &out); err != nil {
 		return BucketInfo{}, err
 	}
+
 	for _, b := range out.Buckets {
 		if b.Name == bucket {
 			return BucketInfo{ID: b.ID, ObjectLockEnabled: b.Lock.Value.Enabled, LockReadable: b.Lock.Readable}, nil
 		}
 	}
+
 	return BucketInfo{}, fmt.Errorf("bucket %q not found or not visible to this key", bucket)
 }
 
@@ -163,14 +177,17 @@ func (c *Client) CreateKey(ctx context.Context, keyID, key string, r KeyRequest)
 	if err != nil {
 		return CreatedKey{}, err
 	}
+
 	var out struct {
 		ID  string `json:"applicationKeyId"`
 		Key string `json:"applicationKey"`
 	}
+
 	body := map[string]any{"accountId": s.AccountID, "capabilities": r.Capabilities, "keyName": r.Name, "bucketId": r.BucketID, "namePrefix": r.NamePrefix}
 	if err := c.call(ctx, s, "b2_create_key", body, &out); err != nil {
 		return CreatedKey{}, err
 	}
+
 	return CreatedKey{KeyID: out.ID, Key: out.Key}, nil
 }
 
@@ -180,6 +197,7 @@ func (c *Client) DeleteKey(ctx context.Context, keyID, key, targetKeyID string) 
 	if err != nil {
 		return err
 	}
+
 	return c.call(ctx, s, "b2_delete_key", map[string]string{"applicationKeyId": targetKeyID}, nil)
 }
 

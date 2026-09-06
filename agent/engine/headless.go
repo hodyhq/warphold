@@ -68,6 +68,7 @@ func randomHex(n int) string {
 // setup wizard and that password has nowhere else to go.
 func StartHeadless(ctx context.Context, configFile, repoPassword, scope string, persist passwordpersist.Strategy) (_ *Headless, retErr error) {
 	h := &Headless{User: headlessUser, Password: randomHex(32), LocalToken: randomHex(32), scope: scope}
+
 	srv, err := server.New(ctx, &server.Options{
 		ConfigFile:        configFile,
 		ConnectOptions:    &repo.ConnectOptions{},
@@ -98,7 +99,9 @@ func StartHeadless(ctx context.Context, configFile, repoPassword, scope string, 
 	if err != nil {
 		return nil, errors.Wrap(err, "server.New")
 	}
+
 	h.srv = srv
+
 	open := func(ctx context.Context) (repo.Repository, error) {
 		// The standalone app's first run has no repository at all: the UI's
 		// setup wizard is what creates one, so a nil repository here means
@@ -136,10 +139,12 @@ func StartHeadless(ctx context.Context, configFile, repoPassword, scope string, 
 	// static files, which must come after the API handlers.
 	srv.ServeSPAPublic(m, server.AssetFile())
 	srv.ServeStaticFiles(m, server.AssetFile())
+
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, err
 	}
+
 	h.ln = ln
 	h.BaseURL = "http://" + ln.Addr().String()
 
@@ -175,6 +180,7 @@ func (h *Headless) Client() (*apiclient.KopiaAPIClient, error) {
 func (h *Headless) Stop(ctx context.Context) error {
 	ctx2, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+
 	err := h.http.Shutdown(ctx2)
 
 	return stderrors.Join(err, h.srv.SetRepository(ctx, nil), RemoveInfo(h.scope))

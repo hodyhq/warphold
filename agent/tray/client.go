@@ -43,7 +43,7 @@ type client struct {
 // Fleet group is not part of the enrollment the agent stores, so the label is
 // the agent name alone until the enroll response carries one.
 //
-// The standalone app has no enrollment and no group at all, so it is labelled
+// The standalone app has no enrollment and no group at all, so it is labeled
 // with this machine's hostname.
 func (c *client) vault() string {
 	if c.scope == state.ScopeApp {

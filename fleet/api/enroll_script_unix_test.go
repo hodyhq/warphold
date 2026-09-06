@@ -28,6 +28,7 @@ import (
 // regardless of how "go test" itself was started.
 func runEnrollScript(t *testing.T, script, home string, env ...string) (string, int) {
 	t.Helper()
+
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 
@@ -38,13 +39,15 @@ func runEnrollScript(t *testing.T, script, home string, env ...string) (string, 
 	// A nil Stdin is /dev/null, which is what "curl ... | sh" leaves behind
 	// once the script has been read.
 	out, err := cmd.CombinedOutput()
+
 	require.NoError(t, ctx.Err(), "the script did not finish: it is waiting on something")
 
-	var exit *exec.ExitError
-	if errors.As(err, &exit) {
+	if exit, ok := errors.AsType[*exec.ExitError](err); ok {
 		return string(out), exit.ExitCode()
 	}
+
 	require.NoError(t, err)
+
 	return string(out), 0
 }
 
@@ -54,13 +57,16 @@ func enrollScript(t *testing.T, h *harness, dir string) string {
 	h.setPublicURL()
 	res, err := http.Get(h.srv.URL + "/enroll.sh")
 	require.NoError(t, err)
+
 	defer res.Body.Close()
+
 	require.Equal(t, 200, res.StatusCode)
 	body, err := io.ReadAll(res.Body)
 	require.NoError(t, err)
 
 	path := filepath.Join(dir, "enroll.sh")
 	require.NoError(t, os.WriteFile(path, body, 0o700))
+
 	return path
 }
 
@@ -70,8 +76,10 @@ func enrollScript(t *testing.T, h *harness, dir string) string {
 // would then sit in the test output of every failed run.
 func stubAgent(t *testing.T, home string) {
 	t.Helper()
+
 	bin := filepath.Join(home, ".local", "bin")
 	require.NoError(t, os.MkdirAll(bin, 0o700))
+
 	stub := "#!/bin/sh\nif [ -n \"${WARPHOLD_ENROLL_TOKEN:-}\" ]; then t=present; else t=absent; fi\necho \"stub $* token=$t\"\n"
 	require.NoError(t, os.WriteFile(filepath.Join(bin, "warphold"), []byte(stub), 0o700))
 }
@@ -79,6 +87,7 @@ func stubAgent(t *testing.T, home string) {
 func TestEnrollShWithoutATerminalAsksForNothing(t *testing.T) {
 	h := newHarness(t)
 	h.activateAndLogin()
+
 	dir := t.TempDir()
 
 	out, code := runEnrollScript(t, enrollScript(t, h, dir), t.TempDir())
@@ -91,6 +100,7 @@ func TestEnrollShWithoutATerminalAsksForNothing(t *testing.T) {
 func TestEnrollShSkipsThePromptWhenTheTokenIsInTheEnvironment(t *testing.T) {
 	h := newHarness(t)
 	h.activateAndLogin()
+
 	dir := t.TempDir()
 	home := t.TempDir()
 	stubAgent(t, home)

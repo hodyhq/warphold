@@ -45,20 +45,25 @@ func (s *Store) CreateTarget(ctx context.Context, t *Target) (int64, error) {
 }
 
 func scanTarget(row interface{ Scan(...any) error }) (*Target, error) {
-	var t Target
-	var olv, mlv sql.NullString
-	var mcp sql.NullBool
-	var c string
+	var (
+		t        Target
+		olv, mlv sql.NullString
+		mcp      sql.NullBool
+		c        string
+	)
 	if err := row.Scan(&t.ID, &t.Name, &t.Kind, &t.Bucket, &t.Region, &t.Path, &t.SealedAdminKey, &olv, &c,
 		&t.StorageMode, &t.Endpoint, &t.MirrorKind, &t.MirrorBucket, &t.MirrorRegion, &t.SealedMirrorKey, &mlv, &mcp); err != nil {
 		return nil, notFound(err)
 	}
+
 	if mcp.Valid {
 		t.MirrorConditionalPut = &mcp.Bool
 	}
+
 	t.ObjectLockVerifiedAt = parseTSP(olv)
 	t.MirrorLockVerifiedAt = parseTSP(mlv)
 	t.CreatedAt = parseTS(c)
+
 	return &t, nil
 }
 
@@ -72,14 +77,17 @@ func (s *Store) Targets(ctx context.Context) ([]Target, error) {
 		return nil, err
 	}
 	defer rows.Close()
+
 	var out []Target
 	for rows.Next() {
 		t, err := scanTarget(rows)
 		if err != nil {
 			return nil, err
 		}
+
 		out = append(out, *t)
 	}
+
 	return out, rows.Err()
 }
 
@@ -88,6 +96,7 @@ func (s *Store) Targets(ctx context.Context) ([]Target, error) {
 func (s *Store) SetTargetMirror(ctx context.Context, t *Target) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE targets SET mirror_kind=?,mirror_bucket=?,mirror_region=?,sealed_mirror_key=?,mirror_lock_verified_at=?,mirror_conditional_put=? WHERE id=?`,
 		t.MirrorKind, t.MirrorBucket, t.MirrorRegion, t.SealedMirrorKey, tsp(t.MirrorLockVerifiedAt), boolp(t.MirrorConditionalPut), t.ID)
+
 	return err
 }
 

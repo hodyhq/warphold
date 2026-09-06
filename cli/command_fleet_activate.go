@@ -105,11 +105,14 @@ func (c *commandFleetActivate) run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+
 		if p != again {
 			return errors.New("passphrases do not match")
 		}
+
 		c.passphrase = p
 	}
+
 	if c.password == "" {
 		p, err := askPass(c.out.stdout(), "Admin password: ")
 		if err != nil {
@@ -121,17 +124,23 @@ func (c *commandFleetActivate) run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+
 		if p != again {
 			return errors.New("admin passwords do not match")
 		}
+
 		c.password = p
 	}
+
 	configFile := c.svc.repositoryConfigFileName()
+
 	s := api.New(fleet.StateDirFor(configFile))
 	defer s.Close()
+
 	if err := s.Activate(ctx, c.passphrase, c.email, c.password, c.publicURL); err != nil {
 		return errors.Wrap(err, "activate")
 	}
+
 	fmt.Fprintln(c.out.stdout(), "Fleet is on.") //nolint:errcheck
 
 	// The Fleet host is a machine that needs backing up too, so setup leaves

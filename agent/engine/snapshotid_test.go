@@ -39,6 +39,7 @@ func TestLatestSnapshotIDPicksTheTasksOwnManifest(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotQuery = r.URL.RawQuery
+
 		json.NewEncoder(w).Encode(&serverapi.SnapshotsResponse{ //nolint:errcheck
 			Snapshots: []*serverapi.Snapshot{snap("k1111", first), snap("k2222", second)},
 		})

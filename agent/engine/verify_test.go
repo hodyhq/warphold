@@ -25,6 +25,7 @@ import (
 // whether its bytes are still readable.
 func TestVerifyReportsRepositoryDamage(t *testing.T) {
 	ctx := context.Background()
+
 	t.Setenv("WARPHOLD_STATE_DIR", t.TempDir())
 
 	cfg, pw, blobDir := provisionedRepo(t)
@@ -43,6 +44,7 @@ func TestVerifyReportsRepositoryDamage(t *testing.T) {
 	// Big enough that its contents land in their own data pack rather than
 	// being inlined with the directory metadata.
 	src := t.TempDir()
+
 	big := make([]byte, 512<<10)
 	for i := range big {
 		big[i] = byte(i)

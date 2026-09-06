@@ -155,7 +155,7 @@ func (t *tray) loop(ctx context.Context) {
 	defer systray.Quit()
 
 	// The first render creates the menu, so poll once before waiting.
-	m, paused, _ := t.poll(ctx) //nolint:errcheck
+	m, paused, _ := t.poll(ctx)
 
 	t.render(m)
 	// A tray started beside an already-failing agent must notify on that first
@@ -215,6 +215,7 @@ func (t *tray) loop(ctx context.Context) {
 			// Action errors can carry source paths; the desktop (and lock screen)
 			// gets a fixed message and the detail stays in the log.
 			log.Printf("tray: action failed: %v", err)
+
 			_ = notify("WarpHold", "The action failed. Open Details for the log.")
 		}
 

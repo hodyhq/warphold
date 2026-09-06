@@ -48,13 +48,16 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info(?) WHERE name=?`, c.table, c.column).Scan(&n); err != nil {
 			return err
 		}
+
 		if n > 0 {
 			continue
 		}
+
 		if _, err := db.ExecContext(ctx, `ALTER TABLE `+c.table+` ADD COLUMN `+c.column+` `+c.decl); err != nil {
 			return err
 		}
 	}
+
 	for _, r := range renamedSettings {
 		// OR IGNORE, so a database that already holds the new key keeps it:
 		// the new name is the one anything writes now, and it must win over a
@@ -63,9 +66,11 @@ func migrate(ctx context.Context, db *sql.DB) error {
 			`INSERT OR IGNORE INTO settings(key,value) SELECT ?, value FROM settings WHERE key=?`, r.to, r.from); err != nil {
 			return err
 		}
+
 		if _, err := db.ExecContext(ctx, `DELETE FROM settings WHERE key=?`, r.from); err != nil {
 			return err
 		}
 	}
+
 	return nil
 }

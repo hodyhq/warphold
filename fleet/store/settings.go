@@ -8,10 +8,12 @@ import (
 
 func (s *Store) Setting(ctx context.Context, key string) (string, error) {
 	var v string
+
 	err := s.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key=?`, key).Scan(&v)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
+
 	return v, err
 }
 
@@ -28,10 +30,12 @@ func (s *Store) SetSettings(ctx context.Context, kv map[string]string) error {
 		return err
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op after Commit
+
 	for key, value := range kv {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, key, value); err != nil {
 			return err
 		}
 	}
+
 	return tx.Commit()
 }

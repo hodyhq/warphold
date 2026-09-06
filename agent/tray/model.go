@@ -165,20 +165,19 @@ func activity(s Status) string {
 	return "Idle"
 }
 
+// maxInProgressPercent caps percent below 100: a source that briefly reports
+// more bytes done than estimated must not read "100%" and then keep running.
+const maxInProgressPercent = 99
+
 // percent is progress as hashed+cached over the estimate. The estimate grows
-// while the upload walks the tree, so it is capped at 99: a source that
-// briefly reports more bytes done than estimated must not read "100%" and
-// then keep running.
+// while the upload walks the tree, so it is capped at maxInProgressPercent.
 func percent(src *serverapi.SourceStatus) (int, bool) {
 	c := src.UploadCounters
 	if c == nil || c.EstimatedBytes <= 0 {
 		return 0, false
 	}
 
-	pct := (c.TotalHashedBytes + c.TotalCachedBytes) * 100 / c.EstimatedBytes
-	if pct > 99 {
-		pct = 99
-	}
+	pct := min((c.TotalHashedBytes+c.TotalCachedBytes)*100/c.EstimatedBytes, maxInProgressPercent)
 
 	if pct < 0 {
 		pct = 0
@@ -254,7 +253,7 @@ func next(s Status, now time.Time) string {
 }
 
 // when renders a timestamp the way a person reads a backup schedule: a clock
-// time for the neighbouring days, a date otherwise. Both times are compared
+// time for the neighboring days, a date otherwise. Both times are compared
 // in the local zone, so "today" means the user's today.
 func when(t, now time.Time) string {
 	t = t.Local()

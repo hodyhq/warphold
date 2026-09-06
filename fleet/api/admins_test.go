@@ -25,6 +25,7 @@ func TestLogoutRevokesServerSide(t *testing.T) {
 	// Replaying the logout with the revoked cookie changes nothing.
 	resp, _ = h.do("DELETE", "/api/v1/fleet/session", nil)
 	require.Equal(t, 204, resp.StatusCode)
+
 	h.jar = stolen
 	resp, _ = h.do("GET", "/api/v1/fleet/targets", nil)
 	require.Equal(t, 401, resp.StatusCode)
@@ -72,11 +73,13 @@ func TestDeleteAdminRevokesSessions(t *testing.T) {
 
 	resp, body := h.do("POST", "/api/v1/fleet/admins", map[string]string{"email": "b@hody.dev", "password": "pw12345678"})
 	require.Equal(t, 201, resp.StatusCode)
+
 	bID := jsonNum(body["id"].(float64))
 
 	h.jar = h.login("b@hody.dev", "pw12345678")
 	resp, _ = h.do("GET", "/api/v1/fleet/targets", nil)
 	require.Equal(t, 200, resp.StatusCode, "the second admin can use the API")
+
 	second := h.jar
 
 	h.jar = owner
@@ -165,14 +168,14 @@ func TestCSRFRequiredOnMutations(t *testing.T) {
 
 	// Cookie-only POST: exactly what a cross-site form gets to send.
 	req := h.newRequest("POST", "/api/v1/fleet/targets", jsonBody(map[string]any{"name": "local", "kind": "filesystem", "path": t.TempDir()}))
-	req.Header.Del("X-WarpHold-CSRF")
+	req.Header.Del("X-Warphold-Csrf")
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	resp.Body.Close()
 	require.Equal(t, 403, resp.StatusCode, "no CSRF header")
 
 	req = h.newRequest("POST", "/api/v1/fleet/targets", jsonBody(map[string]any{"name": "local", "kind": "filesystem", "path": t.TempDir()}))
-	req.Header.Set("X-WarpHold-CSRF", "not-the-cookie")
+	req.Header.Set("X-Warphold-Csrf", "not-the-cookie")
 	resp, err = http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	resp.Body.Close()
@@ -180,7 +183,7 @@ func TestCSRFRequiredOnMutations(t *testing.T) {
 
 	// Reads are exempt.
 	req = h.newRequest("GET", "/api/v1/fleet/targets", nil)
-	req.Header.Del("X-WarpHold-CSRF")
+	req.Header.Del("X-Warphold-Csrf")
 	resp, err = http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	resp.Body.Close()
@@ -191,11 +194,13 @@ func TestCSRFRequiredOnMutations(t *testing.T) {
 	require.Equal(t, 201, resp.StatusCode)
 
 	require.NotEmpty(t, h.cookie("wh_csrf"), "the CSRF cookie is readable by the UI")
+
 	for _, c := range h.jar {
 		if c.Name == "wh_csrf" {
 			require.False(t, c.HttpOnly, "the UI has to read it to echo it back")
 			require.Equal(t, http.SameSiteStrictMode, c.SameSite)
 		}
+
 		if c.Name == "wh_session" {
 			require.True(t, c.HttpOnly)
 			// The recovery kit mints a key on GET; SameSite=Strict is what keeps a
@@ -232,6 +237,7 @@ func TestChangePasswordRevokesOtherSessions(t *testing.T) {
 	h.jar = nil
 	resp, _ = h.do("POST", "/api/v1/fleet/session", map[string]string{"email": "hody@hody.dev", "password": "pw12345678"})
 	require.Equal(t, 401, resp.StatusCode, "old password is gone")
+
 	h.jar = h.login("hody@hody.dev", "newpw12345")
 	resp, _ = h.do("GET", "/api/v1/fleet/targets", nil)
 	require.Equal(t, 200, resp.StatusCode)

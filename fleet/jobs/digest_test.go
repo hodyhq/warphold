@@ -154,6 +154,7 @@ func TestDigestSendsWithZeroDevicesAndNoDivideByZero(t *testing.T) {
 func TestDigestRendersDeviceHealthAndOffsiteState(t *testing.T) {
 	f := newDigestFixture(t)
 	ctx := context.Background()
+
 	f.configureSMTP(t)
 	f.addAdmin(t, "owner@example.com")
 	f.st.SetSetting(ctx, "public_url", "https://fleet.example.com") //nolint:errcheck
@@ -182,6 +183,7 @@ func TestDigestRendersDeviceHealthAndOffsiteState(t *testing.T) {
 func TestDigestNamesAKindFailingForOverAWeek(t *testing.T) {
 	f := newDigestFixture(t)
 	ctx := context.Background()
+
 	f.configureSMTP(t)
 	f.addAdmin(t, "owner@example.com")
 
@@ -207,6 +209,7 @@ func TestDigestNamesAKindFailingForOverAWeek(t *testing.T) {
 func TestDigestOneRecentOKRunEndsTheFailingStreak(t *testing.T) {
 	f := newDigestFixture(t)
 	ctx := context.Background()
+
 	f.configureSMTP(t)
 	f.addAdmin(t, "owner@example.com")
 
@@ -214,6 +217,7 @@ func TestDigestOneRecentOKRunEndsTheFailingStreak(t *testing.T) {
 	for i := 10; i >= 3; i-- {
 		f.job(t, "reap", now.Add(-time.Duration(i)*24*time.Hour), "error")
 	}
+
 	f.job(t, "reap", now.Add(-2*24*time.Hour), "ok")
 	f.job(t, "reap", now.Add(-time.Hour), "error")
 
@@ -251,6 +255,7 @@ func TestDigestRedactsCredentialsOnSendFailure(t *testing.T) {
 func TestDigestCountsUnacknowledgedRecoveryKits(t *testing.T) {
 	f := newDigestFixture(t)
 	ctx := context.Background()
+
 	f.configureSMTP(t)
 	adminID := f.addAdmin(t, "owner@example.com")
 

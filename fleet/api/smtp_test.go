@@ -41,6 +41,7 @@ func TestSMTPSettingsSealThePasswordAndNeverReturnIt(t *testing.T) {
 	require.Equal(t, "fleet@example.com", body["smtp_from"])
 	require.Equal(t, true, body["smtp_password_set"])
 	require.NotContains(t, body, "smtp_password")
+
 	for k, v := range body {
 		require.NotEqual(t, "s3cret", v, "key %s leaks the password", k)
 	}
@@ -48,7 +49,9 @@ func TestSMTPSettingsSealThePasswordAndNeverReturnIt(t *testing.T) {
 	// At rest it is sealed, and it unseals back to what was sent.
 	st, err := store.Open(fleet.PathsFor(h.stateDir).DB)
 	require.NoError(t, err)
+
 	defer st.Close()
+
 	stored, err := st.Setting(ctx, "sealed_smtp_password")
 	require.NoError(t, err)
 	require.NotEmpty(t, stored)
@@ -63,12 +66,14 @@ func TestSMTPSettingsSealThePasswordAndNeverReturnIt(t *testing.T) {
 	// "" leaves the password alone; null clears it.
 	_, body = h.do("PUT", "/api/v1/fleet/settings", map[string]any{"smtp_password": ""})
 	require.Equal(t, true, body["smtp_password_set"])
+
 	cfg, err = h.s.MailConfigForTesting(ctx)
 	require.NoError(t, err)
 	require.Equal(t, "s3cret", cfg.Password)
 
 	_, body = h.do("PUT", "/api/v1/fleet/settings", map[string]any{"smtp_password": nil})
 	require.Equal(t, false, body["smtp_password_set"])
+
 	cfg, err = h.s.MailConfigForTesting(ctx)
 	require.NoError(t, err)
 	require.Empty(t, cfg.Password)
@@ -76,8 +81,10 @@ func TestSMTPSettingsSealThePasswordAndNeverReturnIt(t *testing.T) {
 
 func mustSetting(t *testing.T, st *store.Store, key string) string {
 	t.Helper()
+
 	v, err := st.Setting(context.Background(), key)
 	require.NoError(t, err)
+
 	return v
 }
 
@@ -116,6 +123,7 @@ func TestSMTPTestSendReportsTheRawErrorAndIsRateLimited(t *testing.T) {
 	h.jar = nil
 	resp, _ := h.do("POST", "/api/v1/fleet/settings/smtp/test", map[string]any{"to": "ops@example.com"})
 	require.Equal(t, 401, resp.StatusCode)
+
 	h.jar = saved
 
 	// A CSRF-less call is rejected before anything is sent.
@@ -150,13 +158,16 @@ func TestCorruptSealedPasswordLeavesTheSettingsReadable(t *testing.T) {
 
 	st, err := store.Open(fleet.PathsFor(h.stateDir).DB)
 	require.NoError(t, err)
+
 	defer st.Close()
+
 	sealed, err := st.Setting(ctx, "sealed_smtp_password")
 	require.NoError(t, err)
 	// Flip the last byte of the ciphertext: it is now unopenable but present.
 	// XOR rather than an assignment, so it always differs from what was there.
 	raw, err := hex.DecodeString(sealed)
 	require.NoError(t, err)
+
 	raw[len(raw)-1] ^= 0xff
 	require.NoError(t, st.SetSetting(ctx, "sealed_smtp_password", hex.EncodeToString(raw)))
 
@@ -185,6 +196,7 @@ func TestTestSendRedactsBothCredentialsFromTheServersError(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	t.Cleanup(func() { ln.Close() })
+
 	go func() {
 		for {
 			c, err := ln.Accept()
@@ -196,6 +208,7 @@ func TestTestSendRedactsBothCredentialsFromTheServersError(t *testing.T) {
 			c.Close()                                                                  //nolint:errcheck
 		}
 	}()
+
 	port := ln.Addr().(*net.TCPAddr).Port
 	// The port whitelist is what the UI offers; widen it for the stub.
 	restore := mail.AllowedPorts
@@ -212,6 +225,7 @@ func TestTestSendRedactsBothCredentialsFromTheServersError(t *testing.T) {
 
 	resp, body = h.do("POST", "/api/v1/fleet/settings/smtp/test", map[string]any{"to": "ops@example.com"})
 	require.Equal(t, 400, resp.StatusCode)
+
 	msg, _ := body["error"].(string)
 	require.Contains(t, msg, "554", "the raw error still reaches the admin")
 	require.NotContains(t, msg, "leaky-pass")

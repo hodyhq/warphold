@@ -19,7 +19,7 @@ func TestGatewayIsHostValidatedAndMounted(t *testing.T) {
 	get := func(host string) *http.Response {
 		t.Helper()
 
-		req, err := http.NewRequest(http.MethodGet, h.srv.URL+"/"+gateway.BucketName+"/some-device/some-blob", nil) //nolint:noctx
+		req, err := http.NewRequest(http.MethodGet, h.srv.URL+"/"+gateway.BucketName+"/some-device/some-blob", http.NoBody) //nolint:noctx
 		require.NoError(t, err)
 
 		if host != "" {
@@ -43,8 +43,9 @@ func TestGatewayIsHostValidatedAndMounted(t *testing.T) {
 	require.Equal(t, http.StatusMisdirectedRequest, get("evil.example.com").StatusCode)
 
 	// The bucket path with no key is the ListObjectsV2 route and is validated too.
-	req, err := http.NewRequest(http.MethodGet, h.srv.URL+"/"+gateway.BucketName, nil) //nolint:noctx
+	req, err := http.NewRequest(http.MethodGet, h.srv.URL+"/"+gateway.BucketName, http.NoBody) //nolint:noctx
 	require.NoError(t, err)
+
 	req.Host = "evil.example.com"
 	res, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
@@ -65,7 +66,7 @@ func TestGatewayLimitSettings(t *testing.T) {
 	require.EqualValues(t, gateway.DefaultIPRateBurst, body["gateway_ip_burst"])
 	require.EqualValues(t, gateway.DefaultRatePerSecond, body["gateway_device_rate"])
 	require.EqualValues(t, gateway.DefaultRateBurst, body["gateway_device_burst"])
-	require.Equal(t, "", body["trusted_proxies"])
+	require.Empty(t, body["trusted_proxies"])
 
 	_, body = h.do("PUT", "/api/v1/fleet/settings", map[string]any{
 		"trusted_proxies":     "10.0.0.0/8, 192.168.1.7",

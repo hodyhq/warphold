@@ -29,13 +29,16 @@ func TestProvisionFilesystemCreatesConnectableRepo(t *testing.T) {
 	ci, pw, err := repo.DecodeToken(b.ConnectToken)
 	require.NoError(t, err)
 	require.Equal(t, b.Password, pw)
+
 	st, err := blob.NewStorage(ctx, ci, false)
 	require.NoError(t, err)
 	cfg := filepath.Join(t.TempDir(), "repository.config")
 	require.NoError(t, repo.Connect(ctx, cfg, st, pw, &repo.ConnectOptions{}))
 	r, err := repo.Open(ctx, cfg, pw, nil)
 	require.NoError(t, err)
+
 	defer r.Close(ctx)
+
 	params, err := maintenance.GetParams(ctx, r)
 	require.NoError(t, err)
 	require.Equal(t, "fleet@test", params.Owner)
@@ -59,6 +62,7 @@ func TestProvisionB2UsesWriterKeyInTokenAndReaderKeyInBundle(t *testing.T) {
 	require.NotContains(t, fake.created[0].Capabilities, "deleteFiles")
 	require.Equal(t, "warphold-ag_9-reader", fake.created[1].Name)
 	require.NotContains(t, fake.created[1].Capabilities, "writeFiles")
+
 	ci, _, err := repo.DecodeToken(b.ConnectToken)
 	require.NoError(t, err)
 	require.Equal(t, "b2", ci.Type)
@@ -110,10 +114,12 @@ type fakeB2 struct {
 func (f *fakeB2) BucketInfo(context.Context, string, string, string) (b2api.BucketInfo, error) {
 	return b2api.BucketInfo{ID: "bkt1", ObjectLockEnabled: true}, nil
 }
+
 func (f *fakeB2) CreateKey(_ context.Context, _, _ string, r b2api.KeyRequest) (b2api.CreatedKey, error) {
 	f.created = append(f.created, r)
 	return b2api.CreatedKey{KeyID: "kid-" + r.Name, Key: "sec-" + r.Name}, nil
 }
+
 func (f *fakeB2) DeleteKey(_ context.Context, _, _, id string) error {
 	f.deleted = append(f.deleted, id)
 	return nil

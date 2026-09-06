@@ -13,6 +13,10 @@ import (
 	"github.com/kopia/kopia/internal/passwordpersist"
 )
 
+// exitCodeRevoked tells the service supervisor "the Fleet server revoked
+// this agent, do not restart" rather than "retry me".
+const exitCodeRevoked = 3
+
 // commandAgentRun runs the agent's poll/snapshot loop: it loads the agent's
 // enrollment state, opens its repository headlessly, and drives run.Loop
 // against the Fleet server until revoked or (with --once) for a single cycle.
@@ -78,7 +82,9 @@ func (c *commandAgentRun) run(ctx context.Context) error {
 			log(ctx).Warnf("stopping engine: %v", stopErr)
 		}
 
-		os.Exit(3) //nolint:forbidigo
+		// The engine is already stopped above, so skipping the deferred
+		// h.Stop is not a missed cleanup.
+		os.Exit(exitCodeRevoked) //nolint:gocritic
 	}
 
 	return err

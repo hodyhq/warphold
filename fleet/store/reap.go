@@ -35,7 +35,9 @@ func (s *Store) PendingReaps(ctx context.Context, agentID string) ([]time.Time, 
 		if err := rows.Scan(&at); err != nil {
 			return nil, err
 		}
+
 		out = append(out, parseTS(at))
 	}
+
 	return out, rows.Err()
 }

@@ -38,10 +38,12 @@ func (s *Server) handleEnrollSh(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, publicURLUnsetMsg)
 		return
 	}
+
 	if !enrollShHost.MatchString(u.Host) {
 		writeErr(w, http.StatusBadRequest, "invalid host")
 		return
 	}
+
 	w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
 	_ = enrollSh.Execute(w, map[string]string{
 		"Server":  u.String(),

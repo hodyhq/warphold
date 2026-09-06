@@ -14,27 +14,34 @@ import (
 )
 
 func TestPollEtagAndRevoked(t *testing.T) {
-	var gotBody map[string]any
-	var gotAuth string
+	var (
+		gotBody map[string]any
+		gotAuth string
+	)
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
 		switch r.URL.Path {
 		case "/api/v1/fleet/agent/poll":
 			json.NewDecoder(r.Body).Decode(&gotBody)
+
 			if gotBody["etag"] == "e1" {
 				w.WriteHeader(http.StatusNotModified)
 				return
 			}
+
 			if gotBody["etag"] == "revoked" {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
+
 			json.NewEncoder(w).Encode(map[string]any{"etag": "e1", "name": "fw13", "sources": []map[string]any{{"path": "/home/hody", "policy": map[string]any{}}}, "commands": []any{}, "poll_interval_seconds": 300})
 		case "/api/v1/fleet/agent/report":
 			w.WriteHeader(http.StatusNoContent)
 		}
 	}))
 	defer srv.Close()
+
 	c := &poll.Client{Server: srv.URL, Bearer: "wa_1"}
 	doc, err := c.Poll(context.Background(), poll.Heartbeat{Version: "0.1.0"}, "")
 	require.NoError(t, err)
@@ -54,9 +61,10 @@ func TestPollEtagAndRevoked(t *testing.T) {
 }
 
 func TestJitterBounds(t *testing.T) {
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		d := poll.Jitter(5 * time.Minute)
 		require.True(t, d >= 4*time.Minute && d <= 6*time.Minute, d)
 	}
+
 	require.GreaterOrEqual(t, poll.Jitter(10*time.Second), 30*time.Second)
 }

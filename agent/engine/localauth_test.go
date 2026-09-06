@@ -25,7 +25,7 @@ func noRedirect() *http.Client {
 func doGet(t *testing.T, cl *http.Client, url string, cookies ...*http.Cookie) *http.Response {
 	t.Helper()
 
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, http.NoBody)
 	require.NoError(t, err)
 
 	for _, c := range cookies {
@@ -44,7 +44,7 @@ func doGet(t *testing.T, cl *http.Client, url string, cookies ...*http.Cookie) *
 func doGetWithHeaders(t *testing.T, cl *http.Client, url string, hdr map[string]string, cookies ...*http.Cookie) *http.Response {
 	t.Helper()
 
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, http.NoBody)
 	require.NoError(t, err)
 
 	for _, c := range cookies {
@@ -129,7 +129,7 @@ func TestLocalSessionHandoff(t *testing.T) {
 
 	// a present Authorization header always wins, so a valid cookie cannot
 	// elevate a request that authenticated as somebody else.
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, h.BaseURL+"/api/v1/sources", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, h.BaseURL+"/api/v1/sources", http.NoBody)
 	require.NoError(t, err)
 	req.AddCookie(c)
 	req.SetBasicAuth("someone", "else")
@@ -185,6 +185,7 @@ func TestLocalSessionHandoff(t *testing.T) {
 // the engine's local surface has one rule rather than two.
 func TestLocalInfo(t *testing.T) {
 	ctx := context.Background()
+
 	t.Setenv("WARPHOLD_STATE_DIR", t.TempDir())
 
 	require.NoError(t, state.Save("user", &state.Config{Name: "laptop-1", Scope: "user"}))
@@ -239,7 +240,7 @@ func TestLocalInfo(t *testing.T) {
 	require.JSONEq(t, `{"name":"laptop-1","group":""}`, string(body))
 
 	// POST is not an action, so it is not one here either.
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.BaseURL+"/local/info", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.BaseURL+"/local/info", http.NoBody)
 	require.NoError(t, err)
 	req.AddCookie(c)
 
@@ -256,6 +257,7 @@ func TestLocalInfo(t *testing.T) {
 // goes.
 func TestLocalInfoWithoutEnrollment(t *testing.T) {
 	ctx := context.Background()
+
 	t.Setenv("WARPHOLD_STATE_DIR", t.TempDir())
 
 	cfg, pw, _ := provisionedRepo(t)

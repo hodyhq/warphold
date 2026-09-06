@@ -33,7 +33,7 @@ func (c *commandAppURL) run(_ context.Context) error {
 	if err != nil {
 		// Same exit code as 'agent status': "not running" is not "broke".
 		c.out.printStderr("%v\n", err)
-		os.Exit(engineDownExitCode) //nolint:forbidigo
+		os.Exit(engineDownExitCode)
 	}
 
 	c.out.printStdout("%v\n", u)

@@ -25,15 +25,19 @@ func (s *Store) CreateToken(ctx context.Context, t *Token) (int64, error) {
 }
 
 func scanToken(row interface{ Scan(...any) error }) (*Token, error) {
-	var t Token
-	var exp, created string
-	var rev sql.NullString
+	var (
+		t            Token
+		exp, created string
+		rev          sql.NullString
+	)
 	if err := row.Scan(&t.ID, &t.Hash, &t.GroupID, &exp, &t.MaxUses, &t.Uses, &rev, &t.CreatedBy, &created); err != nil {
 		return nil, notFound(err)
 	}
+
 	t.ExpiresAt = parseTS(exp)
 	t.CreatedAt = parseTS(created)
 	t.RevokedAt = parseTSP(rev)
+
 	return &t, nil
 }
 
@@ -51,7 +55,9 @@ func (s *Store) ConsumeToken(ctx context.Context, id int64, now time.Time) (bool
 	if err != nil {
 		return false, err
 	}
+
 	n, err := res.RowsAffected()
+
 	return n == 1, err
 }
 
@@ -66,13 +72,16 @@ func (s *Store) TokensForGroup(ctx context.Context, groupID int64) ([]Token, err
 		return nil, err
 	}
 	defer rows.Close()
+
 	var out []Token
 	for rows.Next() {
 		t, err := scanToken(rows)
 		if err != nil {
 			return nil, err
 		}
+
 		out = append(out, *t)
 	}
+
 	return out, rows.Err()
 }

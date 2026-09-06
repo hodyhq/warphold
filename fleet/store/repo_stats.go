@@ -22,15 +22,20 @@ const repoStatCols = `agent_id,collected_at,logical_bytes,stored_bytes,blob_coun
 
 // RepoStat returns an agent's stats row, or ErrNotFound.
 func (s *Store) RepoStat(ctx context.Context, agentID string) (*RepoStat, error) {
-	var r RepoStat
-	var collected string
-	var mirrored sql.NullString
+	var (
+		r         RepoStat
+		collected string
+		mirrored  sql.NullString
+	)
+
 	err := s.db.QueryRowContext(ctx, `SELECT `+repoStatCols+` FROM repo_stats WHERE agent_id=?`, agentID).
 		Scan(&r.AgentID, &collected, &r.LogicalBytes, &r.StoredBytes, &r.BlobCount, &mirrored, &r.MirroredBytes)
 	if err != nil {
 		return nil, notFound(err)
 	}
+
 	r.CollectedAt, r.MirroredAt = parseTS(collected), parseTSP(mirrored)
+
 	return &r, nil
 }
 
@@ -40,6 +45,7 @@ func (s *Store) SetMirrored(ctx context.Context, agentID string, at time.Time, b
 	_, err := s.db.ExecContext(ctx, `INSERT INTO repo_stats(agent_id,collected_at,mirrored_at,mirrored_bytes) VALUES(?,?,?,?)
 		ON CONFLICT(agent_id) DO UPDATE SET mirrored_at=excluded.mirrored_at, mirrored_bytes=excluded.mirrored_bytes`,
 		agentID, ts(at), ts(at), bytes)
+
 	return err
 }
 
@@ -50,6 +56,7 @@ func (s *Store) SetStats(ctx context.Context, agentID string, at time.Time, logi
 	_, err := s.db.ExecContext(ctx, `INSERT INTO repo_stats(agent_id,collected_at,logical_bytes,stored_bytes,blob_count) VALUES(?,?,?,?,?)
 		ON CONFLICT(agent_id) DO UPDATE SET collected_at=excluded.collected_at, logical_bytes=excluded.logical_bytes, stored_bytes=excluded.stored_bytes, blob_count=excluded.blob_count`,
 		agentID, ts(at), logicalBytes, storedBytes, blobCount)
+
 	return err
 }
 

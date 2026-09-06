@@ -13,12 +13,14 @@ import (
 
 func mustURL(t *testing.T, raw string) *url.URL {
 	t.Helper()
+
 	u, err := parsePublicURL(raw)
 	require.NoError(t, err)
+
 	return u
 }
 
-// originAllowed is the origin half of the CSRF defence. The case that matters
+// originAllowed is the origin half of the CSRF defense. The case that matters
 // most is the one that passes: a request with neither header is curl, the
 // agent or CI, and rejecting it would break every non-browser client while
 // stopping nothing a browser can do.
@@ -26,10 +28,11 @@ func TestOriginAllowed(t *testing.T) {
 	pub := mustURL(t, "https://fleet.example.com")
 
 	req := func(headers map[string]string) *http.Request {
-		r := httptest.NewRequest(http.MethodPost, "/", nil)
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", http.NoBody)
 		for k, v := range headers {
 			r.Header.Set(k, v)
 		}
+
 		return r
 	}
 
@@ -54,7 +57,9 @@ func TestOriginAllowed(t *testing.T) {
 // check is skipped - but exactly once per server, the operator is told.
 func TestRequireCSRFWarnsOnceWithoutPublicURL(t *testing.T) {
 	var buf bytes.Buffer
+
 	prev := log.Writer()
+
 	log.SetOutput(&buf)
 	t.Cleanup(func() { log.SetOutput(prev) })
 
@@ -63,13 +68,15 @@ func TestRequireCSRFWarnsOnceWithoutPublicURL(t *testing.T) {
 	h := s.requireCSRF(func(http.ResponseWriter, *http.Request) { called++ })
 
 	post := func() *httptest.ResponseRecorder {
-		r := httptest.NewRequest(http.MethodPost, "/", nil)
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", http.NoBody)
 		r.AddCookie(&http.Cookie{Name: csrfCookie, Value: "tok"})
 		r.Header.Set(csrfHeader, "tok")
 		// A foreign origin, which would be rejected if public_url were set.
 		r.Header.Set("Origin", "https://evil.example.com")
+
 		rr := httptest.NewRecorder()
 		h(rr, r)
+
 		return rr
 	}
 
@@ -87,8 +94,9 @@ func TestRequireCSRFExemptsSafeMethods(t *testing.T) {
 	called := false
 	h := s.requireCSRF(func(http.ResponseWriter, *http.Request) { called = true })
 
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", http.NoBody)
 	r.Header.Set("Origin", "https://evil.example.com")
+
 	rr := httptest.NewRecorder()
 	h(rr, r)
 	require.True(t, called)
@@ -140,7 +148,7 @@ func TestDefaultPortMatchesOrigin(t *testing.T) {
 	pub := mustURL(t, "https://fleet.example.com:443")
 	require.Equal(t, "https://fleet.example.com", pub.String())
 
-	r := httptest.NewRequest(http.MethodPost, "/", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", http.NoBody)
 	r.Header.Set("Origin", "https://fleet.example.com")
 	require.True(t, originAllowed(r, pub))
 }

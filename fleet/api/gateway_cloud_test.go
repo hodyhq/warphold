@@ -31,7 +31,7 @@ import (
 
 const fakeBucketName = "warphold-hosted"
 
-// fakeBucket is a minimal S3-compatible bucket: PUT honouring If-None-Match: *,
+// fakeBucket is a minimal S3-compatible bucket: PUT honoring If-None-Match: *,
 // HEAD and ranged GET, which is everything the cloud-direct backend issues to
 // store a device's blob and read it back. It is unauthenticated on purpose -
 // the device's own signature is the gateway's concern and has already been

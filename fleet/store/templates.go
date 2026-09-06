@@ -51,10 +51,12 @@ func (s *Store) CreateTemplate(ctx context.Context, t *Template) (int64, error) 
 	if err != nil {
 		return 0, err
 	}
+
 	pol, err := normalizePolicyJSON(t.PolicyJSON)
 	if err != nil {
 		return 0, err
 	}
+
 	return s.exec(ctx, `INSERT INTO policy_templates(name,sources,policy_json,created_at) VALUES(?,?,?,?)`, t.Name, string(src), string(pol), ts(t.CreatedAt))
 }
 
@@ -63,23 +65,30 @@ func (s *Store) UpdateTemplate(ctx context.Context, t *Template) error {
 	if err != nil {
 		return err
 	}
+
 	pol, err := normalizePolicyJSON(t.PolicyJSON)
 	if err != nil {
 		return err
 	}
+
 	_, err = s.db.ExecContext(ctx, `UPDATE policy_templates SET name=?,sources=?,policy_json=? WHERE id=?`, t.Name, string(src), string(pol), t.ID)
+
 	return err
 }
 
 func scanTemplate(row interface{ Scan(...any) error }) (*Template, error) {
-	var t Template
-	var src, pol, c string
+	var (
+		t           Template
+		src, pol, c string
+	)
 	if err := row.Scan(&t.ID, &t.Name, &src, &pol, &c); err != nil {
 		return nil, notFound(err)
 	}
+
 	_ = json.Unmarshal([]byte(src), &t.Sources)
 	t.PolicyJSON = json.RawMessage(pol)
 	t.CreatedAt = parseTS(c)
+
 	return &t, nil
 }
 
@@ -93,13 +102,16 @@ func (s *Store) Templates(ctx context.Context) ([]Template, error) {
 		return nil, err
 	}
 	defer rows.Close()
+
 	var out []Template
 	for rows.Next() {
 		t, err := scanTemplate(rows)
 		if err != nil {
 			return nil, err
 		}
+
 		out = append(out, *t)
 	}
+
 	return out, rows.Err()
 }

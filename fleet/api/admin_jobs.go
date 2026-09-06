@@ -39,6 +39,7 @@ func jobsOut(js []store.Job) []jobOut {
 			StartedAt: j.StartedAt, FinishedAt: j.FinishedAt, Status: j.Status, Detail: j.Detail,
 		})
 	}
+
 	return out
 }
 
@@ -53,10 +54,12 @@ func (s *Server) handleJobCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "malformed body")
 		return
 	}
+
 	if !jobs.HasKind(in.Kind) {
 		writeErr(w, http.StatusBadRequest, "kind must be one of "+strings.Join(jobs.KindList(), ", "))
 		return
 	}
+
 	ctx := r.Context()
 	if in.AgentID != "" {
 		// A job whose agent does not exist would fail the foreign key on
@@ -66,25 +69,30 @@ func (s *Server) handleJobCreate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+
 	id, err := s.store().EnqueueJob(ctx, &store.Job{Kind: in.Kind, AgentID: in.AgentID, ScheduledFor: s.now()})
 	if err != nil {
 		adminFailed(w, "enqueue job", err)
 		return
 	}
+
 	writeJSON(w, http.StatusAccepted, map[string]any{"id": id})
 }
 
 func (s *Server) handleAgentJobs(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+
 	a, err := s.store().Agent(ctx, mux.Vars(r)["id"])
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "agent not found")
 		return
 	}
+
 	js, err := s.store().JobsForAgent(ctx, a.ID, jobsPerAgent)
 	if err != nil {
 		adminFailed(w, "list jobs", err)
 		return
 	}
+
 	writeJSON(w, http.StatusOK, jobsOut(js))
 }

@@ -17,7 +17,9 @@ import (
 func TestTokenLifecycle(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "f.db"))
 	require.NoError(t, err)
+
 	defer st.Close()
+
 	ctx := context.Background()
 	tk := enroll.NewTokens(st)
 	now := time.Now()
@@ -40,6 +42,7 @@ func TestTokenLifecycle(t *testing.T) {
 	got, err := tk.Consume(ctx, plain)
 	require.NoError(t, err)
 	require.Equal(t, tok.ID, got.ID)
+
 	_, err = tk.Consume(ctx, plain)
 	require.ErrorIs(t, err, enroll.ErrTokenInvalid, "single use")
 
@@ -51,10 +54,12 @@ func TestTokenLifecycle(t *testing.T) {
 
 	multi, _, err := tk.Issue(ctx, gid, 2*time.Hour, 0, 7)
 	require.NoError(t, err)
-	for i := 0; i < 5; i++ {
+
+	for range 5 {
 		_, err = tk.Consume(ctx, multi)
 		require.NoError(t, err, "unlimited uses")
 	}
+
 	now = now.Add(3 * time.Hour)
 	_, err = tk.Consume(ctx, multi)
 	require.ErrorIs(t, err, enroll.ErrTokenInvalid, "expired")
@@ -67,6 +72,7 @@ func TestTokenLifecycle(t *testing.T) {
 func TestConsumeIsAtomic(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "f.db"))
 	require.NoError(t, err)
+
 	defer st.Close()
 
 	ctx := context.Background()
@@ -80,21 +86,25 @@ func TestConsumeIsAtomic(t *testing.T) {
 	// consume plain from n goroutines, each with its own Tokens (as the API
 	// does per request), and count the successes.
 	race := func(plain string, n int) int {
-		var wg sync.WaitGroup
-		var okCount int64
+		var (
+			wg      sync.WaitGroup
+			okCount int64
+		)
+
 		start := make(chan struct{})
-		for i := 0; i < n; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+		for range n {
+			wg.Go(func() {
 				<-start
+
 				if _, err := enroll.NewTokens(st).Consume(ctx, plain); err == nil {
 					atomic.AddInt64(&okCount, 1)
 				}
-			}()
+			})
 		}
+
 		close(start)
 		wg.Wait()
+
 		return int(okCount)
 	}
 

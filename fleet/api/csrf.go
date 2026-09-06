@@ -18,14 +18,16 @@ func csrfOK(r *http.Request) bool {
 	if err != nil || c.Value == "" {
 		return false
 	}
+
 	sent := r.Header.Get(csrfHeader)
 	if sent == "" {
 		return false
 	}
+
 	return subtle.ConstantTimeCompare([]byte(c.Value), []byte(sent)) == 1
 }
 
-// originAllowed is the origin half of the CSRF defence, and it is deliberately
+// originAllowed is the origin half of the CSRF defense, and it is deliberately
 // not fail-closed:
 //
 //	Origin present  -> must equal publicURL's scheme+host, else reject
@@ -40,6 +42,7 @@ func originAllowed(r *http.Request, publicURL *url.URL) bool {
 	if publicURL == nil {
 		return true
 	}
+
 	origin := r.Header.Get("Origin")
 	if origin == "" {
 		if ref := r.Header.Get("Referer"); ref != "" {
@@ -47,9 +50,11 @@ func originAllowed(r *http.Request, publicURL *url.URL) bool {
 			if err != nil || u.Host == "" {
 				return false
 			}
+
 			origin = u.Scheme + "://" + u.Host
 		}
 	}
+
 	if origin == "" {
 		return true
 	}
@@ -80,15 +85,18 @@ func (s *Server) requireCSRF(next http.HandlerFunc) http.HandlerFunc {
 					log.Print("warphold fleet: public_url is not set, so the CSRF origin check is disabled; set it in Settings")
 				})
 			}
+
 			if !originAllowed(r, pu) {
 				writeErr(w, http.StatusForbidden, "request origin does not match the configured public URL")
 				return
 			}
+
 			if !csrfOK(r) {
 				writeErr(w, http.StatusForbidden, "missing or invalid "+csrfHeader+" header")
 				return
 			}
 		}
+
 		next(w, r)
 	}
 }

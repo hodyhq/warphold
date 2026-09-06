@@ -33,7 +33,9 @@ func NewToken() (string, []byte, error) {
 	if _, err := io.ReadFull(rand.Reader, b); err != nil {
 		return "", nil, err
 	}
+
 	plain := "wh_" + base64.RawURLEncoding.EncodeToString(b)
+
 	return plain, HashToken(plain), nil
 }
 
@@ -60,23 +62,30 @@ func (t *Tokens) Issue(ctx context.Context, groupID int64, ttl time.Duration, ma
 	if ttl <= 0 {
 		ttl = DefaultTTL
 	}
+
 	if ttl > MaxTTL {
 		return "", nil, ErrTTLTooLong
 	}
+
 	if maxUses < 0 {
 		maxUses = 1
 	}
+
 	plain, hash, err := NewToken()
 	if err != nil {
 		return "", nil, err
 	}
+
 	now := t.now()
 	tok := &store.Token{Hash: hash, GroupID: groupID, ExpiresAt: now.Add(ttl), MaxUses: maxUses, CreatedBy: by, CreatedAt: now}
+
 	id, err := t.st.CreateToken(ctx, tok)
 	if err != nil {
 		return "", nil, err
 	}
+
 	tok.ID = id
+
 	return plain, tok, nil
 }
 

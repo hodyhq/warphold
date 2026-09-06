@@ -77,5 +77,6 @@ func TestJobsAPIQueuesAndLists(t *testing.T) {
 	require.Equal(t, 401, resp.StatusCode)
 	resp, _ = h.doList("GET", "/api/v1/fleet/agents/"+id+"/jobs")
 	require.Equal(t, 401, resp.StatusCode)
+
 	h.jar = saved
 }

@@ -21,12 +21,13 @@ func TestSettingsRequiresAdminAndRoundTrips(t *testing.T) {
 	h.jar = nil
 	resp, _ = h.do("GET", "/api/v1/fleet/settings", nil)
 	require.Equal(t, 401, resp.StatusCode, "settings are admin-only")
+
 	h.jar = saved
 
 	resp, body := h.do("GET", "/api/v1/fleet/settings", nil)
 	require.Equal(t, 200, resp.StatusCode)
-	require.Equal(t, "", body["fleet_name"], "no fleet name set yet")
-	require.Equal(t, "", body["public_url"], "no public URL set yet")
+	require.Empty(t, body["fleet_name"], "no fleet name set yet")
+	require.Empty(t, body["public_url"], "no public URL set yet")
 	require.Equal(t, float64(300), body["poll_interval"], "the agent default")
 
 	// A partial write leaves the key it does not mention alone.
@@ -81,11 +82,13 @@ func TestSettingsRejectsUnknownKeysAndBadValues(t *testing.T) {
 	resp, body := h.do("GET", "/api/v1/fleet/settings", nil)
 	require.Equal(t, 200, resp.StatusCode)
 	require.ElementsMatch(t,
-		[]string{"fleet_name", "poll_interval", "public_url", "revoked_retention_days",
+		[]string{
+			"fleet_name", "poll_interval", "public_url", "revoked_retention_days",
 			"trusted_proxies", "gateway_ip_rate", "gateway_ip_burst", "gateway_device_rate",
 			"gateway_device_burst",
 			"smtp_host", "smtp_port", "smtp_username", "smtp_from", "smtp_tls", "smtp_password_set",
-			"job_intervals"},
+			"job_intervals",
+		},
 		slices.Collect(maps.Keys(body)), "only the whitelisted keys are exposed")
 	require.NotContains(t, body, "seal_salt")
 }

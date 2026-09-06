@@ -13,7 +13,7 @@ import (
 	"github.com/kopia/kopia/agent/poll"
 )
 
-func enrollAgent(t *testing.T, h *harness) (id string, bearer string) {
+func enrollAgent(t *testing.T, h *harness) (id, bearer string) {
 	t.Helper()
 	h.setPublicURL()
 	gid := h.mkGroup(t)
@@ -22,7 +22,9 @@ func enrollAgent(t *testing.T, h *harness) (id string, bearer string) {
 	h.jar = nil
 	resp, body := h.do("POST", "/api/v1/fleet/enroll", map[string]any{"token": tok["token"], "hostname": "fw13", "os": "linux", "arch": "amd64", "version": "0.1.0", "scope": "user"})
 	require.Equal(t, 201, resp.StatusCode)
+
 	h.jar = admin
+
 	return body["agent_id"].(string), body["bearer"].(string)
 }
 
@@ -48,6 +50,7 @@ func TestPollReportHealth(t *testing.T) {
 	// a pending command breaks the 304
 	resp, _ := h.do("POST", "/api/v1/fleet/agents/"+id+"/commands", map[string]any{"kind": "snapshot-now", "source": "~"})
 	require.Equal(t, 201, resp.StatusCode)
+
 	withCmd, err := c.Poll(ctx, poll.Heartbeat{}, doc.ETag)
 	require.NoError(t, err)
 	require.Len(t, withCmd.Commands, 1)
@@ -67,10 +70,12 @@ func TestPollReportHealth(t *testing.T) {
 
 	// an actual snapshot report is what makes it green
 	require.NoError(t, c.Report(ctx, poll.Report{TaskID: "t1s", Kind: "snapshot", Source: "~", StartedAt: now.Add(-time.Minute), FinishedAt: now, Status: "ok", SnapshotID: "k1", Bytes: 5, Files: 1}))
+
 	_, detail = h.do("GET", "/api/v1/fleet/agents/"+id, nil)
 	require.Equal(t, "green", detail["health"])
 
 	require.NoError(t, c.Report(ctx, poll.Report{TaskID: "t2", Kind: "snapshot", Source: "~", StartedAt: now, FinishedAt: now.Add(time.Second), Status: "error", Stderr: "kopia: error: unable to write blob"}))
+
 	_, detail = h.do("GET", "/api/v1/fleet/agents/"+id, nil)
 	require.Equal(t, "red", detail["health"])
 	reports := detail["reports"].([]any)
@@ -83,6 +88,7 @@ func TestPollReportHealth(t *testing.T) {
 	res, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	require.Equal(t, 204, res.StatusCode)
+
 	changed, err := c.Poll(ctx, poll.Heartbeat{}, doc.ETag)
 	require.NoError(t, err)
 	require.NotNil(t, changed)
@@ -91,8 +97,10 @@ func TestPollReportHealth(t *testing.T) {
 	// revoke → 401
 	resp, _ = h.do("POST", "/api/v1/fleet/agents/"+id+"/revoke", nil)
 	require.Equal(t, 204, resp.StatusCode)
+
 	_, err = c.Poll(ctx, poll.Heartbeat{}, "")
 	require.ErrorIs(t, err, poll.ErrRevoked)
+
 	_ = json.Marshal
 }
 
@@ -116,6 +124,7 @@ func TestReportRejectsOtherAgentsCommand(t *testing.T) {
 
 			resp, cmd := h.do("POST", "/api/v1/fleet/agents/"+idB+"/commands", map[string]any{"kind": tc.cmdKind, "source": "~"})
 			require.Equal(t, 201, resp.StatusCode)
+
 			cmdID := int64(cmd["id"].(float64))
 
 			cA := &poll.Client{Server: h.srv.URL, Bearer: bearerA}
@@ -143,7 +152,7 @@ func TestReportRejectsOtherAgentsCommand(t *testing.T) {
 // up in a month stays "unknown". But healthOf also reads the latest report of
 // *any* kind and calls it a failed run when its status is "error", so a verify
 // that could not run at all does show red until the next report. Pinned as
-// the behaviour it is; changing it is a separate decision.
+// the behavior it is; changing it is a separate decision.
 func TestVerifyReportAckAndHealth(t *testing.T) {
 	h := newHarness(t)
 	h.activateAndLogin()
@@ -152,6 +161,7 @@ func TestVerifyReportAckAndHealth(t *testing.T) {
 
 	resp, cmd := h.do("POST", "/api/v1/fleet/agents/"+id+"/commands", map[string]any{"kind": "verify"})
 	require.Equal(t, 201, resp.StatusCode)
+
 	cmdID := int64(cmd["id"].(float64))
 
 	c := &poll.Client{Server: h.srv.URL, Bearer: bearer}
@@ -183,20 +193,23 @@ func TestVerifyReportAckAndHealth(t *testing.T) {
 	// red - the device's backups are still whatever they were, and the damage
 	// is visible in the report itself.
 	require.NoError(t, c.Report(ctx, poll.Report{TaskID: "v-failed", Kind: "verify", StartedAt: now, FinishedAt: now.Add(time.Second), Status: "failed", Stderr: "object x is backed by missing blob p01"}))
+
 	_, detail = h.do("GET", "/api/v1/fleet/agents/"+id, nil)
 	require.Equal(t, "unknown", detail["health"], "damage found by verify must not be scored as a failed backup run")
 
 	// A verify that could not run at all: status "error". This one DOES show
 	// red, because healthOf reads the latest report of any kind and treats
-	// status "error" as a failed run. Pinned as the behaviour it is, not as an
+	// status "error" as a failed run. Pinned as the behavior it is, not as an
 	// endorsement: it is the same rule that already applies to a failed
 	// pause/resume, and it clears as soon as any later report lands.
 	require.NoError(t, c.Report(ctx, poll.Report{TaskID: "v-error", Kind: "verify", StartedAt: now, FinishedAt: now.Add(2 * time.Second), Status: "error", Stderr: "open repository: no such file"}))
+
 	_, detail = h.do("GET", "/api/v1/fleet/agents/"+id, nil)
 	require.Equal(t, "red", detail["health"], "a verify that could not run is the latest failed run")
 
 	// ...and the next report is what clears it.
 	require.NoError(t, c.Report(ctx, poll.Report{TaskID: "v-ok-again", Kind: "verify", StartedAt: now, FinishedAt: now.Add(3 * time.Second), Status: "ok"}))
+
 	_, detail = h.do("GET", "/api/v1/fleet/agents/"+id, nil)
 	require.Equal(t, "unknown", detail["health"], "a later report replaces the failed one; still no backup, so still unknown")
 }
@@ -207,15 +220,18 @@ func TestVerifyReportAckAndHealth(t *testing.T) {
 // (and reject) before requireAgent ever calls store().
 func TestAgentPollRejectsBeforeActivation(t *testing.T) {
 	h := newHarness(t)
-	req, err := http.NewRequest(http.MethodPost, h.srv.URL+"/api/v1/fleet/agent/poll", jsonBody(map[string]any{}))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, h.srv.URL+"/api/v1/fleet/agent/poll", jsonBody(map[string]any{}))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer x")
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
+
 	defer resp.Body.Close()
+
 	require.GreaterOrEqual(t, resp.StatusCode, 400)
 	require.Less(t, resp.StatusCode, 500, "must be a client error, not a 5xx from a nil-store panic")
+
 	var out map[string]any
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
 	require.NotEmpty(t, out["error"])
@@ -232,6 +248,7 @@ func TestReportAckIsIdempotentOnRetry(t *testing.T) {
 	id, bearer := enrollAgent(t, h)
 	resp, cmd := h.do("POST", "/api/v1/fleet/agents/"+id+"/commands", map[string]any{"kind": "snapshot-now", "source": "~"})
 	require.Equal(t, 201, resp.StatusCode)
+
 	cmdID := int64(cmd["id"].(float64))
 
 	c := &poll.Client{Server: h.srv.URL, Bearer: bearer}
@@ -252,8 +269,10 @@ func TestReportStderrIsCapped(t *testing.T) {
 	now := time.Now()
 	huge := strings.Repeat("x", 3*8192)
 	require.NoError(t, c.Report(t.Context(), poll.Report{TaskID: "t-big", Kind: "snapshot", Source: "~", StartedAt: now, FinishedAt: now, Status: "failed", Stderr: huge}))
+
 	resp, body := h.do("GET", "/api/v1/fleet/agents/"+id, nil)
 	require.Equal(t, 200, resp.StatusCode)
+
 	reports := body["reports"].([]any)
 	require.Len(t, reports, 1)
 	got := reports[0].(map[string]any)["stderr"].(string)

@@ -26,13 +26,15 @@ func TestSessionTokenIsOpaqueAndHashed(t *testing.T) {
 
 func TestCSRFDoubleSubmit(t *testing.T) {
 	req := func(cookie, header string) *http.Request {
-		r := httptest.NewRequest(http.MethodPost, "/", nil)
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", http.NoBody)
 		if cookie != "" {
 			r.AddCookie(&http.Cookie{Name: csrfCookie, Value: cookie})
 		}
+
 		if header != "" {
 			r.Header.Set(csrfHeader, header)
 		}
+
 		return r
 	}
 
@@ -47,7 +49,7 @@ func TestCSRFDoubleSubmit(t *testing.T) {
 	h := (&Server{}).requireCSRF(func(http.ResponseWriter, *http.Request) { called = true })
 
 	rr := httptest.NewRecorder()
-	h(rr, httptest.NewRequest(http.MethodGet, "/", nil))
+	h(rr, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", http.NoBody))
 	require.True(t, called)
 	require.Equal(t, 200, rr.Code)
 
@@ -76,13 +78,17 @@ func TestDummyPWHashNeverCachesEmpty(t *testing.T) {
 func TestLimiter(t *testing.T) {
 	l := newLimiter(3, time.Minute)
 	now := time.Unix(0, 0)
+
 	l.now = func() time.Time { return now }
 	for range 3 {
 		require.True(t, l.allow("1.2.3.4"))
 	}
+
 	require.False(t, l.allow("1.2.3.4"))
 	require.True(t, l.allow("5.6.7.8"))
+
 	now = now.Add(61 * time.Second)
+
 	require.True(t, l.allow("1.2.3.4"))
 }
 
@@ -91,11 +97,14 @@ func TestLimiter(t *testing.T) {
 func TestLimiterEvictsWhenEveryKeyIsActive(t *testing.T) {
 	l := newLimiter(3, time.Hour)
 	now := time.Unix(0, 0)
+
 	l.now = func() time.Time { return now }
 	for i := range maxLimiterKeys + 50 {
 		require.True(t, l.allow(strconv.Itoa(i)))
+
 		now = now.Add(time.Millisecond)
 	}
+
 	require.LessOrEqual(t, len(l.hits), maxLimiterKeys+1)
 	_, oldestKept := l.hits["0"]
 	require.False(t, oldestKept, "least recently used key was evicted first")

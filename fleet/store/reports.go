@@ -36,18 +36,25 @@ func (s *Store) AddReport(ctx context.Context, r *Report) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+
 	var id int64
+
 	err = s.db.QueryRowContext(ctx, `SELECT id FROM reports WHERE agent_id=? AND task_id=?`, r.AgentID, r.TaskID).Scan(&id)
+
 	return id, err
 }
 
 func scanReport(row interface{ Scan(...any) error }) (*Report, error) {
-	var r Report
-	var st, fi string
+	var (
+		r      Report
+		st, fi string
+	)
 	if err := row.Scan(&r.ID, &r.AgentID, &r.TaskID, &r.Kind, &r.Source, &st, &fi, &r.Status, &r.Bytes, &r.Files, &r.SnapshotID, &r.Stderr); err != nil {
 		return nil, notFound(err)
 	}
+
 	r.StartedAt, r.FinishedAt = parseTS(st), parseTS(fi)
+
 	return &r, nil
 }
 
@@ -57,14 +64,17 @@ func (s *Store) ReportsForAgent(ctx context.Context, agentID string, limit int) 
 		return nil, err
 	}
 	defer rows.Close()
+
 	var out []Report
 	for rows.Next() {
 		r, err := scanReport(rows)
 		if err != nil {
 			return nil, err
 		}
+
 		out = append(out, *r)
 	}
+
 	return out, rows.Err()
 }
 
@@ -77,6 +87,7 @@ func (s *Store) LastOKReport(ctx context.Context, agentID string) (*Report, erro
 	if errors.Is(err, ErrNotFound) {
 		return nil, nil
 	}
+
 	return r, err
 }
 
@@ -87,14 +98,17 @@ func (s *Store) LatestReports(ctx context.Context) (map[string]Report, error) {
 		return nil, err
 	}
 	defer rows.Close()
+
 	out := map[string]Report{}
 	for rows.Next() {
 		r, err := scanReport(rows)
 		if err != nil {
 			return nil, err
 		}
+
 		out[r.AgentID] = *r
 	}
+
 	return out, rows.Err()
 }
 
@@ -108,14 +122,17 @@ func (s *Store) LastOKReports(ctx context.Context) (map[string]time.Time, error)
 		return nil, err
 	}
 	defer rows.Close()
+
 	out := map[string]time.Time{}
 	for rows.Next() {
 		var agentID, fi string
 		if err := rows.Scan(&agentID, &fi); err != nil {
 			return nil, err
 		}
+
 		out[agentID] = parseTS(fi)
 	}
+
 	return out, rows.Err()
 }
 
@@ -135,13 +152,16 @@ func (s *Store) ReportsBetween(ctx context.Context, since, until time.Time) ([]R
 		return nil, err
 	}
 	defer rows.Close()
+
 	var out []Report
 	for rows.Next() {
 		r, err := scanReport(rows)
 		if err != nil {
 			return nil, err
 		}
+
 		out = append(out, *r)
 	}
+
 	return out, rows.Err()
 }

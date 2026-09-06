@@ -111,6 +111,7 @@ func (s *Server) ServeSPAPublic(m *mux.Router, fsys http.FileSystem) {
 				http.NotFound(w, r)
 				return
 			}
+
 			f.Close() //nolint:errcheck // read-only probe
 
 			w.Header().Set("Cache-Control", cacheControl)

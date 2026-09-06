@@ -17,6 +17,7 @@ func testStore(t *testing.T) *store.Store {
 	st, err := store.Open(filepath.Join(t.TempDir(), "fleet.db"))
 	require.NoError(t, err)
 	t.Cleanup(func() { st.Close() })
+
 	return st
 }
 
@@ -25,6 +26,7 @@ func TestLoadFallsBackToDefaultsAndRoundTripsThroughTheSeal(t *testing.T) {
 	st := testStore(t)
 	salt, err := seal.NewSalt()
 	require.NoError(t, err)
+
 	k := seal.Derive("pw", salt)
 
 	c, err := Load(ctx, st, k.Open)
@@ -67,6 +69,7 @@ func TestSenderForUsesTheStoredSettings(t *testing.T) {
 
 	send := SenderFor(st, k.Open)
 	require.NoError(t, send(ctx, []string{"ops@example.com"}, "hi", "t", "<p>h</p>"))
+
 	auth, from, rcpt, _ := s.snapshot()
 	require.Equal(t, "\x00user\x00pw", auth)
 	require.Equal(t, "fleet@example.com", from)

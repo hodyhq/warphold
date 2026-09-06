@@ -21,16 +21,19 @@ func fleetForTest(t *testing.T) (string, string) {
 	t.Helper()
 	s := api.New(t.TempDir())
 	t.Cleanup(func() { s.Close() })
+
 	m := mux.NewRouter()
 	s.Mount(m)
 	ts := httptest.NewServer(m)
 	t.Cleanup(ts.Close)
+
 	ctx := context.Background()
 	require.NoError(t, s.Activate(ctx, "seal-me-please", "hody@hody.dev", "pw12345678", ""))
 	tid, tpl, gid := s.SeedGroupForTesting(ctx, t.TempDir(), []string{"~"}, `{"retention":{"keepLatest":3}}`)
 	_ = tid
 	_ = tpl
 	plain := s.IssueTokenForTesting(ctx, gid)
+
 	return ts.URL, plain
 }
 
@@ -46,8 +49,10 @@ func TestAgentEnrollWritesStateAndConnectsRepo(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, url, cfg.Server)
 	require.NotEmpty(t, cfg.Bearer)
+
 	_, err = repo.Open(context.Background(), filepath.Join(stateDir, "repository.config"), "", nil)
 	require.Error(t, err, "password is not persisted in the config file")
+
 	raw, _ := json.Marshal(cfg)
 	require.NotContains(t, string(raw), "connect_token")
 }

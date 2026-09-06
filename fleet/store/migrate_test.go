@@ -8,11 +8,9 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-
-	"github.com/kopia/kopia/fleet/seal"
-
 	_ "modernc.org/sqlite" // pure-Go driver, registers "sqlite"
 
+	"github.com/kopia/kopia/fleet/seal"
 	"github.com/kopia/kopia/fleet/store"
 )
 
@@ -65,27 +63,37 @@ func openRaw(t *testing.T, ddl string) string {
 	p := filepath.Join(t.TempDir(), "fleet.db")
 	db, err := sql.Open("sqlite", p)
 	require.NoError(t, err)
+
 	defer db.Close()
+
 	_, err = db.Exec(ddl)
 	require.NoError(t, err)
+
 	return p
 }
 
 func columns(t *testing.T, path, table string) map[string]bool {
 	t.Helper()
+
 	db, err := sql.Open("sqlite", path)
 	require.NoError(t, err)
+
 	defer db.Close()
+
 	rows, err := db.Query(`SELECT name FROM pragma_table_info(?)`, table)
 	require.NoError(t, err)
+
 	defer rows.Close()
+
 	out := map[string]bool{}
 	for rows.Next() {
 		var n string
 		require.NoError(t, rows.Scan(&n))
 		out[n] = true
 	}
+
 	require.NoError(t, rows.Err())
+
 	return out
 }
 
@@ -118,6 +126,7 @@ func TestMigrateAddsColumnsAndKeepsRows(t *testing.T) {
 	for _, c := range []string{"storage_mode", "endpoint", "mirror_kind", "mirror_bucket", "mirror_region", "sealed_mirror_key", "mirror_lock_verified_at"} {
 		require.True(t, tc[c], "targets.%s should have been added", c)
 	}
+
 	require.True(t, columns(t, p, "agents")["retired_at"])
 
 	// tables added by schema.sql on the same Open
@@ -133,6 +142,7 @@ func TestMigrateIsIdempotent(t *testing.T) {
 		require.NoError(t, err, "Open #%d", i)
 		require.NoError(t, s.Close())
 	}
+
 	require.True(t, columns(t, p, "targets")["mirror_bucket"])
 }
 
@@ -173,6 +183,7 @@ func TestMigrateRenamesTheFleetRepoPasswordIntoTheSealedNamespace(t *testing.T) 
 		s2, err := store.Open(p)
 		require.NoError(t, err)
 		require.NoError(t, s2.SetSetting(ctx, "sealed_fleet_repo_password", "cafe"))
+
 		return s2.Close()
 	}())
 
