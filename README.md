@@ -82,7 +82,9 @@ one-line command that enrolls the first device.
 - **Storage targets** — *hosted*, where devices back up to the Fleet server
   itself (Fleet disk, with an optional mirror to an Object-Lock bucket), or
   *cloud-direct*, where Fleet's own bucket credentials write straight to the
-  customer's bucket and devices never hold cloud credentials. Backblaze B2
+  customer's bucket and devices never hold the customer's cloud-provider
+  credentials (a device still gets a prefix-scoped Fleet gateway credential).
+  Backblaze B2
   works as a mirror target; cloud-direct needs a provider with real
   conditional writes (`If-None-Match`), which B2's S3 endpoint doesn't
   implement — use AWS S3, Cloudflare R2, MinIO, or another S3-compatible
@@ -107,8 +109,8 @@ one-line command that enrolls the first device.
   devices — not a key, not a repository, not a content index. Dedup is per
   device; a family fleet's cross-machine duplication is small next to the blast
   radius of a shared repository.
-- **The hosted path is append-only.** Devices talk S3 to a Fleet gateway that
-  will not let a device's key overwrite history, and allows `DeleteObject` only
+- **The hosted path is overwrite-protected.** Devices talk S3 to a Fleet gateway
+  that will not let a device's key overwrite history, and allows `DeleteObject` only
   for the narrow set of blob classes Kopia genuinely needs to complete a
   snapshot. That is stronger than a plain bucket writer key: B2's delete is a
   file *hide*, which needs only write permission.
@@ -160,9 +162,12 @@ not use its name or logo as branding.
   out of `ps` and out of your history; `sh -s -- --token <TOKEN>` does not.
 - **Activation is one-shot.** If it fails half-way (key file or database present
   but unusable), copy the whole state directory first (`cp -a <state dir> <state
-  dir>.bak`), then remove `seal.key` and `fleet.db` before retrying. This is only
-  safe before any device has enrolled — afterwards that key file protects real
-  escrowed passwords, which is why WarpHold refuses to overwrite it.
+  dir>.bak`) — that backup is your only way back to the admin account and
+  settings a completed activation already wrote — then remove `seal.key` and
+  `fleet.db` before retrying. Do this only before any device has enrolled:
+  afterwards `seal.key` also protects real escrowed device passwords, which is
+  why WarpHold refuses to overwrite it and why the backup is the only path back
+  to those too.
 - **The Electron desktop app (`app/`)** is upstream KopiaUI packaging. WarpHold
   neither builds nor ships it; `warphold agent tray` replaces it on Linux.
 
