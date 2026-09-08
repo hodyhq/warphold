@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -32,11 +33,26 @@ const (
 
 	// instanceIDBytes is the length of the opaque instance id.
 	instanceIDBytes = 16
-
-	// publicURLProbeTimeout bounds the end-to-end probe. A reverse proxy that
-	// needs longer than this to serve a static JSON status is misconfigured.
-	publicURLProbeTimeout = 5 * time.Second
 )
+
+// publicURLProbeTimeout bounds the end-to-end probe. A reverse proxy that
+// needs longer than this to serve a static JSON status is misconfigured.
+//
+// The status handler reads the fleet DB, whose own busy_timeout is 5s
+// (store.go) - the SQLite driver's retry-on-locked window when the probe
+// races the activating write. A probe timeout equal to that budget leaves no
+// margin: the loopback probe can time out before SQLite even gives up,
+// failing a request that would have succeeded a moment later. Windows'
+// mandatory (not advisory) file locking makes that lock held longer under
+// concurrent access, so it gets a wider margin (CI runs 34245613112 x3,
+// SQLITE_BUSY under the loopback probe).
+var publicURLProbeTimeout = func() time.Duration {
+	if runtime.GOOS == "windows" {
+		return 10 * time.Second
+	}
+
+	return 5 * time.Second
+}()
 
 // proxyRequirements is the operator-facing list shown whenever the end-to-end
 // probe fails: nearly every failure is one of these five (spec 6).
