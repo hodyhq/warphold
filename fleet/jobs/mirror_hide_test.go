@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -260,8 +261,8 @@ func TestMirrorHidesNothingForAnEmptyLocalStore(t *testing.T) {
 }
 
 func TestMirrorHidesNothingWhenTheLocalListingFails(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root reads an unreadable directory")
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs POSIX permissions that bind the test user")
 	}
 
 	f, vm := versionedFixture(t)
