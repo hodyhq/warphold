@@ -211,11 +211,11 @@ func TestMirrorHideGuard(t *testing.T) {
 		remote, local int
 		trip          bool
 	}{
-		// The limit is the larger of 20 and 10% of the mirrored keys.
-		{remote: 100, local: 80, trip: false},
-		{remote: 100, local: 79, trip: true},
-		{remote: 300, local: 270, trip: false},
-		{remote: 300, local: 269, trip: true},
+		// The default limit is the larger of 50 and 25% of the mirrored keys.
+		{remote: 100, local: 50, trip: false},
+		{remote: 100, local: 49, trip: true},
+		{remote: 400, local: 300, trip: false},
+		{remote: 400, local: 299, trip: true},
 	} {
 		t.Run(fmt.Sprintf("%d-of-%d", tc.remote-tc.local, tc.remote), func(t *testing.T) {
 			f, vm := versionedFixture(t)
@@ -299,18 +299,18 @@ func TestMirrorRefusesToHideOnAnUnversionedBucket(t *testing.T) {
 func TestMirrorHideGuardSumsTheLastWeek(t *testing.T) {
 	f, vm := versionedFixture(t)
 
-	// 100 mirrored keys: the limit is max(20, 10) = 20 per rolling week.
+	// 100 mirrored keys: the default limit is max(50, 25) = 50 per rolling week.
 	for i := range 100 {
 		k := fmt.Sprintf("dev1/p%04d", i)
 		vm.seed(k, clock.Now())
 		f.write(t, f.dir, k, k)
 	}
 
-	// Maintenance removes 8 blobs a night. Two nights fit (16), the third
-	// would make 24 and trips the guard.
+	// Maintenance removes 20 blobs a night. Two nights fit (40), the third
+	// would make 60 and trips the guard.
 	removed := 0
 	for night := 1; night <= 3; night++ {
-		for range 8 {
+		for range 20 {
 			require.NoError(t, os.Remove(filepath.Join(f.dir, "dev1", fmt.Sprintf("p%04d", removed))))
 			removed++
 		}
@@ -318,13 +318,41 @@ func TestMirrorHideGuardSumsTheLastWeek(t *testing.T) {
 		detail, err := f.run(t)
 		if night < 3 {
 			require.NoError(t, err, detail)
-			require.Equal(t, 8*night, vm.markers())
+			require.Equal(t, 20*night, vm.markers())
 
 			continue
 		}
 
 		require.Error(t, err)
-		require.Contains(t, detail, "hide guard tripped: 8 of 84 (16 more in the last 7 days)")
-		require.Equal(t, 16, vm.markers(), "the tripped run hides nothing")
+		require.Contains(t, detail, "hide guard tripped: 20 of 60 (40 more in the last 7 days); limit 50 from mirror_hide_max_percent=25, mirror_hide_min_count=50")
+		require.Equal(t, 40, vm.markers(), "the tripped run hides nothing")
 	}
+}
+
+func TestMirrorHideGuardLimitsAreSettings(t *testing.T) {
+	f, vm := versionedFixture(t)
+	ctx := context.Background()
+
+	for i := range 100 {
+		k := fmt.Sprintf("dev1/p%04d", i)
+		vm.seed(k, clock.Now())
+
+		if i >= 60 {
+			f.write(t, f.dir, k, k)
+		}
+	}
+
+	// 60 removed is past the default max(50, 25).
+	detail, err := f.run(t)
+	require.Error(t, err)
+	require.Contains(t, detail, "hide guard tripped: 60 of 100")
+	require.Zero(t, vm.markers())
+
+	// Raising the percent takes effect on the next run, no restart.
+	require.NoError(t, f.st.SetSetting(ctx, MirrorHideMaxPercentSetting, "60"))
+
+	detail, err = f.run(t)
+	require.NoError(t, err, detail)
+	require.Contains(t, detail, "60 hidden")
+	require.Equal(t, 60, vm.markers())
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,22 +27,52 @@ const (
 	// are counted. The row is read in the UI, not in a log.
 	detailErrors = 3
 
-	// hideGuardMin and hideGuardPercent bound how many mirror objects one run
-	// may hide for one device: more than max(hideGuardMin, hideGuardPercent% of
-	// the device's mirrored keys) looks like a damaged local store, not
-	// maintenance, so the run hides nothing for that device and fails.
-	//
-	// ponytail: constants, not settings; make them fleet settings if a real
-	// maintenance run (a large compaction) ever trips the guard.
-	hideGuardMin     = 20
-	hideGuardPercent = 10
-
 	// hideWindow is how far back the guard sums earlier runs' hides, so a
 	// slow erosion (a little every night) trips it as surely as one big run.
 	hideWindow = 7 * 24 * time.Hour
 
 	percent = 100
 )
+
+// The hide guard's limits are fleet settings, read at the start of every
+// run: a device may hide at most max(min count, max percent of its mirror
+// keys) in any 7 days. Past that it looks like a damaged local store, not
+// maintenance, so the run hides nothing for that device and fails.
+const (
+	MirrorHideMaxPercentSetting = "mirror_hide_max_percent"
+	MirrorHideMinCountSetting   = "mirror_hide_min_count"
+
+	defaultHidePercent  = 25
+	defaultHideMinCount = 50
+	maxHideMinCount     = 1_000_000
+)
+
+// IntSetting is a whole-number setting's default and inclusive bounds.
+type IntSetting struct{ Default, Min, Max int }
+
+// MirrorHideSettings is the hide guard's settings table, shared with the
+// settings API so the two cannot disagree about the bounds.
+var MirrorHideSettings = map[string]IntSetting{
+	MirrorHideMaxPercentSetting: {Default: defaultHidePercent, Min: 1, Max: percent},
+	MirrorHideMinCountSetting:   {Default: defaultHideMinCount, Min: 1, Max: maxHideMinCount},
+}
+
+// MirrorHideSetting reads one hide guard setting, falling back to its
+// default when unset or out of bounds.
+func MirrorHideSetting(ctx context.Context, st *store.Store, key string) int {
+	spec := MirrorHideSettings[key]
+
+	v, err := st.Setting(ctx, key)
+	if err != nil || v == "" {
+		return spec.Default
+	}
+
+	if n, err := strconv.Atoi(v); err == nil && n >= spec.Min && n <= spec.Max {
+		return n
+	}
+
+	return spec.Default
+}
 
 var (
 	errUnversioned = errors.New("mirror bucket is not versioned; refusing to hide")
@@ -112,6 +143,8 @@ func mirrorCI(t store.Target, c mirrorCreds) (blob.ConnectionInfo, error) {
 func Mirror(st *store.Store, open seal.Opener) Runner {
 	return func(ctx context.Context, j store.Job) (string, error) {
 		m := &mirrorRun{st: st, open: open, now: time.Now()}
+		m.hidePercent = MirrorHideSetting(ctx, st, MirrorHideMaxPercentSetting)
+		m.hideMin = MirrorHideSetting(ctx, st, MirrorHideMinCountSetting)
 
 		targets, err := st.Targets(ctx)
 		if err != nil {
@@ -157,6 +190,9 @@ type mirrorRun struct {
 	// bucket; anywhere else DeleteObject destroys the only copy.
 	tgt       store.Target
 	versioned bool
+
+	// hidePercent and hideMin are the hide guard's limits for this run.
+	hidePercent, hideMin int
 
 	// plain is set for a mirror bucket whose provider has no conditional write
 	// (B2's S3 endpoint answers 501 to If-None-Match at all, so every upload
@@ -403,8 +439,10 @@ func (m *mirrorRun) hide(ctx context.Context, where, device string, objs []gatew
 		return
 	}
 
-	if limit := max(hideGuardMin, len(have)*hideGuardPercent/percent); earlier+len(gone) > limit {
-		m.fail(where, fmt.Errorf("%w: %d of %d (%d more in the last 7 days)", errHideGuard, len(gone), len(have), earlier))
+	if limit := max(m.hideMin, len(have)*m.hidePercent/percent); earlier+len(gone) > limit {
+		m.fail(where, fmt.Errorf("%w: %d of %d (%d more in the last 7 days); limit %d from %s=%d, %s=%d",
+			errHideGuard, len(gone), len(have), earlier, limit,
+			MirrorHideMaxPercentSetting, m.hidePercent, MirrorHideMinCountSetting, m.hideMin))
 
 		return
 	}
