@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	netmail "net/mail"
 	"slices"
@@ -105,6 +106,16 @@ func (s *Server) currentSettings(ctx context.Context) (settingsOut, error) {
 		return settingsOut{}, err
 	}
 
+	hidePercent, err := jobs.MirrorHideSetting(ctx, s.store(), jobs.MirrorHideMaxPercentSetting)
+	if err != nil {
+		return settingsOut{}, fmt.Errorf("mirror hide setting: %w", err)
+	}
+
+	hideMin, err := jobs.MirrorHideSetting(ctx, s.store(), jobs.MirrorHideMinCountSetting)
+	if err != nil {
+		return settingsOut{}, fmt.Errorf("mirror hide setting: %w", err)
+	}
+
 	return settingsOut{
 		FleetName:            name,
 		PollInterval:         s.pollInterval(ctx),
@@ -122,8 +133,8 @@ func (s *Server) currentSettings(ctx context.Context) (settingsOut, error) {
 		SMTPTLS:              sm.TLS,
 		SMTPPasswordSet:      pwSet,
 		JobIntervals:         jobs.IntervalSeconds(ctx, s.store()),
-		MirrorHideMaxPercent: jobs.MirrorHideSetting(ctx, s.store(), jobs.MirrorHideMaxPercentSetting),
-		MirrorHideMinCount:   jobs.MirrorHideSetting(ctx, s.store(), jobs.MirrorHideMinCountSetting),
+		MirrorHideMaxPercent: hidePercent,
+		MirrorHideMinCount:   hideMin,
 	}, nil
 }
 

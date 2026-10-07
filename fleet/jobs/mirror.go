@@ -58,20 +58,21 @@ var MirrorHideSettings = map[string]IntSetting{
 }
 
 // MirrorHideSetting reads one hide guard setting, falling back to its
-// default when unset or out of bounds.
-func MirrorHideSetting(ctx context.Context, st *store.Store, key string) int {
+// default when unset or out of bounds. A failed read is an error, never the
+// default: a default looser than the configured value would weaken the guard.
+func MirrorHideSetting(ctx context.Context, st *store.Store, key string) (int, error) {
 	spec := MirrorHideSettings[key]
 
 	v, err := st.Setting(ctx, key)
-	if err != nil || v == "" {
-		return spec.Default
+	if err != nil {
+		return 0, fmt.Errorf("reading %s: %w", key, err)
 	}
 
 	if n, err := strconv.Atoi(v); err == nil && n >= spec.Min && n <= spec.Max {
-		return n
+		return n, nil
 	}
 
-	return spec.Default
+	return spec.Default, nil
 }
 
 var (
@@ -143,8 +144,15 @@ func mirrorCI(t store.Target, c mirrorCreds) (blob.ConnectionInfo, error) {
 func Mirror(st *store.Store, open seal.Opener) Runner {
 	return func(ctx context.Context, j store.Job) (string, error) {
 		m := &mirrorRun{st: st, open: open, now: time.Now()}
-		m.hidePercent = MirrorHideSetting(ctx, st, MirrorHideMaxPercentSetting)
-		m.hideMin = MirrorHideSetting(ctx, st, MirrorHideMinCountSetting)
+
+		var err error
+		if m.hidePercent, err = MirrorHideSetting(ctx, st, MirrorHideMaxPercentSetting); err != nil {
+			return "", err
+		}
+
+		if m.hideMin, err = MirrorHideSetting(ctx, st, MirrorHideMinCountSetting); err != nil {
+			return "", err
+		}
 
 		targets, err := st.Targets(ctx)
 		if err != nil {
@@ -432,29 +440,26 @@ func (m *mirrorRun) hide(ctx context.Context, where, device string, objs []gatew
 		return
 	}
 
-	earlier, err := m.st.MirrorHidesSince(ctx, m.tgt.ID, device, m.now.Add(-hideWindow))
-	if err != nil {
-		m.fail(where, fmt.Errorf("reading earlier hides: %w", err))
-
-		return
-	}
-
-	if limit := max(m.hideMin, len(have)*m.hidePercent/percent); earlier+len(gone) > limit {
-		m.fail(where, fmt.Errorf("%w: %d of %d (%d more in the last 7 days); limit %d from %s=%d, %s=%d",
-			errHideGuard, len(gone), len(have), earlier, limit,
-			MirrorHideMaxPercentSetting, m.hidePercent, MirrorHideMinCountSetting, m.hideMin))
-
-		return
-	}
-
-	// Reserve the whole batch in the window before the first delete, so a
-	// failure after hiding can never leave hides the guard does not see. A
-	// partial run over-counts, which only makes the guard stricter.
+	// The check and the reservation are one store transaction, so concurrent
+	// runs cannot both pass on the same count. Reserving before the first
+	// delete means a failure after hiding never leaves hides the guard does
+	// not see; a partial run over-counts, which only makes the guard stricter.
 	//
 	// ponytail: no reconcile of the reservation; release unused capacity only
 	// if partial runs ever trip the guard in practice.
-	if err := m.st.AddMirrorHides(ctx, m.tgt.ID, device, m.now, m.now.Add(-hideWindow), len(gone)); err != nil {
-		m.fail(where, fmt.Errorf("recording hides: %w", err))
+	limit := max(m.hideMin, len(have)*m.hidePercent/percent)
+
+	earlier, ok, err := m.st.ReserveMirrorHides(ctx, m.tgt.ID, device, m.now, m.now.Add(-hideWindow), len(gone), limit)
+	if err != nil {
+		m.fail(where, fmt.Errorf("reserving hides: %w", err))
+
+		return
+	}
+
+	if !ok {
+		m.fail(where, fmt.Errorf("%w: %d of %d (%d more in the last 7 days); limit %d from %s=%d, %s=%d",
+			errHideGuard, len(gone), len(have), earlier, limit,
+			MirrorHideMaxPercentSetting, m.hidePercent, MirrorHideMinCountSetting, m.hideMin))
 
 		return
 	}
