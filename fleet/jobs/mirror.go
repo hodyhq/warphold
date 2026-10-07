@@ -402,20 +402,19 @@ func (m *mirrorRun) hide(ctx context.Context, where, device string, objs []gatew
 		return
 	}
 
+	// Reserve the whole batch in the window before the first delete, so a
+	// failure after hiding can never leave hides the guard does not see. A
+	// partial run over-counts, which only makes the guard stricter.
+	//
+	// ponytail: no reconcile of the reservation; release unused capacity only
+	// if partial runs ever trip the guard in practice.
+	if err := m.st.AddMirrorHides(ctx, m.tgt.ID, device, m.now, m.now.Add(-hideWindow), len(gone)); err != nil {
+		m.fail(where, fmt.Errorf("recording hides: %w", err))
+
+		return
+	}
+
 	sort.Strings(gone)
-
-	n := 0
-
-	defer func() {
-		if n == 0 {
-			return
-		}
-
-		m.hidden += n
-		if err := m.st.AddMirrorHides(ctx, m.tgt.ID, device, m.now, m.now.Add(-hideWindow), n); err != nil {
-			m.fail(where, fmt.Errorf("recording hides: %w", err))
-		}
-	}()
 
 	for _, k := range gone {
 		err := m.remote.Delete(ctx, k)
@@ -428,7 +427,7 @@ func (m *mirrorRun) hide(ctx context.Context, where, device string, objs []gatew
 
 			return
 		default:
-			n++
+			m.hidden++
 		}
 	}
 }
