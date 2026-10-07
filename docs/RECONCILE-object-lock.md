@@ -229,6 +229,20 @@ target through `PUT /api/v1/fleet/targets/{id}/mirror` instead of only at create
 Still worth raising with Backblaze; a provider-side `If-None-Match` would let the same bucket
 back a cloud-direct target too.
 
+**Retention of removed blobs (decided 2026-10-07).** The mirror is not append-only forever.
+After a device's uploads, `fleet/jobs/mirror.go` hides every mirror key under `<device>/`
+that the local hosted store no longer holds, which is what Kopia maintenance removed. A hide
+is an S3 `DeleteObject` without a version id: on a versioned, locked bucket it only adds a
+delete marker (B2 calls it a hide), so no version is deleted by Fleet. Live keys are never
+touched, however old, so the offsite copy stays complete even if the Fleet server dies. The
+bucket's lifecycle rule (`daysFromHidingToDeleting: 60`, `daysFromUploadingToHiding: null`)
+then deletes hidden versions 60 days after they were hidden; live data never expires.
+
+A guard keeps a damaged local store from hiding the mirror: if one device's hides in one
+run would exceed max(20, 10% of that device's mirror keys), the run hides nothing for that
+device, records `hide guard tripped: N of M` in the job detail and fails, so the digest
+flags it. A device with no local blobs, or whose local listing errored, hides nothing.
+
 ### 2.4 End to end, through Fleet
 
 With a real Fleet server, an admin session and the real credentials:

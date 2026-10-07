@@ -23,7 +23,7 @@ import (
 
 // testMirror stands in for the mirror bucket. It is a real ObjectStore, so the
 // append-only contract (ErrExists on a second write) is the real one; it counts
-// the calls the mirror job must never make.
+// deletes, which only a key maintenance removed locally may cause.
 type testMirror struct {
 	gateway.ObjectStore
 
@@ -259,7 +259,7 @@ func TestMirrorUploadsOnlyWhatIsMissing(t *testing.T) {
 	require.Equal(t, contents(t, f.dir), contents(t, f.mirror), "the mirror holds every local blob")
 
 	deletes, puts := f.counters.snapshot()
-	require.Zero(t, deletes, "the mirror job must never delete")
+	require.Zero(t, deletes, "nothing was removed locally, so nothing is hidden")
 	require.Equal(t, []string{"dev1/kopia.repository", "dev1/p002", "dev2/p003"}, sorted(puts))
 
 	// Idempotent: a second run uploads nothing.
@@ -420,7 +420,7 @@ func TestMirrorTreatsAnExistingKeyAsMirrored(t *testing.T) {
 	require.Equal(t, "0 objects, 0 bytes, 2 skipped", detail)
 
 	deletes, _ = f.counters.snapshot()
-	require.Zero(t, deletes, "the mirror job must never delete")
+	require.Zero(t, deletes, "nothing was removed locally, so nothing is hidden")
 }
 
 func TestMirrorIgnoresTargetsWithoutADiskMirror(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -24,6 +25,16 @@ const (
 	// detailErrors is how many device failures the job's detail names; the rest
 	// are counted. The row is read in the UI, not in a log.
 	detailErrors = 3
+
+	// hideGuardMin and hideGuardPercent bound how many mirror objects one run
+	// may hide for one device: more than max(hideGuardMin, hideGuardPercent% of
+	// the device's mirrored keys) looks like a damaged local store, not
+	// maintenance, so the run hides nothing for that device and fails.
+	//
+	// ponytail: constants, not settings; make them fleet settings if a real
+	// maintenance run (a large compaction) ever trips the guard.
+	hideGuardMin     = 20
+	hideGuardPercent = 10
 )
 
 // mirrorCreds is the shape sealed into targets.sealed_mirror_key by
@@ -82,8 +93,11 @@ func mirrorCI(t store.Target, c mirrorCreds) (blob.ConnectionInfo, error) {
 
 // Mirror returns the runner for the "mirror" job: for every hosted disk target
 // with a mirror configured, upload every local object the mirror does not
-// already hold (spec §7.3). It is append-only - nothing is ever deleted from a
-// mirror bucket - and a failure on one device continues with the next.
+// already hold (spec §7.3), then hide the mirror objects maintenance removed
+// locally (see mirrorRun.hide). No version is ever deleted: hiding is a plain
+// DeleteObject on a versioned bucket, which only adds a delete marker, and the
+// bucket's lifecycle rule decides when hidden versions go. A failure on one
+// device continues with the next.
 func Mirror(st *store.Store, open seal.Opener) Runner {
 	return func(ctx context.Context, j store.Job) (string, error) {
 		m := &mirrorRun{st: st, open: open, now: time.Now()}
@@ -138,6 +152,7 @@ type mirrorRun struct {
 
 	objects int
 	skipped int
+	hidden  int
 	bytes   int64
 	errs    []string
 }
@@ -148,6 +163,10 @@ func (m *mirrorRun) fail(what string, err error) {
 
 func (m *mirrorRun) detail() string {
 	d := fmt.Sprintf("%d objects, %d bytes, %d skipped", m.objects, m.bytes, m.skipped)
+	if m.hidden > 0 {
+		d += fmt.Sprintf(", %d hidden", m.hidden)
+	}
+
 	if len(m.errs) == 0 {
 		return d
 	}
@@ -269,7 +288,10 @@ func (m *mirrorRun) walk(ctx context.Context, target string) error {
 	return nil
 }
 
-// device uploads one device's missing objects and records its offsite progress.
+// device uploads one device's missing objects, hides the ones maintenance
+// removed, and records its offsite progress. objs is the device's complete
+// local listing: walk calls this only once a device's keys are all read, and
+// never for a device with none, so an empty or failed listing hides nothing.
 func (m *mirrorRun) device(ctx context.Context, target, device string, objs []gateway.ObjectInfo) {
 	if device == "" || len(objs) == 0 {
 		return
@@ -321,7 +343,53 @@ func (m *mirrorRun) device(ctx context.Context, target, device string, objs []ga
 		}
 	}
 
+	m.hide(ctx, where, objs, have)
 	m.record(ctx, where, device, offsite)
+}
+
+// hide adds a delete marker for every mirror key the local store no longer
+// holds. Live keys are never touched, however old. If the count is past the
+// guard the device hides nothing and the run fails, so the digest flags it.
+func (m *mirrorRun) hide(ctx context.Context, where string, objs []gateway.ObjectInfo, have map[string]struct{}) {
+	local := make(map[string]struct{}, len(objs))
+	for _, o := range objs {
+		local[o.Key] = struct{}{}
+	}
+
+	var gone []string
+
+	for k := range have {
+		if _, ok := local[k]; !ok {
+			gone = append(gone, k)
+		}
+	}
+
+	if len(gone) == 0 {
+		return
+	}
+
+	if limit := max(hideGuardMin, len(have)*hideGuardPercent/100); len(gone) > limit {
+		m.fail(where, fmt.Errorf("hide guard tripped: %d of %d", len(gone), len(have)))
+
+		return
+	}
+
+	sort.Strings(gone)
+
+	for _, k := range gone {
+		err := m.remote.Delete(ctx, k)
+
+		switch {
+		case errors.Is(err, gateway.ErrNotFound):
+			// Already hidden: a listing raced an earlier run.
+		case err != nil:
+			m.fail(where, fmt.Errorf("hiding %s: %w", k, err))
+
+			return
+		default:
+			m.hidden++
+		}
+	}
 }
 
 // record writes the device's offsite progress, if the device is an agent this

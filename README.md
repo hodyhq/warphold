@@ -115,7 +115,9 @@ one-line command that enrolls the first device.
   snapshot. That is stronger than a plain bucket writer key: B2's delete is a
   file *hide*, which needs only write permission.
 - **Offsite copies sit under Object Lock,** verified when the target is
-  configured, so retention outlives a key that gets compromised.
+  configured, so retention outlives a key that gets compromised. The mirror
+  only hides blobs that maintenance removed locally (live data never expires),
+  and the bucket's lifecycle rule deletes hidden copies after 60 days.
 - **One sealing passphrase** protects the escrow. Every escrowed repository
   password and stored credential is sealed with a key derived from it, and it is
   never stored. Losing it loses the escrow, not the backups.
