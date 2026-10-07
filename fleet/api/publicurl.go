@@ -35,6 +35,12 @@ const (
 	instanceIDBytes = 16
 )
 
+// Probe timeout values per platform; see publicURLProbeTimeout for why they differ.
+const (
+	publicURLProbeTimeoutDefault = 5 * time.Second
+	publicURLProbeTimeoutWindows = 10 * time.Second
+)
+
 // publicURLProbeTimeout bounds the end-to-end probe. A reverse proxy that
 // needs longer than this to serve a static JSON status is misconfigured.
 //
@@ -48,10 +54,10 @@ const (
 // SQLITE_BUSY under the loopback probe).
 var publicURLProbeTimeout = func() time.Duration {
 	if runtime.GOOS == "windows" {
-		return 10 * time.Second
+		return publicURLProbeTimeoutWindows
 	}
 
-	return 5 * time.Second
+	return publicURLProbeTimeoutDefault
 }()
 
 // proxyRequirements is the operator-facing list shown whenever the end-to-end
