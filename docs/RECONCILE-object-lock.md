@@ -238,10 +238,17 @@ touched, however old, so the offsite copy stays complete even if the Fleet serve
 bucket's lifecycle rule (`daysFromHidingToDeleting: 60`, `daysFromUploadingToHiding: null`)
 then deletes hidden versions 60 days after they were hidden; live data never expires.
 
-A guard keeps a damaged local store from hiding the mirror: if one device's hides in one
-run would exceed max(20, 10% of that device's mirror keys), the run hides nothing for that
-device, records `hide guard tripped: N of M` in the job detail and fails, so the digest
-flags it. A device with no local blobs, or whose local listing errored, hides nothing.
+Hiding fails closed. It runs only on a mirror whose Object Lock was verified and whose
+bucket answers `GetBucketVersioning` with `Enabled`; anywhere else a `DeleteObject` is a
+real delete, so the run records `mirror bucket is not versioned; refusing to hide` and fails,
+while uploads continue. On B2 that call needs the key's `readBuckets` capability (observed
+2026-10-07: without it B2 answers "not entitled", which reads as unversioned). The hide
+itself needs only `writeFiles`; a version delete with that key is refused `403
+AccessDenied`. A guard keeps a damaged local store from hiding the mirror: if one device's
+hides in this run plus those of the last 7 days (table `mirror_hides`) would exceed
+max(20, 10% of that device's mirror keys), the run hides nothing for that device, records
+`hide guard tripped: N of M (K more in the last 7 days)` in the job detail and fails, so the
+digest flags it. A device with no local blobs, or whose local listing errored, hides nothing.
 
 ### 2.4 End to end, through Fleet
 

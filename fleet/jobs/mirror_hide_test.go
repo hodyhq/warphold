@@ -25,6 +25,10 @@ import (
 type versionedMirror struct {
 	mu   sync.Mutex
 	objs map[string][]mirrorVersion
+
+	// unversioned makes the bucket answer GetBucketVersioning "off", where a
+	// DeleteObject would be a real delete.
+	unversioned bool
 }
 
 type mirrorVersion struct {
@@ -149,7 +153,7 @@ func (v *versionedMirror) Delete(_ context.Context, key string) error {
 	return nil
 }
 
-func (v *versionedMirror) Versioned(context.Context) bool { return true }
+func (v *versionedMirror) Versioned(context.Context) bool { return !v.unversioned }
 
 // versionedFixture is a mirror fixture whose bucket is a versionedMirror.
 func versionedFixture(t *testing.T) (*mirrorFixture, *versionedMirror) {
@@ -272,4 +276,52 @@ func TestMirrorHidesNothingWhenTheLocalListingFails(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, detail, "listing the hosted root")
 	require.Zero(t, vm.markers())
+}
+
+func TestMirrorRefusesToHideOnAnUnversionedBucket(t *testing.T) {
+	f, vm := versionedFixture(t)
+	vm.unversioned = true
+
+	f.write(t, f.dir, "dev1/p001", "dev1/p001")
+	vm.seed("dev1/p001", time.Now())
+	vm.seed("dev1/p002", time.Now())
+
+	detail, err := f.run(t)
+	require.Error(t, err)
+	require.Contains(t, detail, "mirror bucket is not versioned; refusing to hide")
+	require.Zero(t, vm.markers())
+	require.Len(t, vm.versions("dev1/p002"), 1)
+}
+
+func TestMirrorHideGuardSumsTheLastWeek(t *testing.T) {
+	f, vm := versionedFixture(t)
+
+	// 100 mirrored keys: the limit is max(20, 10) = 20 per rolling week.
+	for i := range 100 {
+		k := fmt.Sprintf("dev1/p%04d", i)
+		vm.seed(k, time.Now())
+		f.write(t, f.dir, k, k)
+	}
+
+	// Maintenance removes 8 blobs a night. Two nights fit (16), the third
+	// would make 24 and trips the guard.
+	removed := 0
+	for night := 1; night <= 3; night++ {
+		for range 8 {
+			require.NoError(t, os.Remove(filepath.Join(f.dir, "dev1", fmt.Sprintf("p%04d", removed))))
+			removed++
+		}
+
+		detail, err := f.run(t)
+		if night < 3 {
+			require.NoError(t, err, detail)
+			require.Equal(t, 8*night, vm.markers())
+
+			continue
+		}
+
+		require.Error(t, err)
+		require.Contains(t, detail, "hide guard tripped: 8 of 84 (16 more in the last 7 days)")
+		require.Equal(t, 16, vm.markers(), "the tripped run hides nothing")
+	}
 }

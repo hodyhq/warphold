@@ -35,6 +35,10 @@ const (
 	// maintenance run (a large compaction) ever trips the guard.
 	hideGuardMin     = 20
 	hideGuardPercent = 10
+
+	// hideWindow is how far back the guard sums earlier runs' hides, so a
+	// slow erosion (a little every night) trips it as surely as one big run.
+	hideWindow = 7 * 24 * time.Hour
 )
 
 // mirrorCreds is the shape sealed into targets.sealed_mirror_key by
@@ -141,6 +145,12 @@ type mirrorRun struct {
 
 	local, remote gateway.ObjectStore
 
+	// tgt is the target being mirrored, and versioned is what its bucket
+	// answered to GetBucketVersioning. A hide is only a hide on a versioned
+	// bucket; anywhere else DeleteObject destroys the only copy.
+	tgt       store.Target
+	versioned bool
+
 	// plain is set for a mirror bucket whose provider has no conditional write
 	// (B2's S3 endpoint answers 501 to If-None-Match at all, so every upload
 	// would fail). Safe here and only here: this job is the bucket's only
@@ -229,10 +239,13 @@ func (m *mirrorRun) target(ctx context.Context, t store.Target) {
 
 	defer closeStore(ctx, remote)
 
-	m.local, m.remote = local, remote
+	m.local, m.remote, m.tgt = local, remote, t
 	m.plain = t.MirrorConditionalPut != nil && !*t.MirrorConditionalPut
+	m.versioned = remote.Versioned(ctx)
 
-	defer func() { m.local, m.remote, m.plain = nil, nil, false }()
+	defer func() {
+		m.local, m.remote, m.plain, m.tgt, m.versioned = nil, nil, false, store.Target{}, false
+	}()
 
 	if err := m.walk(ctx, t.Name); err != nil {
 		m.fail(t.Name, err)
@@ -343,14 +356,16 @@ func (m *mirrorRun) device(ctx context.Context, target, device string, objs []ga
 		}
 	}
 
-	m.hide(ctx, where, objs, have)
+	m.hide(ctx, where, device, objs, have)
 	m.record(ctx, where, device, offsite)
 }
 
 // hide adds a delete marker for every mirror key the local store no longer
-// holds. Live keys are never touched, however old. If the count is past the
-// guard the device hides nothing and the run fails, so the digest flags it.
-func (m *mirrorRun) hide(ctx context.Context, where string, objs []gateway.ObjectInfo, have map[string]struct{}) {
+// holds. Live keys are never touched, however old. It fails closed: on a
+// bucket that is not lock-verified and versioned, or once this run plus the
+// last hideWindow of runs would pass the guard, the device hides nothing and
+// the run fails, so the digest flags it.
+func (m *mirrorRun) hide(ctx context.Context, where, device string, objs []gateway.ObjectInfo, have map[string]struct{}) {
 	local := make(map[string]struct{}, len(objs))
 	for _, o := range objs {
 		local[o.Key] = struct{}{}
@@ -368,13 +383,39 @@ func (m *mirrorRun) hide(ctx context.Context, where string, objs []gateway.Objec
 		return
 	}
 
-	if limit := max(hideGuardMin, len(have)*hideGuardPercent/100); len(gone) > limit {
-		m.fail(where, fmt.Errorf("hide guard tripped: %d of %d", len(gone), len(have)))
+	if m.tgt.MirrorLockVerifiedAt == nil || !m.versioned {
+		m.fail(where, errors.New("mirror bucket is not versioned; refusing to hide"))
+
+		return
+	}
+
+	earlier, err := m.st.MirrorHidesSince(ctx, m.tgt.ID, device, m.now.Add(-hideWindow))
+	if err != nil {
+		m.fail(where, fmt.Errorf("reading earlier hides: %w", err))
+
+		return
+	}
+
+	if limit := max(hideGuardMin, len(have)*hideGuardPercent/100); earlier+len(gone) > limit {
+		m.fail(where, fmt.Errorf("hide guard tripped: %d of %d (%d more in the last 7 days)", len(gone), len(have), earlier))
 
 		return
 	}
 
 	sort.Strings(gone)
+
+	n := 0
+
+	defer func() {
+		if n == 0 {
+			return
+		}
+
+		m.hidden += n
+		if err := m.st.AddMirrorHides(ctx, m.tgt.ID, device, m.now, m.now.Add(-hideWindow), n); err != nil {
+			m.fail(where, fmt.Errorf("recording hides: %w", err))
+		}
+	}()
 
 	for _, k := range gone {
 		err := m.remote.Delete(ctx, k)
@@ -387,7 +428,7 @@ func (m *mirrorRun) hide(ctx context.Context, where string, objs []gateway.Objec
 
 			return
 		default:
-			m.hidden++
+			n++
 		}
 	}
 }
