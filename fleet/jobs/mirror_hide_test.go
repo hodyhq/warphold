@@ -17,6 +17,7 @@ import (
 
 	"github.com/kopia/kopia/fleet/gateway"
 	"github.com/kopia/kopia/fleet/store"
+	"github.com/kopia/kopia/internal/clock"
 )
 
 // versionedMirror is an in-memory S3 bucket with versioning on: Put adds a
@@ -90,7 +91,7 @@ func (v *versionedMirror) Put(_ context.Context, key string, r io.Reader, _ int6
 		return gateway.ObjectInfo{}, gateway.ErrExists
 	}
 
-	v.objs[key] = append(v.objs[key], mirrorVersion{data: b, mod: time.Now()})
+	v.objs[key] = append(v.objs[key], mirrorVersion{data: b, mod: clock.Now()})
 
 	return gateway.ObjectInfo{Key: key, Size: int64(len(b))}, nil
 }
@@ -112,7 +113,7 @@ func (v *versionedMirror) Head(ctx context.Context, key string) (gateway.ObjectI
 	return info, err
 }
 
-func (v *versionedMirror) List(_ context.Context, prefix, after string, max int) ([]gateway.ObjectInfo, bool, error) {
+func (v *versionedMirror) List(_ context.Context, prefix, after string, limit int) ([]gateway.ObjectInfo, bool, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
@@ -126,9 +127,9 @@ func (v *versionedMirror) List(_ context.Context, prefix, after string, max int)
 
 	sort.Strings(keys)
 
-	truncated := len(keys) > max
+	truncated := len(keys) > limit
 	if truncated {
-		keys = keys[:max]
+		keys = keys[:limit]
 	}
 
 	out := make([]gateway.ObjectInfo, 0, len(keys))
@@ -148,7 +149,7 @@ func (v *versionedMirror) Delete(_ context.Context, key string) error {
 		return gateway.ErrNotFound
 	}
 
-	v.objs[key] = append(v.objs[key], mirrorVersion{marker: true, mod: time.Now()})
+	v.objs[key] = append(v.objs[key], mirrorVersion{marker: true, mod: clock.Now()})
 
 	return nil
 }
@@ -173,12 +174,12 @@ func versionedFixture(t *testing.T) (*mirrorFixture, *versionedMirror) {
 func TestMirrorHidesOnlyWhatMaintenanceRemoved(t *testing.T) {
 	f, vm := versionedFixture(t)
 
-	ancient := time.Now().AddDate(-5, 0, 0)
+	ancient := clock.Now().AddDate(-5, 0, 0)
 
 	f.write(t, f.dir, "dev1/p001", "dev1/p001")
 	f.write(t, f.dir, "dev1/p002", "dev1/p002")
 	vm.seed("dev1/p001", ancient) // live and very old: must stay
-	vm.seed("dev1/p002", time.Now())
+	vm.seed("dev1/p002", clock.Now())
 	vm.seed("dev1/p003", ancient) // removed by maintenance locally
 
 	detail, err := f.run(t)
@@ -209,17 +210,18 @@ func TestMirrorHideGuard(t *testing.T) {
 		remote, local int
 		trip          bool
 	}{
-		{remote: 100, local: 80, trip: false},  // 20 = max(20, 10)
-		{remote: 100, local: 79, trip: true},   // 21 > 20
-		{remote: 300, local: 270, trip: false}, // 30 = 10% of 300
-		{remote: 300, local: 269, trip: true},  // 31 > 30
+		// The limit is the larger of 20 and 10% of the mirrored keys.
+		{remote: 100, local: 80, trip: false},
+		{remote: 100, local: 79, trip: true},
+		{remote: 300, local: 270, trip: false},
+		{remote: 300, local: 269, trip: true},
 	} {
 		t.Run(fmt.Sprintf("%d-of-%d", tc.remote-tc.local, tc.remote), func(t *testing.T) {
 			f, vm := versionedFixture(t)
 
 			for i := range tc.remote {
 				k := fmt.Sprintf("dev1/p%04d", i)
-				vm.seed(k, time.Now())
+				vm.seed(k, clock.Now())
 
 				if i < tc.local {
 					f.write(t, f.dir, k, k)
@@ -247,8 +249,8 @@ func TestMirrorHideGuard(t *testing.T) {
 func TestMirrorHidesNothingForAnEmptyLocalStore(t *testing.T) {
 	f, vm := versionedFixture(t)
 
-	vm.seed("dev1/p001", time.Now())
-	vm.seed("dev1/p002", time.Now())
+	vm.seed("dev1/p001", clock.Now())
+	vm.seed("dev1/p002", clock.Now())
 
 	// The disk is wiped (or unmounted): no device directory at all.
 	detail, err := f.run(t)
@@ -265,8 +267,8 @@ func TestMirrorHidesNothingWhenTheLocalListingFails(t *testing.T) {
 	f, vm := versionedFixture(t)
 
 	f.write(t, f.dir, "dev1/p001", "dev1/p001")
-	vm.seed("dev1/p001", time.Now())
-	vm.seed("dev1/p002", time.Now())
+	vm.seed("dev1/p001", clock.Now())
+	vm.seed("dev1/p002", clock.Now())
 
 	dev := filepath.Join(f.dir, "dev1")
 	require.NoError(t, os.Chmod(dev, 0))
@@ -283,8 +285,8 @@ func TestMirrorRefusesToHideOnAnUnversionedBucket(t *testing.T) {
 	vm.unversioned = true
 
 	f.write(t, f.dir, "dev1/p001", "dev1/p001")
-	vm.seed("dev1/p001", time.Now())
-	vm.seed("dev1/p002", time.Now())
+	vm.seed("dev1/p001", clock.Now())
+	vm.seed("dev1/p002", clock.Now())
 
 	detail, err := f.run(t)
 	require.Error(t, err)
@@ -299,7 +301,7 @@ func TestMirrorHideGuardSumsTheLastWeek(t *testing.T) {
 	// 100 mirrored keys: the limit is max(20, 10) = 20 per rolling week.
 	for i := range 100 {
 		k := fmt.Sprintf("dev1/p%04d", i)
-		vm.seed(k, time.Now())
+		vm.seed(k, clock.Now())
 		f.write(t, f.dir, k, k)
 	}
 

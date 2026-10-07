@@ -39,6 +39,13 @@ const (
 	// hideWindow is how far back the guard sums earlier runs' hides, so a
 	// slow erosion (a little every night) trips it as surely as one big run.
 	hideWindow = 7 * 24 * time.Hour
+
+	percent = 100
+)
+
+var (
+	errUnversioned = errors.New("mirror bucket is not versioned; refusing to hide")
+	errHideGuard   = errors.New("hide guard tripped")
 )
 
 // mirrorCreds is the shape sealed into targets.sealed_mirror_key by
@@ -384,7 +391,7 @@ func (m *mirrorRun) hide(ctx context.Context, where, device string, objs []gatew
 	}
 
 	if m.tgt.MirrorLockVerifiedAt == nil || !m.versioned {
-		m.fail(where, errors.New("mirror bucket is not versioned; refusing to hide"))
+		m.fail(where, errUnversioned)
 
 		return
 	}
@@ -396,8 +403,8 @@ func (m *mirrorRun) hide(ctx context.Context, where, device string, objs []gatew
 		return
 	}
 
-	if limit := max(hideGuardMin, len(have)*hideGuardPercent/100); earlier+len(gone) > limit {
-		m.fail(where, fmt.Errorf("hide guard tripped: %d of %d (%d more in the last 7 days)", len(gone), len(have), earlier))
+	if limit := max(hideGuardMin, len(have)*hideGuardPercent/percent); earlier+len(gone) > limit {
+		m.fail(where, fmt.Errorf("%w: %d of %d (%d more in the last 7 days)", errHideGuard, len(gone), len(have), earlier))
 
 		return
 	}

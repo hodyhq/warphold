@@ -6,12 +6,14 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/kopia/kopia/internal/clock"
 )
 
 func TestMirrorHidesWindow(t *testing.T) {
 	s := openTemp(t)
 	ctx := context.Background()
-	now := time.Now().UTC().Truncate(time.Second)
+	now := clock.Now().UTC().Truncate(time.Second)
 	week := now.Add(-7 * 24 * time.Hour)
 
 	// An old row kept (pruning bound further back), then a recent one.
