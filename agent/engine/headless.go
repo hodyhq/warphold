@@ -176,7 +176,7 @@ func StartHeadless(ctx context.Context, configFile, repoPassword, scope string, 
 		// An agent's storage is the Fleet: a Fleet restart must not take the
 		// agent down with it, so a transient failure is retried until the
 		// Fleet answers. The UI is already being served meanwhile.
-		open = openWhenFleetAnswers(open)
+		open = openWhenFleetAnswers(configFile, open)
 	}
 
 	// The open runs last, once the UI is served, so a device waiting for its
@@ -214,9 +214,14 @@ var (
 
 // openWhenFleetAnswers retries open with a doubling backoff (5s up to 5m)
 // until it succeeds, fails permanently, or ctx ends, logging at most once a
-// minute.
-func openWhenFleetAnswers(open server.InitRepositoryFunc) server.InitRepositoryFunc {
+// minute. The config file is read once up front: one that is missing or does
+// not parse is local and permanent, never the Fleet being away.
+func openWhenFleetAnswers(configFile string, open server.InitRepositoryFunc) server.InitRepositoryFunc {
 	return func(ctx context.Context) (repo.Repository, error) {
+		if _, err := repo.LoadConfigFromFile(configFile); err != nil {
+			return nil, errors.Wrap(err, "read repository config")
+		}
+
 		delay := openRetryFirst
 
 		var lastLog time.Time

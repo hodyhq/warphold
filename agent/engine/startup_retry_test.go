@@ -3,6 +3,7 @@ package engine_test
 import (
 	"context"
 	"net/http"
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -114,4 +115,28 @@ func TestAgentPermanentOpenErrorExits(t *testing.T) {
 
 	_, err = engine.ReadInfo("user")
 	require.Error(t, err)
+}
+
+// TestAgentMalformedConfigExits: a config file that does not parse is not
+// the Fleet being away, so the start fails instead of waiting forever.
+func TestAgentMalformedConfigExits(t *testing.T) {
+	ctx := context.Background()
+
+	t.Setenv("WARPHOLD_STATE_DIR", t.TempDir())
+	cfg, pw, _ := provisionedRepo(t)
+	require.NoError(t, os.WriteFile(cfg, []byte("{not json"), 0o600))
+
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := engine.StartHeadless(ctx, cfg, pw, "user", passwordpersist.None())
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		require.Error(t, err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("a malformed config was retried as if the Fleet were away")
+	}
 }
