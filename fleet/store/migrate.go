@@ -23,6 +23,9 @@ var addedColumns = []struct{ table, column, decl string }{
 	// written before this column existed truly is.
 	{"targets", "mirror_conditional_put", "INTEGER"},
 	{"agents", "retired_at", "TEXT"},
+	// A group a retired device enrolled through cannot be DELETEd (that
+	// device's history row keeps its FK), so deleting it stamps this instead.
+	{"groups", "deleted_at", "TEXT"},
 }
 
 // renamedSettings moves a settings row to a new key. It exists for one reason:

@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -189,4 +190,51 @@ func TestGroupDeleteRefusedWithToken(t *testing.T) {
 
 	resp, body := h.do("DELETE", "/api/v1/fleet/groups/"+jsonNum(gid), nil)
 	require.Equal(t, 409, resp.StatusCode, body)
+}
+
+// TestRetiredDeviceLeavesTheListAndFreesItsGroup pins the 2026-09 field
+// finding: device "blade" was revoked and reaped, yet it stayed in the device
+// list and its group could not be deleted. A revoked device the reap has not
+// reached still holds the group; once retired it does not, and it only shows
+// up when the list is asked for retired devices.
+func TestRetiredDeviceLeavesTheListAndFreesItsGroup(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+	h.setPublicURL()
+	gid := h.mkHostedGroup(t, h.hostedDir(t))
+	_, tok := h.do("POST", "/api/v1/fleet/tokens", map[string]any{"group_id": gid})
+
+	admin := h.jar
+	h.jar = nil
+	resp, body := h.do("POST", "/api/v1/fleet/enroll", map[string]any{"token": tok["token"], "hostname": "blade", "os": "linux", "arch": "amd64", "scope": "user"})
+	require.Equal(t, 201, resp.StatusCode, body)
+
+	h.jar = admin
+	id := body["agent_id"].(string)
+
+	resp, _ = h.do("POST", "/api/v1/fleet/agents/"+id+"/revoke", nil)
+	require.Equal(t, 204, resp.StatusCode)
+
+	resp, body = h.do("DELETE", "/api/v1/fleet/groups/"+jsonNum(gid), nil)
+	require.Equal(t, 409, resp.StatusCode, "revoked but not yet reaped: its repository is still on disk; %v", body)
+
+	_, list := h.doList("GET", "/api/v1/fleet/agents")
+	require.Len(t, list, 1, "a revoked device stays listed until it is reaped")
+
+	require.NoError(t, h.s.StoreForTesting().RetireAgent(t.Context(), id, time.Now()))
+
+	_, list = h.doList("GET", "/api/v1/fleet/agents")
+	require.Empty(t, list, "a retired device is not in the default list")
+
+	_, list = h.doList("GET", "/api/v1/fleet/agents?include=retired")
+	require.Len(t, list, 1)
+	require.Equal(t, id, list[0]["id"])
+	require.NotNil(t, list[0]["retired_at"])
+
+	resp, body = h.do("DELETE", "/api/v1/fleet/groups/"+jsonNum(gid), nil)
+	require.Equal(t, 204, resp.StatusCode, body)
+
+	// Its history is still readable after the group is gone.
+	resp, body = h.do("GET", "/api/v1/fleet/agents/"+id, nil)
+	require.Equal(t, 200, resp.StatusCode, body)
 }

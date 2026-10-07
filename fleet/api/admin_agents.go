@@ -92,7 +92,10 @@ type agentOut struct {
 	EnrolledAt time.Time  `json:"enrolled_at"`
 	LastSeenAt *time.Time `json:"last_seen_at"`
 	RevokedAt  *time.Time `json:"revoked_at"`
-	Health     string     `json:"health"`
+	// RetiredAt is when the reap job removed the device's repository; a
+	// retired device is only listed with ?include=retired.
+	RetiredAt *time.Time `json:"retired_at"`
+	Health    string     `json:"health"`
 	// KitAckedAt is when an admin acknowledged holding the printed recovery
 	// kit; nil is what the UI's un-acked banner and list marker key off.
 	KitAckedAt *time.Time `json:"kit_acked_at"`
@@ -103,7 +106,7 @@ type agentOut struct {
 }
 
 func (s *Server) agentOut(a store.Agent, latest *store.Report, lastOK, kitAcked *time.Time, sizeBytes int64) agentOut {
-	return agentOut{ID: a.ID, Name: a.Name, Hostname: a.Hostname, OS: a.OS, Arch: a.Arch, Version: a.Version, Scope: a.Scope, GroupID: a.GroupID, EnrolledAt: a.EnrolledAt, LastSeenAt: a.LastSeenAt, RevokedAt: a.RevokedAt, Health: s.healthOf(a, latest, lastOK), KitAckedAt: kitAcked, SizeBytes: sizeBytes}
+	return agentOut{ID: a.ID, Name: a.Name, Hostname: a.Hostname, OS: a.OS, Arch: a.Arch, Version: a.Version, Scope: a.Scope, GroupID: a.GroupID, EnrolledAt: a.EnrolledAt, LastSeenAt: a.LastSeenAt, RevokedAt: a.RevokedAt, RetiredAt: a.RetiredAt, Health: s.healthOf(a, latest, lastOK), KitAckedAt: kitAcked, SizeBytes: sizeBytes}
 }
 
 // healthOf takes the last successful snapshot time rather than looking it up:
@@ -146,8 +149,16 @@ func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	withRetired := r.URL.Query().Get("include") == "retired"
+
 	out := make([]agentOut, 0, len(as))
 	for _, a := range as {
+		// A reaped device has no repository left; it is history, not part of
+		// the fleet, so it is listed only when asked for.
+		if a.RetiredAt != nil && !withRetired {
+			continue
+		}
+
 		var lr *store.Report
 		if x, ok := latest[a.ID]; ok {
 			lr = &x
@@ -191,10 +202,14 @@ func (s *Server) handleAgentGet(w http.ResponseWriter, r *http.Request) {
 		lastOK = &t
 	}
 
-	mirror, err := s.mirrorFor(ctx, *a)
-	if err != nil {
-		adminFailed(w, "read offsite state", err)
-		return
+	// A retired device has no repository left to mirror, and its group may
+	// already be deleted, so there is no offsite state to resolve.
+	var mirror *mirrorOut
+	if a.RetiredAt == nil {
+		if mirror, err = s.mirrorFor(ctx, *a); err != nil {
+			adminFailed(w, "read offsite state", err)
+			return
+		}
 	}
 
 	kitAcked, _ := s.store().KitAck(ctx, a.ID)
