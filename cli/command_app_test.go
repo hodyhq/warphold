@@ -91,3 +91,31 @@ func TestAppUninstallKeepsAnAgentTray(t *testing.T) {
 	again := strings.Join(e.RunAndExpectSuccess(t, "app", "uninstall"), "\n")
 	require.NotContains(t, again, "- removed ")
 }
+
+// TestInstallPrintsAPathHint pins the 2026-09 field finding: after a
+// user-scope install the binary sat in ~/.local/bin, which was not on PATH,
+// so 'warphold agent status' failed in a non-login shell. Both install
+// commands say so when the binary's directory is not on PATH, and stay quiet
+// when it is.
+func TestInstallPrintsAPathHint(t *testing.T) {
+	self, err := os.Executable()
+	require.NoError(t, err)
+
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("WARPHOLD_STATE_DIR", "")
+	t.Setenv("SHELL", "/bin/bash")
+
+	for _, args := range [][]string{{"app", "install", "--dry-run"}, {"agent", "install", "--dry-run"}} {
+		t.Setenv("PATH", "/usr/bin:/bin")
+
+		e := testenv.NewCLITest(t, nil, testenv.NewInProcRunner(t))
+		out := strings.Join(e.RunAndExpectSuccess(t, args...), "\n")
+		require.Contains(t, out, filepath.Dir(self)+" is not in your PATH", args)
+		require.Contains(t, out, `export PATH="`+filepath.Dir(self)+`:$PATH"`, args)
+
+		t.Setenv("PATH", "/usr/bin:"+filepath.Dir(self))
+
+		out = strings.Join(e.RunAndExpectSuccess(t, args...), "\n")
+		require.NotContains(t, out, "is not in your PATH", args)
+	}
+}

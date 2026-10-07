@@ -233,17 +233,9 @@ install -m 0755 "$NEWBIN" "$BIN_DIR/warphold.new"
 mv "$BIN_DIR/warphold.new" "$BIN_DIR/warphold"
 say "+ installed $BIN_DIR/warphold"
 
-case ":${PATH:-}:" in
-  *":$BIN_DIR:"*) ;;
-  *) say ""
-     say "note: $BIN_DIR is not in your PATH. Add it to your shell profile:"
-     case "${SHELL:-}" in
-       */fish) say "    fish_add_path $BIN_DIR" ;;
-       *) say "    export PATH=\"$BIN_DIR:\$PATH\""
-          say "  or, in fish:"
-          say "    fish_add_path $BIN_DIR" ;;
-     esac ;;
-esac
+# No PATH note here: "warphold app install" / "agent install" below print one
+# when $BIN_DIR is not on PATH, so this script, the Fleet's enroll one-liner
+# and a manual install all say it the same way, once.
 
 # Which service this machine gets depends on what it is (MODE, decided above
 # next to STATE_DIR). "agent run" needs an enrollment, so installing that unit

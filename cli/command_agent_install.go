@@ -2,8 +2,10 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/kopia/kopia/agent/install"
@@ -38,6 +40,8 @@ func (c *commandAgentInstall) run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+
+	c.out.printStdout("%s", pathHint(bin))
 
 	// Enrollment supersedes the standalone app on the same user: two engines
 	// on one machine would mean two repositories and two trays.
@@ -83,4 +87,28 @@ func (c *commandAgentInstall) run(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// pathHint is a one-line note when the installed binary's directory is not on
+// PATH, or "" when it is. A user-scope install lives in ~/.local/bin, which
+// many shells add only for login sessions, and without it 'warphold agent
+// status' fails in every other shell. It is printed before the install is
+// applied, so a session where systemd refuses still shows it.
+func pathHint(bin string) string {
+	dir := filepath.Dir(bin)
+	for _, p := range filepath.SplitList(os.Getenv("PATH")) {
+		if p != "" && filepath.Clean(p) == dir {
+			return ""
+		}
+	}
+
+	if home, err := os.UserHomeDir(); err == nil && dir == filepath.Join(home, ".local", "bin") {
+		dir = "$HOME/.local/bin"
+	}
+
+	if strings.HasSuffix(os.Getenv("SHELL"), "/fish") {
+		return fmt.Sprintf("note: %s is not in your PATH; add 'fish_add_path %s' to your shell profile\n", dir, dir)
+	}
+
+	return fmt.Sprintf("note: %s is not in your PATH; add export PATH=\"%s:$PATH\" to your shell profile\n", dir, dir)
 }

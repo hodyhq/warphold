@@ -44,6 +44,8 @@ func (c *commandAppInstall) run(ctx context.Context) error {
 		return err
 	}
 
+	c.out.printStdout("%s", pathHint(bin))
+
 	if c.dryRun {
 		for path, content := range p.Files {
 			c.out.printStdout("--- %s\n%s\n", path, content)
