@@ -106,14 +106,14 @@ func TestInstallPrintsAPathHint(t *testing.T) {
 	t.Setenv("SHELL", "/bin/bash")
 
 	for _, args := range [][]string{{"app", "install", "--dry-run"}, {"agent", "install", "--dry-run"}} {
-		t.Setenv("PATH", "/usr/bin:/bin")
+		t.Setenv("PATH", filepath.Join(t.TempDir(), "bin"))
 
 		e := testenv.NewCLITest(t, nil, testenv.NewInProcRunner(t))
 		out := strings.Join(e.RunAndExpectSuccess(t, args...), "\n")
 		require.Contains(t, out, filepath.Dir(self)+" is not in your PATH", args)
 		require.Contains(t, out, `export PATH="`+filepath.Dir(self)+`:$PATH"`, args)
 
-		t.Setenv("PATH", "/usr/bin:"+filepath.Dir(self))
+		t.Setenv("PATH", "/usr/bin"+string(os.PathListSeparator)+filepath.Dir(self))
 
 		out = strings.Join(e.RunAndExpectSuccess(t, args...), "\n")
 		require.NotContains(t, out, "is not in your PATH", args)

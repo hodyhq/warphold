@@ -217,26 +217,26 @@ func TestRetiredDeviceLeavesTheListAndFreesItsGroup(t *testing.T) {
 	resp, _ = h.do("POST", "/api/v1/fleet/agents/"+id+"/revoke", nil) //nolint:bodyclose // h.do closes resp.Body itself before returning
 	require.Equal(t, 204, resp.StatusCode)
 
-	resp, body = h.do("DELETE", "/api/v1/fleet/groups/"+jsonNum(gid), nil)
+	resp, body = h.do("DELETE", "/api/v1/fleet/groups/"+jsonNum(gid), nil) //nolint:bodyclose // h.do closes resp.Body itself before returning
 	require.Equal(t, 409, resp.StatusCode, "revoked but not yet reaped: its repository is still on disk; %v", body)
 
-	_, list := h.doList("GET", "/api/v1/fleet/agents")
+	_, list := h.doList("GET", "/api/v1/fleet/agents") //nolint:bodyclose // h.do closes resp.Body itself before returning
 	require.Len(t, list, 1, "a revoked device stays listed until it is reaped")
 
 	require.NoError(t, h.s.StoreForTesting().RetireAgent(t.Context(), id, clock.Now()))
 
-	_, list = h.doList("GET", "/api/v1/fleet/agents")
+	_, list = h.doList("GET", "/api/v1/fleet/agents") //nolint:bodyclose // h.do closes resp.Body itself before returning
 	require.Empty(t, list, "a retired device is not in the default list")
 
-	_, list = h.doList("GET", "/api/v1/fleet/agents?include=retired")
+	_, list = h.doList("GET", "/api/v1/fleet/agents?include=retired") //nolint:bodyclose // h.do closes resp.Body itself before returning
 	require.Len(t, list, 1)
 	require.Equal(t, id, list[0]["id"])
 	require.NotNil(t, list[0]["retired_at"])
 
-	resp, body = h.do("DELETE", "/api/v1/fleet/groups/"+jsonNum(gid), nil)
+	resp, body = h.do("DELETE", "/api/v1/fleet/groups/"+jsonNum(gid), nil) //nolint:bodyclose // h.do closes resp.Body itself before returning
 	require.Equal(t, 204, resp.StatusCode, body)
 
 	// Its history is still readable after the group is gone.
-	resp, body = h.do("GET", "/api/v1/fleet/agents/"+id, nil)
+	resp, body = h.do("GET", "/api/v1/fleet/agents/"+id, nil) //nolint:bodyclose // h.do closes resp.Body itself before returning
 	require.Equal(t, 200, resp.StatusCode, body)
 }
