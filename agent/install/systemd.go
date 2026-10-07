@@ -35,7 +35,9 @@ type Plan struct {
 // StartLimitIntervalSec/StartLimitBurst bound Restart=on-failure: without
 // them a unit that fails immediately on every start would be restarted
 // forever. Five starts inside ten minutes (RestartSec=30 between them) put the
-// unit into "failed", where an operator can see it.
+// unit into "failed", where an operator can see it. A Fleet that is briefly
+// away does not count against that budget: the agent waits for it in-process
+// (engine.StartHeadless), so only a permanent failure exits.
 const unitTmpl = `[Unit]
 Description=%s
 After=network-online.target

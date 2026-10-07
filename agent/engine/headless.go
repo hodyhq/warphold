@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	stderrors "errors"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/minio/minio-go/v7"
 	"github.com/pkg/errors"
 
 	"github.com/kopia/kopia/agent/state"
@@ -22,7 +24,11 @@ import (
 	"github.com/kopia/kopia/internal/passwordpersist"
 	"github.com/kopia/kopia/internal/server"
 	"github.com/kopia/kopia/repo"
+	"github.com/kopia/kopia/repo/blob"
+	"github.com/kopia/kopia/repo/logging"
 )
+
+var log = logging.Module("warphold/engine")
 
 const headlessUser = "warphold-agent"
 
@@ -102,35 +108,6 @@ func StartHeadless(ctx context.Context, configFile, repoPassword, scope string, 
 
 	h.srv = srv
 
-	open := func(ctx context.Context) (repo.Repository, error) {
-		// The standalone app's first run has no repository at all: the UI's
-		// setup wizard is what creates one, so a nil repository here means
-		// "not configured" and the server comes up unconnected, exactly as
-		// upstream's "server start" does (cli/config.go openRepository).
-		//
-		// The agent scope deliberately does not get this: it is enrolled, its
-		// repository was connected at enrollment, and a missing config file
-		// there means something went wrong and must be reported - not an
-		// engine that quietly backs nothing up. An os.Stat error other than
-		// IsNotExist is left to repo.Open to report.
-		if _, err := os.Stat(configFile); os.IsNotExist(err) && scope == state.ScopeApp {
-			return nil, nil
-		}
-
-		return repo.Open(ctx, configFile, repoPassword, &repo.Options{})
-	}
-	if _, err := srv.InitRepositoryAsync(ctx, "Open", open, true); err != nil {
-		return nil, errors.Wrap(err, "open repository")
-	}
-
-	// From here on the repository is open and background goroutines are running:
-	// release it on any subsequent failure so we don't leak them.
-	defer func() {
-		if retErr != nil {
-			_ = srv.SetRepository(ctx, nil)
-		}
-	}()
-
 	m := mux.NewRouter()
 	srv.SetupControlAPIHandlers(m)
 	srv.SetupHTMLUIAPIHandlers(m)
@@ -168,6 +145,46 @@ func StartHeadless(ctx context.Context, configFile, repoPassword, scope string, 
 	}
 	go func() { _ = h.http.Serve(ln) }()
 
+	// From here on the engine is serving and may hold an open repository:
+	// tear all of it down on any later failure so nothing leaks and no stale
+	// engine.json points at a dead port.
+	defer func() {
+		if retErr != nil {
+			_ = h.Stop(context.WithoutCancel(ctx))
+		}
+	}()
+
+	open := func(ctx context.Context) (repo.Repository, error) {
+		// The standalone app's first run has no repository at all: the UI's
+		// setup wizard is what creates one, so a nil repository here means
+		// "not configured" and the server comes up unconnected, exactly as
+		// upstream's "server start" does (cli/config.go openRepository).
+		//
+		// The agent scope deliberately does not get this: it is enrolled, its
+		// repository was connected at enrollment, and a missing config file
+		// there means something went wrong and must be reported - not an
+		// engine that quietly backs nothing up. An os.Stat error other than
+		// IsNotExist is left to repo.Open to report.
+		if _, err := os.Stat(configFile); os.IsNotExist(err) && scope == state.ScopeApp {
+			return nil, nil
+		}
+
+		return openRepo(ctx, configFile, repoPassword, &repo.Options{})
+	}
+
+	if scope != state.ScopeApp {
+		// An agent's storage is the Fleet: a Fleet restart must not take the
+		// agent down with it, so a transient failure is retried until the
+		// Fleet answers. The UI is already being served meanwhile.
+		open = openWhenFleetAnswers(configFile, open)
+	}
+
+	// The open runs last, once the UI is served, so a device waiting for its
+	// Fleet still answers its tray and 'agent status'.
+	if _, err := srv.InitRepositoryAsync(ctx, "Open", open, true); err != nil {
+		return nil, errors.Wrap(err, "open repository")
+	}
+
 	return h, nil
 }
 
@@ -184,4 +201,66 @@ func (h *Headless) Stop(ctx context.Context) error {
 	err := h.http.Shutdown(ctx2)
 
 	return stderrors.Join(err, h.srv.SetRepository(ctx, nil), RemoveInfo(h.scope))
+}
+
+// The agent's repository opener and its retry pacing; vars so tests can fake
+// the storage and shrink the waits.
+var (
+	openRepo          = repo.Open
+	openRetryFirst    = 5 * time.Second
+	openRetryMax      = 5 * time.Minute
+	openRetryLogEvery = time.Minute
+)
+
+// openWhenFleetAnswers retries open with a doubling backoff (5s up to 5m)
+// until it succeeds, fails permanently, or ctx ends, logging at most once a
+// minute. The config file is read once up front: one that is missing or does
+// not parse is local and permanent, never the Fleet being away.
+func openWhenFleetAnswers(configFile string, open server.InitRepositoryFunc) server.InitRepositoryFunc {
+	return func(ctx context.Context) (repo.Repository, error) {
+		if _, err := repo.LoadConfigFromFile(configFile); err != nil {
+			return nil, errors.Wrap(err, "read repository config")
+		}
+
+		delay := openRetryFirst
+
+		var lastLog time.Time
+
+		for {
+			r, err := open(ctx)
+			if err == nil || isPermanentOpenError(err) {
+				return r, err
+			}
+
+			if now := clock.Now(); now.Sub(lastLog) >= openRetryLogEvery {
+				log(ctx).Warnf("waiting for the Fleet: cannot open the repository yet (%v); retrying", err)
+
+				lastLog = now
+			}
+
+			if !clock.SleepInterruptibly(ctx, delay) {
+				return nil, ctx.Err()
+			}
+
+			delay *= 2
+			delay = min(delay, openRetryMax)
+		}
+	}
+}
+
+// isPermanentOpenError reports an open failure waiting will not fix: a wrong
+// password or credentials, a missing or unreadable config, or a 4xx refusal
+// from the storage. Anything else (5xx, network) is the Fleet being away.
+func isPermanentOpenError(err error) bool {
+	if errors.Is(err, repo.ErrInvalidPassword) || errors.Is(err, blob.ErrInvalidCredentials) ||
+		errors.Is(err, fs.ErrNotExist) || errors.Is(err, fs.ErrPermission) {
+		return true
+	}
+
+	var me minio.ErrorResponse
+	if errors.As(err, &me) && me.StatusCode >= 400 && me.StatusCode < 500 {
+		return me.StatusCode != http.StatusRequestTimeout && me.StatusCode != http.StatusTooManyRequests
+	}
+
+	return false
 }

@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/kopia/kopia/internal/clock"
 )
 
 // findGroup returns the group with the given id from a /fleet/groups list body.
@@ -189,4 +191,52 @@ func TestGroupDeleteRefusedWithToken(t *testing.T) {
 
 	resp, body := h.do("DELETE", "/api/v1/fleet/groups/"+jsonNum(gid), nil)
 	require.Equal(t, 409, resp.StatusCode, body)
+}
+
+// TestRetiredDeviceLeavesTheListAndFreesItsGroup pins the 2026-09 field
+// finding: device "blade" was revoked and reaped, yet it stayed in the device
+// list and its group could not be deleted. A revoked device the reap has not
+// reached still holds the group; once retired it does not, and it only shows
+// up when the list is asked for retired devices.
+func TestRetiredDeviceLeavesTheListAndFreesItsGroup(t *testing.T) {
+	h := newHarness(t)
+	h.activateAndLogin()
+	h.setPublicURL()
+	gid := h.mkHostedGroup(t, h.hostedDir(t))
+	_, tok := h.do("POST", "/api/v1/fleet/tokens", map[string]any{"group_id": gid}) //nolint:bodyclose // h.do closes resp.Body itself before returning
+
+	admin := h.jar
+	h.jar = nil
+	resp, body := h.do("POST", "/api/v1/fleet/enroll", map[string]any{"token": tok["token"], "hostname": "blade", "os": "linux", "arch": "amd64", "scope": "user"}) //nolint:bodyclose // h.do closes resp.Body itself before returning
+	require.Equal(t, 201, resp.StatusCode, body)
+
+	h.jar = admin
+	id, _ := body["agent_id"].(string)
+	require.NotEmpty(t, id)
+
+	resp, _ = h.do("POST", "/api/v1/fleet/agents/"+id+"/revoke", nil) //nolint:bodyclose // h.do closes resp.Body itself before returning
+	require.Equal(t, 204, resp.StatusCode)
+
+	resp, body = h.do("DELETE", "/api/v1/fleet/groups/"+jsonNum(gid), nil) //nolint:bodyclose // h.do closes resp.Body itself before returning
+	require.Equal(t, 409, resp.StatusCode, "revoked but not yet reaped: its repository is still on disk; %v", body)
+
+	_, list := h.doList("GET", "/api/v1/fleet/agents") //nolint:bodyclose // h.do closes resp.Body itself before returning
+	require.Len(t, list, 1, "a revoked device stays listed until it is reaped")
+
+	require.NoError(t, h.s.StoreForTesting().RetireAgent(t.Context(), id, clock.Now()))
+
+	_, list = h.doList("GET", "/api/v1/fleet/agents") //nolint:bodyclose // h.do closes resp.Body itself before returning
+	require.Empty(t, list, "a retired device is not in the default list")
+
+	_, list = h.doList("GET", "/api/v1/fleet/agents?include=retired") //nolint:bodyclose // h.do closes resp.Body itself before returning
+	require.Len(t, list, 1)
+	require.Equal(t, id, list[0]["id"])
+	require.NotNil(t, list[0]["retired_at"])
+
+	resp, body = h.do("DELETE", "/api/v1/fleet/groups/"+jsonNum(gid), nil) //nolint:bodyclose // h.do closes resp.Body itself before returning
+	require.Equal(t, 204, resp.StatusCode, body)
+
+	// Its history is still readable after the group is gone.
+	resp, body = h.do("GET", "/api/v1/fleet/agents/"+id, nil) //nolint:bodyclose // h.do closes resp.Body itself before returning
+	require.Equal(t, 200, resp.StatusCode, body)
 }

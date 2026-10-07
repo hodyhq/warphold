@@ -51,7 +51,7 @@ run_app() {
       XDG_RUNTIME_DIR="$WORK/norun" DBUS_SESSION_BUS_ADDRESS="unix:path=$WORK/nobus" \
       WARPHOLD_INSTALL_ROOT="$WORK/root" WARPHOLD_RELEASE_BASE="${BASE_OVERRIDE:-$RELEASE_BASE}" \
       CURL_CA_BUNDLE="${CA_OVERRIDE:-}" \
-      PATH="/usr/bin:/bin" \
+      PATH="/usr/bin:/bin" SHELL=/bin/sh \
       sh "$APP_SH" "$@"
 }
 
@@ -107,6 +107,8 @@ AGENT_TRAY="$FAKEHOME/.config/autostart/warphold-tray.desktop"
 check "binary installed in ~/.local/bin" "[ -x '$BIN' ]"
 check "binary is 0755"                   "[ \"\$(stat -c %a '$BIN')\" = 755 ]"
 check "PATH hint printed"                "grep -q 'is not in your PATH' '$WORK/install.out'"
+check "PATH hint names ~/.local/bin"     "grep -qF 'add export PATH=\"\$HOME/.local/bin:\$PATH\" to your shell profile' '$WORK/install.out'"
+check "PATH hint printed once"           "[ \"\$(grep -c 'is not in your PATH' '$WORK/install.out')\" = 1 ]"
 check "app unit written"                 "[ -f '$APP_UNIT' ]"
 check "unit runs the app engine"         "grep -qE 'ExecStart=\"[^\"]*warphold\" app run$' '$APP_UNIT'"
 check "unit restarts on failure"         "grep -q 'Restart=on-failure' '$APP_UNIT'"

@@ -147,3 +147,62 @@ func TestDeleteGroup(t *testing.T) {
 		require.NoError(t, s.DeleteGroup(ctx, gid, now))
 	})
 }
+
+// TestRetiredAgentsDoNotPinAGroup pins the 2026-09 field finding: device
+// "blade" was revoked and reaped, yet its group could be neither repointed nor
+// deleted. A retired (reaped) device has no repository left to orphan, so it
+// blocks neither; a revoked device the reap has not reached yet still does.
+func TestRetiredAgentsDoNotPinAGroup(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	now := clock.Now().UTC().Truncate(time.Second)
+
+	retired := func(gid int64, id string) {
+		require.NoError(t, s.CreateAgent(ctx, &store.Agent{ID: id, Name: "n", Hostname: "h", OS: "linux", Arch: "amd64", Scope: "user", GroupID: gid, BearerHash: []byte(id), SealedBundle: []byte("b"), EnrolledAt: now}))
+		require.NoError(t, s.RevokeAgent(ctx, id, now))
+		require.NoError(t, s.RetireAgent(ctx, id, now))
+	}
+
+	t.Run("repoint ignores a retired agent", func(t *testing.T) {
+		gid, _, _ := seedGroup(t, s, now)
+		tid2, err := s.CreateTarget(ctx, &store.Target{Name: "t2", Kind: "filesystem", Path: t.TempDir(), CreatedAt: now})
+		require.NoError(t, err)
+		retired(gid, "r1")
+		require.NoError(t, s.UpdateGroup(ctx, gid, nil, &tid2, nil))
+	})
+
+	t.Run("delete ignores a retired agent and keeps its history row", func(t *testing.T) {
+		gid, _, _ := seedGroup(t, s, now)
+		retired(gid, "r2")
+		require.NoError(t, s.DeleteGroup(ctx, gid, now))
+
+		_, err := s.Group(ctx, gid)
+		require.ErrorIs(t, err, store.ErrNotFound)
+
+		gs, err := s.Groups(ctx)
+		require.NoError(t, err)
+
+		for _, g := range gs {
+			require.NotEqual(t, gid, g.ID, "a deleted group is not listed")
+		}
+
+		a, err := s.Agent(ctx, "r2")
+		require.NoError(t, err)
+		require.NotNil(t, a.RetiredAt)
+
+		newName := "x"
+		require.ErrorIs(t, s.UpdateGroup(ctx, gid, &newName, nil, nil), store.ErrNotFound)
+		require.ErrorIs(t, s.DeleteGroup(ctx, gid, now), store.ErrNotFound)
+	})
+
+	t.Run("revoked but not yet reaped still blocks both", func(t *testing.T) {
+		gid, _, _ := seedGroup(t, s, now)
+		tid2, err := s.CreateTarget(ctx, &store.Target{Name: "t2", Kind: "filesystem", Path: t.TempDir(), CreatedAt: now})
+		require.NoError(t, err)
+		retired(gid, "r3")
+		require.NoError(t, s.CreateAgent(ctx, &store.Agent{ID: "v1", Name: "n", Hostname: "h", OS: "linux", Arch: "amd64", Scope: "user", GroupID: gid, BearerHash: []byte("v1"), SealedBundle: []byte("b"), EnrolledAt: now}))
+		require.NoError(t, s.RevokeAgent(ctx, "v1", now))
+		require.ErrorIs(t, s.UpdateGroup(ctx, gid, nil, &tid2, nil), store.ErrGroupInUse)
+		require.ErrorIs(t, s.DeleteGroup(ctx, gid, now), store.ErrGroupInUse)
+	})
+}

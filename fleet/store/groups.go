@@ -4,19 +4,11 @@ import (
 	"context"
 	"errors"
 	"time"
-
-	"modernc.org/sqlite"
 )
 
-// ErrGroupInUse is returned by DeleteGroup when a non-revoked agent or a live
+// ErrGroupInUse is returned by DeleteGroup when an unretired agent or a live
 // enrollment token still references the group.
 var ErrGroupInUse = errors.New("group is in use")
-
-// sqliteConstraint is SQLite's primary result code for any constraint
-// violation (unique, not-null, check or foreign key); Error.Code() carries an
-// extended code in the high bits, so a caller must mask them off to compare
-// against this. See https://www.sqlite.org/rescode.html#constraint.
-const sqliteConstraint = 19
 
 type Group struct {
 	ID                   int64
@@ -44,11 +36,11 @@ func scanGroup(row interface{ Scan(...any) error }) (*Group, error) {
 }
 
 func (s *Store) Group(ctx context.Context, id int64) (*Group, error) {
-	return scanGroup(s.db.QueryRowContext(ctx, `SELECT id,name,target_id,template_id,created_at FROM groups WHERE id=?`, id))
+	return scanGroup(s.db.QueryRowContext(ctx, `SELECT id,name,target_id,template_id,created_at FROM groups WHERE id=? AND deleted_at IS NULL`, id))
 }
 
 func (s *Store) Groups(ctx context.Context) ([]Group, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,name,target_id,template_id,created_at FROM groups ORDER BY id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,name,target_id,template_id,created_at FROM groups WHERE deleted_at IS NULL ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -71,10 +63,12 @@ func (s *Store) Groups(ctx context.Context) ([]Group, error) {
 // template_id are each left unchanged when nil. The caller is responsible for
 // validating that a new target/template exists.
 //
-// A target_id change is refused with ErrGroupInUse when any agent -- revoked
-// or not -- has ever enrolled through the group: its repository lives on
-// whatever target was current at enrollment, so retargeting would silently
-// orphan it even for a device later revoked. That check and the write are the
+// A target_id change is refused with ErrGroupInUse when any agent that still
+// has a repository -- live, or revoked but not yet reaped -- enrolled through
+// the group: that repository lives on whatever target was current at
+// enrollment, so retargeting would silently orphan it. A retired agent (the
+// reap job removed its repository) has nothing left to orphan, so it does not
+// count. That check and the write are the
 // same UPDATE statement: the WHERE guard is evaluated against each row's
 // pre-update value of target_id, so a device enrolling between a check and a
 // separate write can't slip through -- there is no separate write. Retargeting
@@ -83,7 +77,8 @@ func (s *Store) Groups(ctx context.Context) ([]Group, error) {
 func (s *Store) UpdateGroup(ctx context.Context, id int64, name *string, targetID, templateID *int64) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE groups SET
 		name=COALESCE(?,name), target_id=COALESCE(?,target_id), template_id=COALESCE(?,template_id)
-		WHERE id=? AND (COALESCE(?,target_id)=target_id OR NOT EXISTS (SELECT 1 FROM agents WHERE group_id=?))`,
+		WHERE id=? AND deleted_at IS NULL
+		AND (COALESCE(?,target_id)=target_id OR NOT EXISTS (SELECT 1 FROM agents WHERE group_id=? AND retired_at IS NULL))`,
 		name, targetID, templateID, id, targetID, id)
 	if err != nil {
 		return err
@@ -99,8 +94,8 @@ func (s *Store) UpdateGroup(ctx context.Context, id int64, name *string, targetI
 	}
 	// 0 rows: either the group doesn't exist, or the guard above blocked a
 	// real repoint. Whatever agent blocked it can't have vanished in this
-	// gap -- DeleteGroup refuses to remove a group any agent (revoked or
-	// not) still references -- so this read is safe without a transaction.
+	// gap -- DeleteGroup refuses to remove a group any unretired agent still
+	// references -- so this read is safe without a transaction.
 	if _, err := s.Group(ctx, id); err != nil {
 		return err // ErrNotFound, or a real failure
 	}
@@ -108,36 +103,28 @@ func (s *Store) UpdateGroup(ctx context.Context, id int64, name *string, targetI
 	return ErrGroupInUse
 }
 
-// DeleteGroup removes a group, refusing with ErrGroupInUse when a non-revoked
-// agent or a live (unrevoked, unexpired) enrollment token still references
-// it. Stale tokens are deleted first -- their FK to groups has no ON DELETE
-// clause, so a revoked or expired one would otherwise block the DELETE below
-// even though it no longer authorizes anything. The final DELETE re-checks
-// the same two conditions in the statement itself, so a row created between
-// the cleanup and here cannot race the delete through.
+// DeleteGroup removes a group, refusing with ErrGroupInUse when an agent that
+// still has a repository (live, or revoked but not yet reaped) or a live
+// (unrevoked, unexpired, not used up) enrollment token references it. Stale
+// tokens are deleted first -- their FK to groups has no ON DELETE clause, and
+// a revoked, expired or used-up one no longer authorizes anything. The delete
+// re-checks both conditions in the statement itself, so a row created between
+// the cleanup and here cannot race it through.
 //
-// A group that a device once enrolled through and was later revoked from
-// still has an agents row pointing at it -- agents.group_id has no ON DELETE
-// clause and schema.sql only ever grows columns, so that FK cannot be
-// relaxed. SQLite reports that as a constraint-violation error rather than
-// simply not matching the WHERE guard above, so it is translated to
-// ErrGroupInUse here too: from the caller's side it is the same "group is in
-// use" story, just discovered a statement later.
+// The delete stamps deleted_at rather than removing the row: a retired
+// device's agents row is the fleet's history and keeps its group_id (no ON
+// DELETE clause, and schema.sql only ever grows columns), so the row has to
+// stay for that FK. Group and Groups treat a stamped group as gone.
 func (s *Store) DeleteGroup(ctx context.Context, id int64, now time.Time) error {
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM enrollment_tokens WHERE group_id=? AND (revoked_at IS NOT NULL OR expires_at<=?)`, id, ts(now)); err != nil {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM enrollment_tokens WHERE group_id=? AND (revoked_at IS NOT NULL OR expires_at<=? OR (max_uses>0 AND uses>=max_uses))`, id, ts(now)); err != nil {
 		return err
 	}
 
-	res, err := s.db.ExecContext(ctx, `DELETE FROM groups WHERE id=?
-		AND NOT EXISTS (SELECT 1 FROM agents WHERE group_id=? AND revoked_at IS NULL)
-		AND NOT EXISTS (SELECT 1 FROM enrollment_tokens WHERE group_id=? AND revoked_at IS NULL AND expires_at>?)`,
-		id, id, id, ts(now))
+	res, err := s.db.ExecContext(ctx, `UPDATE groups SET deleted_at=? WHERE id=? AND deleted_at IS NULL
+		AND NOT EXISTS (SELECT 1 FROM agents WHERE group_id=? AND retired_at IS NULL)
+		AND NOT EXISTS (SELECT 1 FROM enrollment_tokens WHERE group_id=? AND revoked_at IS NULL AND expires_at>? AND (max_uses=0 OR uses<max_uses))`,
+		ts(now), id, id, id, ts(now))
 	if err != nil {
-		var sqliteErr *sqlite.Error
-		if errors.As(err, &sqliteErr) && sqliteErr.Code()&0xff == sqliteConstraint {
-			return ErrGroupInUse
-		}
-
 		return err
 	}
 
