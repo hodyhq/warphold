@@ -53,11 +53,23 @@ func (c *commandAgentStatus) run(ctx context.Context) error {
 		return errors.Wrap(err, "bad engine address in engine.json")
 	}
 
+	var rs serverapi.StatusResponse
+
+	if err := api.Get(ctx, "repo/status", nil, &rs); err != nil {
+		// engine.json points at a loopback port; nothing answering there
+		// means the process that wrote it is gone.
+		return c.engineDown(errors.Wrapf(err, "the %s engine is not reachable", c.noun()))
+	}
+
+	if !rs.Connected {
+		c.out.printStdout("%s\n", c.notConnected())
+
+		return nil
+	}
+
 	var sr serverapi.SourcesResponse
 
 	if err := api.Get(ctx, "sources", nil, &sr); err != nil {
-		// engine.json points at a loopback port; nothing answering there
-		// means the process that wrote it is gone.
 		return c.engineDown(errors.Wrapf(err, "the %s engine is not reachable", c.noun()))
 	}
 
@@ -83,6 +95,17 @@ func (c *commandAgentStatus) noun() string {
 	}
 
 	return "agent"
+}
+
+// notConnected explains an engine that is up without a repository: an agent
+// is waiting for its Fleet (it retries the open on its own), an app has not
+// been set up yet.
+func (c *commandAgentStatus) notConnected() string {
+	if c.scope == state.ScopeApp {
+		return "no repository connected yet; finish setup in the app"
+	}
+
+	return "waiting for the Fleet: the repository is not open yet (retrying)"
 }
 
 func (c *commandAgentStatus) startHint() string {
