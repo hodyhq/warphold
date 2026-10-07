@@ -30,7 +30,10 @@ func fakeB2(t *testing.T) (*httptest.Server, *[]map[string]any) {
 				return
 			}
 
-			json.NewEncoder(w).Encode(map[string]any{"accountId": "acct1", "authorizationToken": "tok1", "apiInfo": map[string]any{"storageApi": map[string]any{"apiUrl": srv.URL, "allowed": map[string]any{"buckets": []any{map[string]any{"id": "bkt1", "name": "hody-backups"}}}}}})
+			json.NewEncoder(w).Encode(map[string]any{"accountId": "acct1", "authorizationToken": "tok1", "apiInfo": map[string]any{"storageApi": map[string]any{
+				"apiUrl":  srv.URL,
+				"allowed": map[string]any{"buckets": []any{map[string]any{"id": "bkt1", "name": "hody-backups"}}},
+			}}})
 		case "/b2api/v4/b2_list_buckets", "/b2api/v4/b2_create_key", "/b2api/v4/b2_delete_key":
 			if r.Header.Get("Authorization") != "tok1" {
 				w.WriteHeader(http.StatusUnauthorized)
