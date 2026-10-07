@@ -51,3 +51,10 @@ CREATE TABLE IF NOT EXISTS repo_stats (
   agent_id TEXT PRIMARY KEY REFERENCES agents(id), collected_at TEXT NOT NULL,
   logical_bytes INTEGER NOT NULL DEFAULT 0, stored_bytes INTEGER NOT NULL DEFAULT 0,
   blob_count INTEGER NOT NULL DEFAULT 0, mirrored_at TEXT, mirrored_bytes INTEGER NOT NULL DEFAULT 0);
+-- mirror_hides counts the mirror objects the mirror job hid per target and
+-- device, so its guard sees a slow erosion across runs and not just one big
+-- run. No foreign keys: a device directory need not be an agent, and a row
+-- outlives nothing it should, since AddMirrorHides prunes past the window.
+CREATE TABLE IF NOT EXISTS mirror_hides (
+  target_id INTEGER NOT NULL, device TEXT NOT NULL, hidden_at TEXT NOT NULL, n INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS mirror_hides_device ON mirror_hides(target_id, device, hidden_at);

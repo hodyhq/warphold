@@ -1,0 +1,358 @@
+package jobs
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"runtime"
+	"sort"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+
+	"github.com/kopia/kopia/fleet/gateway"
+	"github.com/kopia/kopia/fleet/store"
+	"github.com/kopia/kopia/internal/clock"
+)
+
+// versionedMirror is an in-memory S3 bucket with versioning on: Put adds a
+// version, Delete without a version id adds a delete marker (B2's "hide"), and
+// nothing ever removes a version, which is what Object Lock enforces.
+type versionedMirror struct {
+	mu   sync.Mutex
+	objs map[string][]mirrorVersion
+
+	// unversioned makes the bucket answer GetBucketVersioning "off", where a
+	// DeleteObject would be a real delete.
+	unversioned bool
+}
+
+type mirrorVersion struct {
+	data   []byte
+	marker bool
+	mod    time.Time
+}
+
+func (v *versionedMirror) live(key string) (mirrorVersion, bool) {
+	vs := v.objs[key]
+	if len(vs) == 0 || vs[len(vs)-1].marker {
+		return mirrorVersion{}, false
+	}
+
+	return vs[len(vs)-1], true
+}
+
+func (v *versionedMirror) seed(key string, mod time.Time) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	v.objs[key] = append(v.objs[key], mirrorVersion{data: []byte(key), mod: mod})
+}
+
+func (v *versionedMirror) versions(key string) []mirrorVersion {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	return append([]mirrorVersion(nil), v.objs[key]...)
+}
+
+func (v *versionedMirror) markers() int {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	n := 0
+
+	for _, vs := range v.objs {
+		for _, x := range vs {
+			if x.marker {
+				n++
+			}
+		}
+	}
+
+	return n
+}
+
+func (v *versionedMirror) Put(_ context.Context, key string, r io.Reader, _ int64, overwrite bool) (gateway.ObjectInfo, error) {
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return gateway.ObjectInfo{}, err
+	}
+
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	if _, ok := v.live(key); ok && !overwrite {
+		return gateway.ObjectInfo{}, gateway.ErrExists
+	}
+
+	v.objs[key] = append(v.objs[key], mirrorVersion{data: b, mod: clock.Now()})
+
+	return gateway.ObjectInfo{Key: key, Size: int64(len(b))}, nil
+}
+
+func (v *versionedMirror) Get(_ context.Context, key string, _, _ int64) (io.ReadCloser, gateway.ObjectInfo, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	x, ok := v.live(key)
+	if !ok {
+		return nil, gateway.ObjectInfo{}, gateway.ErrNotFound
+	}
+
+	return io.NopCloser(bytes.NewReader(x.data)), gateway.ObjectInfo{Key: key, Size: int64(len(x.data))}, nil
+}
+
+func (v *versionedMirror) Head(ctx context.Context, key string) (gateway.ObjectInfo, error) {
+	_, info, err := v.Get(ctx, key, 0, -1)
+	return info, err
+}
+
+func (v *versionedMirror) List(_ context.Context, prefix, after string, limit int) ([]gateway.ObjectInfo, bool, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	var keys []string
+
+	for k := range v.objs {
+		if _, ok := v.live(k); ok && strings.HasPrefix(k, prefix) && k > after {
+			keys = append(keys, k)
+		}
+	}
+
+	sort.Strings(keys)
+
+	truncated := len(keys) > limit
+	if truncated {
+		keys = keys[:limit]
+	}
+
+	out := make([]gateway.ObjectInfo, 0, len(keys))
+	for _, k := range keys {
+		x, _ := v.live(k)
+		out = append(out, gateway.ObjectInfo{Key: k, Size: int64(len(x.data)), LastModified: x.mod})
+	}
+
+	return out, truncated, nil
+}
+
+func (v *versionedMirror) Delete(_ context.Context, key string) error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	if _, ok := v.live(key); !ok {
+		return gateway.ErrNotFound
+	}
+
+	v.objs[key] = append(v.objs[key], mirrorVersion{marker: true, mod: clock.Now()})
+
+	return nil
+}
+
+func (v *versionedMirror) Versioned(context.Context) bool { return !v.unversioned }
+
+// versionedFixture is a mirror fixture whose bucket is a versionedMirror.
+func versionedFixture(t *testing.T) (*mirrorFixture, *versionedMirror) {
+	t.Helper()
+
+	f := newMirrorFixture(t, nil)
+	seedAgents(t, f.st, "dev1")
+
+	vm := &versionedMirror{objs: map[string][]mirrorVersion{}}
+	openMirror = func(context.Context, store.Target, mirrorCreds) (gateway.ObjectStore, error) {
+		return vm, nil
+	}
+
+	return f, vm
+}
+
+func TestMirrorHidesOnlyWhatMaintenanceRemoved(t *testing.T) {
+	f, vm := versionedFixture(t)
+
+	ancient := clock.Now().AddDate(-5, 0, 0)
+
+	f.write(t, f.dir, "dev1/p001", "dev1/p001")
+	f.write(t, f.dir, "dev1/p002", "dev1/p002")
+	vm.seed("dev1/p001", ancient) // live and very old: must stay
+	vm.seed("dev1/p002", clock.Now())
+	vm.seed("dev1/p003", ancient) // removed by maintenance locally
+
+	detail, err := f.run(t)
+	require.NoError(t, err)
+	require.Equal(t, "0 objects, 0 bytes, 2 skipped, 1 hidden", detail)
+
+	gone := vm.versions("dev1/p003")
+	require.Len(t, gone, 2, "the version is retained under the marker")
+	require.False(t, gone[0].marker)
+	require.Equal(t, "dev1/p003", string(gone[0].data))
+	require.True(t, gone[1].marker)
+
+	for _, k := range []string{"dev1/p001", "dev1/p002"} {
+		vs := vm.versions(k)
+		require.Len(t, vs, 1, k)
+		require.False(t, vs[0].marker, k)
+	}
+
+	// Idempotent: a second run hides nothing new.
+	detail, err = f.run(t)
+	require.NoError(t, err)
+	require.Equal(t, "0 objects, 0 bytes, 2 skipped", detail)
+	require.Equal(t, 1, vm.markers())
+}
+
+func TestMirrorHideGuard(t *testing.T) {
+	for _, tc := range []struct {
+		remote, local int
+		trip          bool
+	}{
+		// The default limit is the larger of 50 and 25% of the mirrored keys.
+		{remote: 100, local: 50, trip: false},
+		{remote: 100, local: 49, trip: true},
+		{remote: 400, local: 300, trip: false},
+		{remote: 400, local: 299, trip: true},
+	} {
+		t.Run(fmt.Sprintf("%d-of-%d", tc.remote-tc.local, tc.remote), func(t *testing.T) {
+			f, vm := versionedFixture(t)
+
+			for i := range tc.remote {
+				k := fmt.Sprintf("dev1/p%04d", i)
+				vm.seed(k, clock.Now())
+
+				if i < tc.local {
+					f.write(t, f.dir, k, k)
+				}
+			}
+
+			detail, err := f.run(t)
+
+			n := tc.remote - tc.local
+			if tc.trip {
+				require.Error(t, err)
+				require.Contains(t, detail, fmt.Sprintf("hide guard tripped: %d of %d", n, tc.remote))
+				require.Zero(t, vm.markers(), "a tripped guard hides nothing")
+
+				return
+			}
+
+			require.NoError(t, err)
+			require.Contains(t, detail, fmt.Sprintf("%d hidden", n))
+			require.Equal(t, n, vm.markers())
+		})
+	}
+}
+
+func TestMirrorHidesNothingForAnEmptyLocalStore(t *testing.T) {
+	f, vm := versionedFixture(t)
+
+	vm.seed("dev1/p001", clock.Now())
+	vm.seed("dev1/p002", clock.Now())
+
+	// The disk is wiped (or unmounted): no device directory at all.
+	detail, err := f.run(t)
+	require.NoError(t, err)
+	require.Equal(t, "0 objects, 0 bytes, 0 skipped", detail)
+	require.Zero(t, vm.markers())
+}
+
+func TestMirrorHidesNothingWhenTheLocalListingFails(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs POSIX permissions that bind the test user")
+	}
+
+	f, vm := versionedFixture(t)
+
+	f.write(t, f.dir, "dev1/p001", "dev1/p001")
+	vm.seed("dev1/p001", clock.Now())
+	vm.seed("dev1/p002", clock.Now())
+
+	dev := filepath.Join(f.dir, "dev1")
+	require.NoError(t, os.Chmod(dev, 0))
+	t.Cleanup(func() { _ = os.Chmod(dev, 0o700) })
+
+	detail, err := f.run(t)
+	require.Error(t, err)
+	require.Contains(t, detail, "listing the hosted root")
+	require.Zero(t, vm.markers())
+}
+
+func TestMirrorRefusesToHideOnAnUnversionedBucket(t *testing.T) {
+	f, vm := versionedFixture(t)
+	vm.unversioned = true
+
+	f.write(t, f.dir, "dev1/p001", "dev1/p001")
+	vm.seed("dev1/p001", clock.Now())
+	vm.seed("dev1/p002", clock.Now())
+
+	detail, err := f.run(t)
+	require.Error(t, err)
+	require.Contains(t, detail, "mirror bucket is not versioned; refusing to hide")
+	require.Zero(t, vm.markers())
+	require.Len(t, vm.versions("dev1/p002"), 1)
+}
+
+func TestMirrorHideGuardSumsTheLastWeek(t *testing.T) {
+	f, vm := versionedFixture(t)
+
+	// 100 mirrored keys: the default limit is max(50, 25) = 50 per rolling week.
+	for i := range 100 {
+		k := fmt.Sprintf("dev1/p%04d", i)
+		vm.seed(k, clock.Now())
+		f.write(t, f.dir, k, k)
+	}
+
+	// Maintenance removes 20 blobs a night. Two nights fit (40), the third
+	// would make 60 and trips the guard.
+	removed := 0
+	for night := 1; night <= 3; night++ {
+		for range 20 {
+			require.NoError(t, os.Remove(filepath.Join(f.dir, "dev1", fmt.Sprintf("p%04d", removed))))
+			removed++
+		}
+
+		detail, err := f.run(t)
+		if night < 3 {
+			require.NoError(t, err, detail)
+			require.Equal(t, 20*night, vm.markers())
+
+			continue
+		}
+
+		require.Error(t, err)
+		require.Contains(t, detail, "hide guard tripped: 20 of 60 (40 more in the last 7 days); limit 50 from mirror_hide_max_percent=25, mirror_hide_min_count=50")
+		require.Equal(t, 40, vm.markers(), "the tripped run hides nothing")
+	}
+}
+
+func TestMirrorHideGuardLimitsAreSettings(t *testing.T) {
+	f, vm := versionedFixture(t)
+	ctx := context.Background()
+
+	for i := range 100 {
+		k := fmt.Sprintf("dev1/p%04d", i)
+		vm.seed(k, clock.Now())
+
+		if i >= 60 {
+			f.write(t, f.dir, k, k)
+		}
+	}
+
+	// 60 removed is past the default max(50, 25).
+	detail, err := f.run(t)
+	require.Error(t, err)
+	require.Contains(t, detail, "hide guard tripped: 60 of 100")
+	require.Zero(t, vm.markers())
+
+	// Raising the percent takes effect on the next run, no restart.
+	require.NoError(t, f.st.SetSetting(ctx, MirrorHideMaxPercentSetting, "60"))
+
+	detail, err = f.run(t)
+	require.NoError(t, err, detail)
+	require.Contains(t, detail, "60 hidden")
+	require.Equal(t, 60, vm.markers())
+}

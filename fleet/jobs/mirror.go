@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,6 +26,58 @@ const (
 	// detailErrors is how many device failures the job's detail names; the rest
 	// are counted. The row is read in the UI, not in a log.
 	detailErrors = 3
+
+	// hideWindow is how far back the guard sums earlier runs' hides, so a
+	// slow erosion (a little every night) trips it as surely as one big run.
+	hideWindow = 7 * 24 * time.Hour
+
+	percent = 100
+)
+
+// The hide guard's limits are fleet settings, read at the start of every
+// run: a device may hide at most max(min count, max percent of its mirror
+// keys) in any 7 days. Past that it looks like a damaged local store, not
+// maintenance, so the run hides nothing for that device and fails.
+const (
+	MirrorHideMaxPercentSetting = "mirror_hide_max_percent"
+	MirrorHideMinCountSetting   = "mirror_hide_min_count"
+
+	defaultHidePercent  = 25
+	defaultHideMinCount = 50
+	maxHideMinCount     = 1_000_000
+)
+
+// IntSetting is a whole-number setting's default and inclusive bounds.
+type IntSetting struct{ Default, Min, Max int }
+
+// MirrorHideSettings is the hide guard's settings table, shared with the
+// settings API so the two cannot disagree about the bounds.
+var MirrorHideSettings = map[string]IntSetting{
+	MirrorHideMaxPercentSetting: {Default: defaultHidePercent, Min: 1, Max: percent},
+	MirrorHideMinCountSetting:   {Default: defaultHideMinCount, Min: 1, Max: maxHideMinCount},
+}
+
+// MirrorHideSetting reads one hide guard setting, falling back to its
+// default when unset or out of bounds. A failed read is an error, never the
+// default: a default looser than the configured value would weaken the guard.
+func MirrorHideSetting(ctx context.Context, st *store.Store, key string) (int, error) {
+	spec := MirrorHideSettings[key]
+
+	v, err := st.Setting(ctx, key)
+	if err != nil {
+		return 0, fmt.Errorf("reading %s: %w", key, err)
+	}
+
+	if n, err := strconv.Atoi(v); err == nil && n >= spec.Min && n <= spec.Max {
+		return n, nil
+	}
+
+	return spec.Default, nil
+}
+
+var (
+	errUnversioned = errors.New("mirror bucket is not versioned; refusing to hide")
+	errHideGuard   = errors.New("hide guard tripped")
 )
 
 // mirrorCreds is the shape sealed into targets.sealed_mirror_key by
@@ -82,11 +136,23 @@ func mirrorCI(t store.Target, c mirrorCreds) (blob.ConnectionInfo, error) {
 
 // Mirror returns the runner for the "mirror" job: for every hosted disk target
 // with a mirror configured, upload every local object the mirror does not
-// already hold (spec §7.3). It is append-only - nothing is ever deleted from a
-// mirror bucket - and a failure on one device continues with the next.
+// already hold (spec §7.3), then hide the mirror objects maintenance removed
+// locally (see mirrorRun.hide). No version is ever deleted: hiding is a plain
+// DeleteObject on a versioned bucket, which only adds a delete marker, and the
+// bucket's lifecycle rule decides when hidden versions go. A failure on one
+// device continues with the next.
 func Mirror(st *store.Store, open seal.Opener) Runner {
 	return func(ctx context.Context, j store.Job) (string, error) {
 		m := &mirrorRun{st: st, open: open, now: time.Now()}
+
+		var err error
+		if m.hidePercent, err = MirrorHideSetting(ctx, st, MirrorHideMaxPercentSetting); err != nil {
+			return "", err
+		}
+
+		if m.hideMin, err = MirrorHideSetting(ctx, st, MirrorHideMinCountSetting); err != nil {
+			return "", err
+		}
 
 		targets, err := st.Targets(ctx)
 		if err != nil {
@@ -127,6 +193,15 @@ type mirrorRun struct {
 
 	local, remote gateway.ObjectStore
 
+	// tgt is the target being mirrored, and versioned is what its bucket
+	// answered to GetBucketVersioning. A hide is only a hide on a versioned
+	// bucket; anywhere else DeleteObject destroys the only copy.
+	tgt       store.Target
+	versioned bool
+
+	// hidePercent and hideMin are the hide guard's limits for this run.
+	hidePercent, hideMin int
+
 	// plain is set for a mirror bucket whose provider has no conditional write
 	// (B2's S3 endpoint answers 501 to If-None-Match at all, so every upload
 	// would fail). Safe here and only here: this job is the bucket's only
@@ -138,6 +213,7 @@ type mirrorRun struct {
 
 	objects int
 	skipped int
+	hidden  int
 	bytes   int64
 	errs    []string
 }
@@ -148,6 +224,10 @@ func (m *mirrorRun) fail(what string, err error) {
 
 func (m *mirrorRun) detail() string {
 	d := fmt.Sprintf("%d objects, %d bytes, %d skipped", m.objects, m.bytes, m.skipped)
+	if m.hidden > 0 {
+		d += fmt.Sprintf(", %d hidden", m.hidden)
+	}
+
 	if len(m.errs) == 0 {
 		return d
 	}
@@ -210,10 +290,13 @@ func (m *mirrorRun) target(ctx context.Context, t store.Target) {
 
 	defer closeStore(ctx, remote)
 
-	m.local, m.remote = local, remote
+	m.local, m.remote, m.tgt = local, remote, t
 	m.plain = t.MirrorConditionalPut != nil && !*t.MirrorConditionalPut
+	m.versioned = remote.Versioned(ctx)
 
-	defer func() { m.local, m.remote, m.plain = nil, nil, false }()
+	defer func() {
+		m.local, m.remote, m.plain, m.tgt, m.versioned = nil, nil, false, store.Target{}, false
+	}()
 
 	if err := m.walk(ctx, t.Name); err != nil {
 		m.fail(t.Name, err)
@@ -269,7 +352,10 @@ func (m *mirrorRun) walk(ctx context.Context, target string) error {
 	return nil
 }
 
-// device uploads one device's missing objects and records its offsite progress.
+// device uploads one device's missing objects, hides the ones maintenance
+// removed, and records its offsite progress. objs is the device's complete
+// local listing: walk calls this only once a device's keys are all read, and
+// never for a device with none, so an empty or failed listing hides nothing.
 func (m *mirrorRun) device(ctx context.Context, target, device string, objs []gateway.ObjectInfo) {
 	if device == "" || len(objs) == 0 {
 		return
@@ -321,7 +407,79 @@ func (m *mirrorRun) device(ctx context.Context, target, device string, objs []ga
 		}
 	}
 
+	m.hide(ctx, where, device, objs, have)
 	m.record(ctx, where, device, offsite)
+}
+
+// hide adds a delete marker for every mirror key the local store no longer
+// holds. Live keys are never touched, however old. It fails closed: on a
+// bucket that is not lock-verified and versioned, or once this run plus the
+// last hideWindow of runs would pass the guard, the device hides nothing and
+// the run fails, so the digest flags it.
+func (m *mirrorRun) hide(ctx context.Context, where, device string, objs []gateway.ObjectInfo, have map[string]struct{}) {
+	local := make(map[string]struct{}, len(objs))
+	for _, o := range objs {
+		local[o.Key] = struct{}{}
+	}
+
+	var gone []string
+
+	for k := range have {
+		if _, ok := local[k]; !ok {
+			gone = append(gone, k)
+		}
+	}
+
+	if len(gone) == 0 {
+		return
+	}
+
+	if m.tgt.MirrorLockVerifiedAt == nil || !m.versioned {
+		m.fail(where, errUnversioned)
+
+		return
+	}
+
+	// The check and the reservation are one store transaction, so concurrent
+	// runs cannot both pass on the same count. Reserving before the first
+	// delete means a failure after hiding never leaves hides the guard does
+	// not see; a partial run over-counts, which only makes the guard stricter.
+	//
+	// ponytail: no reconcile of the reservation; release unused capacity only
+	// if partial runs ever trip the guard in practice.
+	limit := max(m.hideMin, len(have)*m.hidePercent/percent)
+
+	earlier, ok, err := m.st.ReserveMirrorHides(ctx, m.tgt.ID, device, m.now, m.now.Add(-hideWindow), len(gone), limit)
+	if err != nil {
+		m.fail(where, fmt.Errorf("reserving hides: %w", err))
+
+		return
+	}
+
+	if !ok {
+		m.fail(where, fmt.Errorf("%w: %d of %d (%d more in the last 7 days); limit %d from %s=%d, %s=%d",
+			errHideGuard, len(gone), len(have), earlier, limit,
+			MirrorHideMaxPercentSetting, m.hidePercent, MirrorHideMinCountSetting, m.hideMin))
+
+		return
+	}
+
+	sort.Strings(gone)
+
+	for _, k := range gone {
+		err := m.remote.Delete(ctx, k)
+
+		switch {
+		case errors.Is(err, gateway.ErrNotFound):
+			// Already hidden: a listing raced an earlier run.
+		case err != nil:
+			m.fail(where, fmt.Errorf("hiding %s: %w", k, err))
+
+			return
+		default:
+			m.hidden++
+		}
+	}
 }
 
 // record writes the device's offsite progress, if the device is an agent this

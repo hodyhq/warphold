@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	netmail "net/mail"
 	"slices"
@@ -68,6 +69,10 @@ type settingsOut struct {
 	// a job added there shows up here - and becomes writable below - with no
 	// second edit that could be forgotten.
 	JobIntervals map[string]int `json:"job_intervals"`
+
+	// The mirror job's hide guard (fleet/jobs.MirrorHideSettings).
+	MirrorHideMaxPercent int `json:"mirror_hide_max_percent"`
+	MirrorHideMinCount   int `json:"mirror_hide_min_count"`
 }
 
 func (s *Server) currentSettings(ctx context.Context) (settingsOut, error) {
@@ -101,6 +106,16 @@ func (s *Server) currentSettings(ctx context.Context) (settingsOut, error) {
 		return settingsOut{}, err
 	}
 
+	hidePercent, err := jobs.MirrorHideSetting(ctx, s.store(), jobs.MirrorHideMaxPercentSetting)
+	if err != nil {
+		return settingsOut{}, fmt.Errorf("mirror hide setting: %w", err)
+	}
+
+	hideMin, err := jobs.MirrorHideSetting(ctx, s.store(), jobs.MirrorHideMinCountSetting)
+	if err != nil {
+		return settingsOut{}, fmt.Errorf("mirror hide setting: %w", err)
+	}
+
 	return settingsOut{
 		FleetName:            name,
 		PollInterval:         s.pollInterval(ctx),
@@ -118,6 +133,8 @@ func (s *Server) currentSettings(ctx context.Context) (settingsOut, error) {
 		SMTPTLS:              sm.TLS,
 		SMTPPasswordSet:      pwSet,
 		JobIntervals:         jobs.IntervalSeconds(ctx, s.store()),
+		MirrorHideMaxPercent: hidePercent,
+		MirrorHideMinCount:   hideMin,
 	}, nil
 }
 
@@ -363,6 +380,23 @@ func (s *Server) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 				}
 
 				writes[key] = strconv.Itoa(secs)
+
+				continue
+			}
+
+			if hs, isHide := jobs.MirrorHideSettings[key]; isHide {
+				var n int
+				if err := json.Unmarshal(raw, &n); err != nil {
+					writeErr(w, http.StatusBadRequest, key+" must be a whole number")
+					return
+				}
+
+				if n < hs.Min || n > hs.Max {
+					writeErr(w, http.StatusBadRequest, key+" must be between "+strconv.Itoa(hs.Min)+" and "+strconv.Itoa(hs.Max))
+					return
+				}
+
+				writes[key] = strconv.Itoa(n)
 
 				continue
 			}

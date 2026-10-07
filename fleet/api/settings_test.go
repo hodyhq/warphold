@@ -45,6 +45,15 @@ func TestSettingsRequiresAdminAndRoundTrips(t *testing.T) {
 	require.Equal(t, "Moinzadeh", body["fleet_name"])
 	require.Equal(t, float64(900), body["poll_interval"])
 
+	// The mirror hide guard: defaults, then a write read back.
+	require.Equal(t, float64(25), body["mirror_hide_max_percent"])
+	require.Equal(t, float64(50), body["mirror_hide_min_count"])
+
+	resp, body = h.do("PUT", "/api/v1/fleet/settings", map[string]any{"mirror_hide_max_percent": 40, "mirror_hide_min_count": 200}) //nolint:bodyclose // h.do closes resp.Body itself before returning
+	require.Equal(t, 200, resp.StatusCode, body)
+	require.Equal(t, float64(40), body["mirror_hide_max_percent"])
+	require.Equal(t, float64(200), body["mirror_hide_min_count"])
+
 	// The overview header reads the same setting.
 	_, body = h.do("GET", "/api/v1/fleet/overview", nil)
 	require.Equal(t, "Moinzadeh", body["fleet_name"])
@@ -71,6 +80,10 @@ func TestSettingsRejectsUnknownKeysAndBadValues(t *testing.T) {
 		"public_url with creds": {"public_url": "https://u:p@fleet.example.com"},
 		"public_url not string": {"public_url": 7},
 		"verify not a bool":     {"public_url": "https://fleet.example.com", "verify": "yes"},
+		"hide percent zero":     {"mirror_hide_max_percent": 0},
+		"hide percent over 100": {"mirror_hide_max_percent": 101},
+		"hide percent a string": {"mirror_hide_max_percent": "lots"},
+		"hide min count zero":   {"mirror_hide_min_count": 0},
 	} {
 		t.Run(name, func(t *testing.T) {
 			resp, body := h.do("PUT", "/api/v1/fleet/settings", in)
@@ -87,7 +100,7 @@ func TestSettingsRejectsUnknownKeysAndBadValues(t *testing.T) {
 			"trusted_proxies", "gateway_ip_rate", "gateway_ip_burst", "gateway_device_rate",
 			"gateway_device_burst",
 			"smtp_host", "smtp_port", "smtp_username", "smtp_from", "smtp_tls", "smtp_password_set",
-			"job_intervals",
+			"job_intervals", "mirror_hide_max_percent", "mirror_hide_min_count",
 		},
 		slices.Collect(maps.Keys(body)), "only the whitelisted keys are exposed")
 	require.NotContains(t, body, "seal_salt")
