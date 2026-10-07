@@ -23,15 +23,18 @@ func fakeB2(t *testing.T) (*httptest.Server, *[]map[string]any) {
 
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/b2api/v3/b2_authorize_account":
+		case "/b2api/v4/b2_authorize_account":
 			u, p, ok := r.BasicAuth()
 			if !ok || u != "adminKeyId" || p != "adminKey" {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
 
-			json.NewEncoder(w).Encode(map[string]any{"accountId": "acct1", "authorizationToken": "tok1", "apiInfo": map[string]any{"storageApi": map[string]any{"apiUrl": srv.URL}}})
-		case "/b2api/v3/b2_list_buckets", "/b2api/v3/b2_create_key", "/b2api/v3/b2_delete_key":
+			json.NewEncoder(w).Encode(map[string]any{"accountId": "acct1", "authorizationToken": "tok1", "apiInfo": map[string]any{"storageApi": map[string]any{
+				"apiUrl":  srv.URL,
+				"allowed": map[string]any{"buckets": []any{map[string]any{"id": "bkt1", "name": "hody-backups"}}},
+			}}})
+		case "/b2api/v4/b2_list_buckets", "/b2api/v4/b2_create_key", "/b2api/v4/b2_delete_key":
 			if r.Header.Get("Authorization") != "tok1" {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
@@ -43,9 +46,9 @@ func fakeB2(t *testing.T) (*httptest.Server, *[]map[string]any) {
 
 			calls = append(calls, body)
 			switch r.URL.Path {
-			case "/b2api/v3/b2_list_buckets":
+			case "/b2api/v4/b2_list_buckets":
 				json.NewEncoder(w).Encode(map[string]any{"buckets": []any{map[string]any{"bucketId": "bkt1", "bucketName": body["bucketName"], "fileLockConfiguration": map[string]any{"isClientAuthorizedToRead": true, "value": map[string]any{"isFileLockEnabled": true}}}}})
-			case "/b2api/v3/b2_create_key":
+			case "/b2api/v4/b2_create_key":
 				json.NewEncoder(w).Encode(map[string]any{"applicationKeyId": "newKeyId", "applicationKey": "newKey"})
 			default:
 				json.NewEncoder(w).Encode(map[string]any{})
@@ -64,7 +67,7 @@ func fakeB2(t *testing.T) (*httptest.Server, *[]map[string]any) {
 func TestErrorBodyIsTruncated(t *testing.T) {
 	huge := strings.Repeat("x", 4096)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/b2api/v3/b2_authorize_account" {
+		if r.URL.Path == "/b2api/v4/b2_authorize_account" {
 			json.NewEncoder(w).Encode(map[string]any{"accountId": "acct1", "authorizationToken": "tok1", "apiInfo": map[string]any{"storageApi": map[string]any{"apiUrl": "http://" + r.Host}}}) //nolint:errcheck,errchkjson
 			return
 		}
@@ -98,8 +101,10 @@ func TestBucketInfoCreateDeleteKey(t *testing.T) {
 	require.Equal(t, b2api.CreatedKey{KeyID: "newKeyId", Key: "newKey"}, k)
 
 	created := (*calls)[1]
-	require.Equal(t, "/b2api/v3/b2_create_key", created["_path"])
+	require.Equal(t, "/b2api/v4/b2_create_key", created["_path"])
 	require.Equal(t, "agents/ag1/", created["namePrefix"])
+	require.Equal(t, []any{"bkt1"}, created["bucketIds"], "v4 takes bucketIds, not bucketId")
+	require.NotContains(t, created, "bucketId")
 	require.NotContains(t, created["capabilities"], "deleteFiles")
 
 	require.NoError(t, c.DeleteKey(ctx, "adminKeyId", "adminKey", "newKeyId"))
@@ -114,7 +119,7 @@ func TestBucketInfoCreateDeleteKey(t *testing.T) {
 // locked. LockReadable is what tells those two apart.
 func TestBucketInfoReportsAnUnreadableLockConfiguration(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/b2api/v3/b2_authorize_account" {
+		if r.URL.Path == "/b2api/v4/b2_authorize_account" {
 			json.NewEncoder(w).Encode(map[string]any{
 				"accountId": "acc", "authorizationToken": "tok",
 				"apiInfo": map[string]any{"storageApi": map[string]any{"apiUrl": "http://" + r.Host}},
@@ -134,4 +139,42 @@ func TestBucketInfoReportsAnUnreadableLockConfiguration(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, info.LockReadable)
 	require.False(t, info.ObjectLockEnabled, "unknown decodes as false, which is why LockReadable exists")
+}
+
+// A v4 key created with bucketIds covering several buckets but narrowed to one
+// sees only that bucket in b2_list_buckets; authorize reports it as
+// allowed.buckets [{id,name}] (v3 used bucketId/bucketName).
+func TestBucketInfoWithV4MultiBucketKeyRestrictedToOne(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/b2api/v4/b2_authorize_account":
+			json.NewEncoder(w).Encode(map[string]any{
+				"accountId": "acc", "authorizationToken": "tok",
+				"apiInfo": map[string]any{"storageApi": map[string]any{
+					"apiUrl":  "http://" + r.Host,
+					"allowed": map[string]any{"buckets": []any{map[string]any{"id": "bkt2", "name": "mirror"}}},
+				}},
+			})
+		case "/b2api/v4/b2_list_buckets":
+			json.NewEncoder(w).Encode(map[string]any{"buckets": []any{map[string]any{
+				"bucketId": "bkt2", "bucketName": "mirror",
+				"fileLockConfiguration": map[string]any{"isClientAuthorizedToRead": true, "value": map[string]any{"isFileLockEnabled": true}},
+			}}})
+		default:
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"code":"unsupported","message":"This request is not currently supported on API version number 3"}`)) //nolint:errcheck
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	c := b2api.New(srv.Client()).WithBase(srv.URL)
+
+	info, err := c.BucketInfo(context.Background(), "k", "s", "mirror")
+	require.NoError(t, err)
+	require.Equal(t, "bkt2", info.ID)
+	require.True(t, info.ObjectLockEnabled)
+	require.True(t, info.LockReadable)
+
+	_, err = c.BucketInfo(context.Background(), "k", "s", "other-bucket")
+	require.ErrorContains(t, err, "not found or not visible")
 }

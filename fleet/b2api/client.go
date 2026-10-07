@@ -82,7 +82,7 @@ type session struct {
 }
 
 func (c *Client) authorize(ctx context.Context, keyID, key string) (*session, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/b2api/v3/b2_authorize_account", http.NoBody)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/b2api/v4/b2_authorize_account", http.NoBody)
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +103,7 @@ func (c *Client) call(ctx context.Context, s *session, op string, body, out any)
 		return err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.APIInfo.StorageAPI.APIURL+"/b2api/v3/"+op, bytes.NewReader(b))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.APIInfo.StorageAPI.APIURL+"/b2api/v4/"+op, bytes.NewReader(b))
 	if err != nil {
 		return err
 	}
@@ -183,7 +183,7 @@ func (c *Client) CreateKey(ctx context.Context, keyID, key string, r KeyRequest)
 		Key string `json:"applicationKey"`
 	}
 
-	body := map[string]any{"accountId": s.AccountID, "capabilities": r.Capabilities, "keyName": r.Name, "bucketId": r.BucketID, "namePrefix": r.NamePrefix}
+	body := map[string]any{"accountId": s.AccountID, "capabilities": r.Capabilities, "keyName": r.Name, "bucketIds": []string{r.BucketID}, "namePrefix": r.NamePrefix}
 	if err := c.call(ctx, s, "b2_create_key", body, &out); err != nil {
 		return CreatedKey{}, err
 	}
