@@ -2,9 +2,10 @@ package api_test
 
 import (
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/kopia/kopia/internal/clock"
 )
 
 // findGroup returns the group with the given id from a /fleet/groups list body.
@@ -202,17 +203,18 @@ func TestRetiredDeviceLeavesTheListAndFreesItsGroup(t *testing.T) {
 	h.activateAndLogin()
 	h.setPublicURL()
 	gid := h.mkHostedGroup(t, h.hostedDir(t))
-	_, tok := h.do("POST", "/api/v1/fleet/tokens", map[string]any{"group_id": gid})
+	_, tok := h.do("POST", "/api/v1/fleet/tokens", map[string]any{"group_id": gid}) //nolint:bodyclose // h.do closes resp.Body itself before returning
 
 	admin := h.jar
 	h.jar = nil
-	resp, body := h.do("POST", "/api/v1/fleet/enroll", map[string]any{"token": tok["token"], "hostname": "blade", "os": "linux", "arch": "amd64", "scope": "user"})
+	resp, body := h.do("POST", "/api/v1/fleet/enroll", map[string]any{"token": tok["token"], "hostname": "blade", "os": "linux", "arch": "amd64", "scope": "user"}) //nolint:bodyclose // h.do closes resp.Body itself before returning
 	require.Equal(t, 201, resp.StatusCode, body)
 
 	h.jar = admin
-	id := body["agent_id"].(string)
+	id, _ := body["agent_id"].(string)
+	require.NotEmpty(t, id)
 
-	resp, _ = h.do("POST", "/api/v1/fleet/agents/"+id+"/revoke", nil)
+	resp, _ = h.do("POST", "/api/v1/fleet/agents/"+id+"/revoke", nil) //nolint:bodyclose // h.do closes resp.Body itself before returning
 	require.Equal(t, 204, resp.StatusCode)
 
 	resp, body = h.do("DELETE", "/api/v1/fleet/groups/"+jsonNum(gid), nil)
@@ -221,7 +223,7 @@ func TestRetiredDeviceLeavesTheListAndFreesItsGroup(t *testing.T) {
 	_, list := h.doList("GET", "/api/v1/fleet/agents")
 	require.Len(t, list, 1, "a revoked device stays listed until it is reaped")
 
-	require.NoError(t, h.s.StoreForTesting().RetireAgent(t.Context(), id, time.Now()))
+	require.NoError(t, h.s.StoreForTesting().RetireAgent(t.Context(), id, clock.Now()))
 
 	_, list = h.doList("GET", "/api/v1/fleet/agents")
 	require.Empty(t, list, "a retired device is not in the default list")

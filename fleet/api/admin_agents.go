@@ -106,7 +106,11 @@ type agentOut struct {
 }
 
 func (s *Server) agentOut(a store.Agent, latest *store.Report, lastOK, kitAcked *time.Time, sizeBytes int64) agentOut {
-	return agentOut{ID: a.ID, Name: a.Name, Hostname: a.Hostname, OS: a.OS, Arch: a.Arch, Version: a.Version, Scope: a.Scope, GroupID: a.GroupID, EnrolledAt: a.EnrolledAt, LastSeenAt: a.LastSeenAt, RevokedAt: a.RevokedAt, RetiredAt: a.RetiredAt, Health: s.healthOf(a, latest, lastOK), KitAckedAt: kitAcked, SizeBytes: sizeBytes}
+	return agentOut{
+		ID: a.ID, Name: a.Name, Hostname: a.Hostname, OS: a.OS, Arch: a.Arch, Version: a.Version, Scope: a.Scope, GroupID: a.GroupID,
+		EnrolledAt: a.EnrolledAt, LastSeenAt: a.LastSeenAt, RevokedAt: a.RevokedAt, RetiredAt: a.RetiredAt,
+		Health: s.healthOf(a, latest, lastOK), KitAckedAt: kitAcked, SizeBytes: sizeBytes,
+	}
 }
 
 // healthOf takes the last successful snapshot time rather than looking it up:

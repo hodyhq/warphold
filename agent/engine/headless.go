@@ -242,7 +242,8 @@ func openWhenFleetAnswers(configFile string, open server.InitRepositoryFunc) ser
 				return nil, ctx.Err()
 			}
 
-			delay = min(delay*2, openRetryMax)
+			delay *= 2
+			delay = min(delay, openRetryMax)
 		}
 	}
 }
