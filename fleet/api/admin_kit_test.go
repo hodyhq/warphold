@@ -32,7 +32,7 @@ func (h *harness) getRaw(path string) (*http.Response, string) {
 
 // kitCreds pulls the printed read credentials back out of the page, which is
 // the only place they exist -- exactly what a human reads off the paper.
-var kitCreds = regexp.MustCompile(`--access-key (\S+) --secret-access-key (\S+)`)
+var kitCreds = regexp.MustCompile(`--access-key=(\S+) --secret-access-key=(\S+)`)
 
 func readCredsFrom(t *testing.T, page string) (string, string) {
 	t.Helper()
@@ -105,7 +105,7 @@ func TestRecoveryKitIsAdminOnlyAndSelfContained(t *testing.T) {
 
 	require.Contains(t, page, password, "the repository password is on the page")
 	require.Contains(t, page, id+"/", "the device's prefix is on the page")
-	require.Contains(t, page, "kopia repository connect s3 --bucket warphold")
+	require.Contains(t, page, "kopia repository connect s3 --bucket=warphold")
 	require.Contains(t, page, "kopia snapshot list")
 	require.Contains(t, page, "kopia restore")
 	require.NotContains(t, strings.ToLower(page), "<script")
@@ -230,7 +230,7 @@ func TestRecoveryKitForFilesystemTarget(t *testing.T) {
 
 	resp, page := h.getRaw("/api/v1/fleet/agents/" + body["agent_id"].(string) + "/kit")
 	require.Equal(t, 200, resp.StatusCode)
-	require.Contains(t, page, "kopia repository connect filesystem --path ")
+	require.Contains(t, page, "kopia repository connect filesystem --path=")
 	require.Contains(t, page, password)
 	require.NotRegexp(t, kitCreds, page, "a filesystem kit has no gateway credentials")
 }

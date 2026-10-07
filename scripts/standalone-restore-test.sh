@@ -273,7 +273,7 @@ for c in "$CONNECT_CMD" "$LIST_CMD" "$RESTORE_CMD"; do
   [[ "$c" == "kopia "* ]] || fail "kit printed a non-kopia command: $c"
 done
 [[ "$CONNECT_CMD" == "kopia repository connect s3 "* ]] || fail "unexpected connect command: $CONNECT_CMD"
-echo "kit connect: $(sed 's/--secret-access-key [^ ]*/--secret-access-key <redacted>/' <<<"$CONNECT_CMD")"
+echo "kit connect: $(sed 's/--secret-access-key=[^ ]*/--secret-access-key=<redacted>/' <<<"$CONNECT_CMD")"
 
 # ------------------------------------------------- restore, upstream only ----
 step "downloading the pinned upstream kopia"
