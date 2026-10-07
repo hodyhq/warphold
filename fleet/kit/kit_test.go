@@ -3,6 +3,7 @@ package kit_test
 import (
 	"bytes"
 	"html"
+	"os/exec"
 	"regexp"
 	"strings"
 	"testing"
@@ -63,7 +64,7 @@ func TestRenderIsSelfContainedAndPrintsEverything(t *testing.T) {
 	// The only scheme on the page is the endpoint fact; the connect command
 	// prints the bare host, which is what minio-go accepts.
 	require.Equal(t, 1, strings.Count(out, "https://"), "only the endpoint carries a scheme")
-	require.NotContains(t, out, "--endpoint https://")
+	require.NotContains(t, out, "--endpoint=https://")
 }
 
 // Every flag is upstream's, checked against cli/storage_*.go (spec 14.4).
@@ -71,8 +72,8 @@ func TestCommandsUseVerifiedUpstreamFlags(t *testing.T) {
 	t.Run("hosted", func(t *testing.T) {
 		c := kit.Commands(hostedData())
 		require.Equal(t,
-			"kopia repository connect s3 --bucket warphold --prefix ag_abc123/ --endpoint fleet.example.com"+
-				" --access-key WHREADONLYKEYID12345 --secret-access-key ro-secret-value --region warphold",
+			"kopia repository connect s3 --bucket=warphold --prefix=ag_abc123/ --endpoint=fleet.example.com"+
+				" --access-key=WHREADONLYKEYID12345 --secret-access-key=ro-secret-value --region=warphold",
 			c[0])
 		require.Equal(t, "kopia snapshot list", c[1])
 		require.True(t, strings.HasPrefix(c[2], "kopia restore <snapshot-id> "))
@@ -82,9 +83,9 @@ func TestCommandsUseVerifiedUpstreamFlags(t *testing.T) {
 		d := hostedData()
 		d.Endpoint = "http://192.0.2.5:8080"
 		c := kit.Commands(d)
-		require.Contains(t, c[0], "--endpoint 192.0.2.5:8080")
+		require.Contains(t, c[0], "--endpoint=192.0.2.5:8080")
 		require.NotContains(t, c[0], "--disable-tls")
-		require.True(t, strings.HasSuffix(c[0], "--region warphold"))
+		require.True(t, strings.HasSuffix(c[0], "--region=warphold"))
 
 		out := render(t, d)
 		require.Contains(t, out, "cannot talk to the WarpHold gateway without TLS")
@@ -96,13 +97,13 @@ func TestCommandsUseVerifiedUpstreamFlags(t *testing.T) {
 			ReadKeyID: "b2kid", ReadKey: "b2secret",
 		})
 		require.Equal(t,
-			"kopia repository connect b2 --bucket hody-backups --prefix agents/ag_abc123/ --key-id b2kid --key b2secret",
+			"kopia repository connect b2 --bucket=hody-backups --prefix=agents/ag_abc123/ --key-id=b2kid --key=b2secret",
 			c[0])
 	})
 
 	t.Run("filesystem", func(t *testing.T) {
 		c := kit.Commands(kit.Data{TargetKind: "filesystem", Path: "/srv/warphold/agents/ag_abc123"})
-		require.Equal(t, "kopia repository connect filesystem --path /srv/warphold/agents/ag_abc123", c[0])
+		require.Equal(t, "kopia repository connect filesystem --path=/srv/warphold/agents/ag_abc123", c[0])
 	})
 
 	require.Nil(t, kit.Commands(kit.Data{TargetKind: "martian"}))
@@ -127,7 +128,7 @@ func TestCommandsQuoteValuesForTheShell(t *testing.T) {
 		Path:       "/srv/backups/Hody's Laptop; rm -rf /",
 	})
 	require.Equal(t,
-		`kopia repository connect filesystem --path '/srv/backups/Hody'\''s Laptop; rm -rf /'`,
+		`kopia repository connect filesystem --path='/srv/backups/Hody'\''s Laptop; rm -rf /'`,
 		c[0])
 
 	// A value with nothing special in it stays bare, so the common kit is still
@@ -137,7 +138,7 @@ func TestCommandsQuoteValuesForTheShell(t *testing.T) {
 		ReadKeyID: "b2kid", ReadKey: "b2secret",
 	})
 	require.Equal(t,
-		"kopia repository connect b2 --bucket warphold-offsite --prefix agents/ag_1/ --key-id b2kid --key b2secret",
+		"kopia repository connect b2 --bucket=warphold-offsite --prefix=agents/ag_1/ --key-id=b2kid --key=b2secret",
 		c[0])
 
 	// An empty value prints no flag at all: a bare "--region" would swallow
@@ -147,5 +148,53 @@ func TestCommandsQuoteValuesForTheShell(t *testing.T) {
 		Endpoint: "https://fleet.example.com", ReadKeyID: "k", ReadKey: "s",
 	})
 	require.NotContains(t, c[0], "--region")
-	require.Contains(t, c[0], "--endpoint fleet.example.com")
+	require.Contains(t, c[0], "--endpoint=fleet.example.com")
+}
+
+// A minted secret is base64url and may start with "-". Printed as a separate
+// argument, Kopia's parser read it as a flag ("expected argument for flag
+// '--secret-access-key'"), so every flag is printed in --name=value form and a
+// POSIX shell must split each secret into exactly one argument.
+func TestSecretFlagsSurviveALeadingDashAndQuotes(t *testing.T) {
+	for _, secret := range []string{"-Zm9v_YmFy", "--region", `has space 'and' "quotes"`} {
+		hosted := hostedData()
+		hosted.ReadKey = secret
+
+		b2 := kit.Data{TargetKind: "b2", Bucket: "b", Prefix: "p/", ReadKeyID: "kid", ReadKey: secret}
+
+		for name, cmd := range map[string]struct{ line, flag string }{
+			"hosted": {kit.Commands(hosted)[0], "--secret-access-key="},
+			"b2":     {kit.Commands(b2)[0], "--key="},
+		} {
+			args := shellWords(t, cmd.line)
+
+			var got []string
+
+			for _, a := range args {
+				if v, ok := strings.CutPrefix(a, cmd.flag); ok {
+					got = append(got, v)
+				}
+			}
+
+			require.Equal(t, []string{secret}, got, "%s: %s", name, cmd.line)
+		}
+	}
+}
+
+// shellWords lets /bin/sh parse line, with the leading "kopia" swapped for a
+// function that prints each argument NUL-terminated.
+func shellWords(t *testing.T, line string) []string {
+	t.Helper()
+
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no POSIX shell")
+	}
+
+	script := `args() { for a in "$@"; do printf '%s\0' "$a"; done; }; args ` + strings.TrimPrefix(line, "kopia ")
+
+	out, err := exec.CommandContext(t.Context(), sh, "-c", script).Output()
+	require.NoError(t, err)
+
+	return strings.Split(strings.TrimSuffix(string(out), "\x00"), "\x00")
 }

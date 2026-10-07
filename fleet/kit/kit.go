@@ -48,15 +48,18 @@ type Data struct {
 //
 // --disable-tls is a verified flag but is never emitted for a hosted target:
 // see the comment in the "hosted" case below.
-// flag renders " --name value", or nothing at all when value is empty: an
+// flag renders " --name=value", or nothing at all when value is empty: an
 // empty value would print a bare flag and let it swallow the NEXT flag as its
-// argument.
+// argument. The "=" form is required, not style: a minted secret is base64url
+// and can start with "-", which Kopia's parser reads as a flag when the value
+// is a separate argument. Only the value is quoted; the shell joins
+// --name='v' into the single argument --name=v.
 func flag(name, value string) string {
 	if value == "" {
 		return ""
 	}
 
-	return " --" + name + " " + shellQuote(value)
+	return " --" + name + "=" + shellQuote(value)
 }
 
 // shellQuote makes a value safe to paste into a POSIX shell. The kit exists to
